@@ -150,7 +150,7 @@ class VideoMonitor:
         self.log_file: str = "urls.log"  # 主日志文件
         self.critical_log_file: str = "critical_errors.log"  # 重大错误专用日志
         self.wgmm_config_file: str = "wgmm_config.json"  # WGMM 算法配置文件
-        self.local_known_file: str = "local_known.json"  # 本地已知 URL 持久化文件
+        self.local_known_file: str = "local_known.txt"  # 本地已知 URL 持久化文件
         self.mtime_file: str = "mtime.txt"  # 视频发布时间戳历史
         self.cookies_file: str = "cookies.txt"  # Bilibili 登录凭证
         self.tmp_outputs_dir: str = "tmp_outputs"  # 临时输出目录
@@ -202,15 +202,28 @@ class VideoMonitor:
     def load_known_urls(self) -> None:
         """从本地文件加载已知 URL 集合
         
-        读取 local_known.json 文件，恢复程序上次运行时的已知 URL 状态。
-        如果文件不存在或读取失败，将使用空集合。
+        读取 local_known.txt 文件，恢复程序上次运行时的已知 URL 状态。
+        如果文件不存在，将自动创建空文件。
         """
         try:
             if os.path.exists(self.local_known_file):
                 with open(self.local_known_file, 'r', encoding='utf-8') as f:
-                    data = json.load(f)
-                    self.known_urls = set(data.get('known_urls', []))
-                self.log_info(f"已加载 {len(self.known_urls)} 个本地已知 URL")
+                    # 支持两种格式：纯文本（每行一个URL）或 JSON 数组
+                    content = f.read().strip()
+                    if content.startswith('['):
+                        # JSON 数组格式（向后兼容）
+                        data = json.loads(content)
+                        if isinstance(data, list):
+                            self.known_urls = set(data)
+                        else:
+                            self.known_urls = set(data.get('known_urls', []))
+                    else:
+                        # 纯文本格式（推荐）
+                        self.known_urls = set(line.strip() for line in content.splitlines() if line.strip())
+            else:
+                # 文件不存在，创建初始空文件
+                self.known_urls = set()
+                self.save_known_urls()
         except Exception as e:
             self.log_warning(f"加载本地已知 URL 失败: {e}，将使用空集合")
             self.known_urls = set()
@@ -218,16 +231,13 @@ class VideoMonitor:
     def save_known_urls(self) -> None:
         """保存已知 URL 集合到本地文件
         
-        将当前的 known_urls 集合持久化到 local_known.json 文件，
-        以便程序重启后能够恢复状态。
+        将当前的 known_urls 集合持久化到 local_known.txt 文件，
+        以便程序重启后能够恢复状态。使用纯文本格式，每行一个 URL。
         """
         try:
-            data = {
-                'known_urls': list(self.known_urls),
-                'last_updated': int(time.time())
-            }
             with open(self.local_known_file, 'w', encoding='utf-8') as f:
-                json.dump(data, f, indent=2, ensure_ascii=False)
+                # 保存为纯文本格式，每行一个 URL（按字典序排序便于查看和对比）
+                f.write('\n'.join(sorted(self.known_urls)))
         except Exception as e:
             self.log_warning(f"保存本地已知 URL 失败: {e}")
 
@@ -775,6 +785,11 @@ class VideoMonitor:
             
             # 直接在内存中处理字符串, 分割成列表
             self.memory_urls = [line.strip() for line in content.splitlines() if line.strip()]
+            
+            # 将 Gist 中的 URL 也加入 known_urls（这些是已备份的视频，应该标记为已知）
+            self.known_urls.update(self.memory_urls)
+            self.save_known_urls()  # 立即保存
+            
             return True
             
         except Exception as e:
@@ -2067,11 +2082,8 @@ class VideoMonitor:
         try:
             self.log_message("检查开始                  <--")
             # 1. 每次醒来, 先从 GitHub 同步数据到内存
+            # sync_urls_from_gist() 会自动将 Gist 中的 URL 加入 known_urls
             sync_success = self.sync_urls_from_gist()
-            
-            # 初始化 known_urls：首次运行时，将 Gist 中的所有 URL 标记为已知
-            if sync_success and not self.known_urls:
-                self.known_urls = set(self.memory_urls)
 
             # 如果获取失败且内存是空的, 无法进行比对, 直接等待下次
             if not sync_success and not self.memory_urls:
@@ -2151,7 +2163,6 @@ class VideoMonitor:
                 
                 # 更新本地已知 URL 集合
                 self.known_urls.update(gist_missing_urls)
-                self.save_known_urls()  # 持久化到文件
 
                 if self.notify_new_videos(link_count, has_new_parts=found_new_parts):
                     # 不记录成功通知日志, 避免日志过多

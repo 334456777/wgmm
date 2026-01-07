@@ -10,7 +10,7 @@
 /urls.txt
 /monitor.pid
 /wgmm_config.json
-/local_known.json
+/local_known.txt
 /temp_info_json
 /tmp_outputs
 /.env
