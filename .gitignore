@@ -1,0 +1,16 @@
+/.DS_Store
+/.venv
+/__pycache__
+/check_frequency.conf
+/cookies.txt
+/critical_errors.log
+/last_video_id.cache
+/mtime.txt
+/urls.log
+/urls.txt
+/monitor.pid
+/wgmm_config.json
+/local_known.json
+/temp_info_json
+/tmp_outputs
+/.env
