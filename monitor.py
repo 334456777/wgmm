@@ -88,9 +88,9 @@ class VideoMonitor:
     
     Attributes:
         GIST_ID: GitHub Gist ID, 用于存储已备份的视频 URL 列表
-        GIST_FILENAME: Gist 中的目标文件名
         GITHUB_TOKEN: GitHub API 访问令牌
         memory_urls: 内存中缓存的已备份视频 URL 列表
+        known_urls: 本地已知的所有视频 URL 集合（包括已备份和待备份）
         bark_device_key: Bark 推送服务的设备密钥
         
     Example:
@@ -126,7 +126,6 @@ class VideoMonitor:
         # ==================== GitHub Gist 配置 ====================
         # 用于存储和同步已备份视频的 URL 列表
         self.GIST_ID: str = os.getenv("GIST_ID", "")
-        self.GIST_FILENAME: str = "urls.txt"
         self.GITHUB_TOKEN: str = os.getenv("GITHUB_TOKEN", "")
         self.GIST_BASE_URL: str = "https://api.github.com/gists"
         self.BILIBILI_UID: str = os.getenv("BILIBILI_UID", "")
@@ -705,39 +704,6 @@ class VideoMonitor:
         except Exception as e:
             self.log_warning(f"保存next_check_time失败: {e}")
 
-    def get_gist_content(self) -> dict[str, Any]:
-        """访问指定 Gist ID 并返回其详细数据
-        
-        使用 GitHub API 获取 Gist 的完整 JSON 数据。需要有效的
-        ``GITHUB_TOKEN`` 和 ``urls_file`` (Gist ID)。
-        
-        Returns:
-            Gist 的完整 JSON 数据, 包含文件内容、历史版本等信息。
-            如果请求失败则返回空字典。
-            
-        Example:
-            >>> gist_data = self.get_gist_content()
-            >>> if gist_data:
-            ...     files = gist_data.get('files', {})
-            
-        Note:
-            使用 GitHub API v3, 需要配置有效的 Personal Access Token。
-        """
-        headers = {
-            "Authorization": f"Bearer {self.GITHUB_TOKEN}",
-            "Accept": "application/vnd.github.v3+json",
-            "X-GitHub-Api-Version": "2022-11-28"
-        }
-        url = f"{self.GIST_BASE_URL}/{self.GIST_FILENAME}"
-
-        try:
-            response: requests.Response = requests.get(url, headers=headers)
-            response.raise_for_status()  # 如果状态码不是 200, 抛出异常
-            return response.json()
-        except requests.exceptions.RequestException as e:
-            print(f"请求出错: {e}")
-            return {}
-
     def sync_urls_from_gist(self) -> bool:
         """从 GitHub Gist 下载内容并更新内存中的 URL 列表
         
@@ -748,12 +714,20 @@ class VideoMonitor:
             是否成功同步 URL 列表
             
         Note:
-            - 失败时会发送服务异常通知 (timeSensitive 级别)
+            - 验证 GIST_ID 和 GITHUB_TOKEN 必须存在
+            - 验证 Gist 必须只包含一个文件
+            - 失败时会发送 CRITICAL 级别错误通知
             - 超时时间为 30 秒
-            
-        See Also:
-            ``get_gist_content()``: 获取完整 Gist 数据
         """
+        # 验证必需的配置
+        if not self.GIST_ID:
+            self.log_critical_error("GIST_ID 未配置", "Gist 同步", send_notification=True)
+            return False
+            
+        if not self.GITHUB_TOKEN:
+            self.log_critical_error("GITHUB_TOKEN 未配置", "Gist 同步", send_notification=True)
+            return False
+        
         headers = {
             "Authorization": f"Bearer {self.GITHUB_TOKEN}",
             "Accept": "application/vnd.github.v3+json",
@@ -766,12 +740,20 @@ class VideoMonitor:
             data: dict[str, Any] = response.json()
             
             files: dict[str, Any] = data.get("files", {})
-            target_file: dict[str, Any] | None = files.get(self.GIST_FILENAME)
             
-            if not target_file:
-                raise ValueError(f"Gist 中找不到 {self.GIST_FILENAME}")
-                
-            content: str = target_file.get("content", "")
+            # 验证 Gist 必须只包含一个文件
+            file_count = len(files)
+            if file_count != 1:
+                self.log_critical_error(
+                    f"Gist 文件数量错误: 期望 1 个，实际 {file_count} 个",
+                    "Gist 同步验证",
+                    send_notification=True
+                )
+                return False
+            
+            # 获取唯一的文件（不再验证文件名）
+            file_data: dict[str, Any] = next(iter(files.values()))
+            content: str = file_data.get("content", "")
             
             # 直接在内存中处理字符串, 分割成列表
             self.memory_urls = [line.strip() for line in content.splitlines() if line.strip()]
@@ -782,10 +764,19 @@ class VideoMonitor:
             
             return True
             
+        except requests.exceptions.HTTPError as e:
+            self.log_critical_error(
+                f"Gist API 请求失败: HTTP {e.response.status_code}",
+                "Gist 同步",
+                send_notification=True
+            )
+            return False
         except Exception as e:
-            # 使用服务异常通知 (timeSensitive 级别)
-            self.log_message(f"从 Gist 获取 urls.txt 失败: {str(e)}", 'ERROR')
-            self.notify_service_issue(f"Gist 同步失败: {str(e)[:50]}")
+            self.log_critical_error(
+                f"从 Gist 获取数据失败: {str(e)}",
+                "Gist 同步",
+                send_notification=True
+            )
             return False
 
     def get_video_upload_time(self, video_url: str) -> int | None:
