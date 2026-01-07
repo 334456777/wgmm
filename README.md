@@ -110,6 +110,13 @@ BILIBILI_UID=your_bilibili_uid_here
 - **第二层 - 快速ID检查**：对比最新视频ID，快速判断是否有新内容
 - **第三层 - 完整深度检查**：仅在前两层发现变化时才执行完整扫描
 
+### 🔄 **双层URL管理机制**
+- **`memory_urls` (Gist同步层)**：从GitHub Gist读取的已备份视频URL列表
+- **`known_urls` (本地持久层)**：包含所有已检测到的视频（已备份 + 待同步）
+- **防重复通知**：只有 `truly_new_urls`（不在 `known_urls` 中）才触发通知
+- **Gist延迟容错**：即使Gist未及时更新，也不会重复通知已检测到的视频
+- **本地持久化**：`local_known.txt` 保证程序重启后不丢失状态
+
 ### 🔧 **企业级系统管理**
 - **自动历史数据生成**：首次运行时自动获取所有历史视频的发布时间戳
 - **多重故障恢复**：3次重试机制，数据损坏时自动重新生成
@@ -134,10 +141,22 @@ BILIBILI_UID=your_bilibili_uid_here
   > 从浏览器开发者工具中导出，用于访问B站视频信息
 
 ### 📊 数据存储文件  
-- **`urls.txt`** - 发现的视频链接存储库
-  > 自动管理，包含所有检测到的视频URL，支持分片链接
+- **`local_known.txt`** - 本地已知URL列表 **(双层URL管理核心)**
+  > 自动生成和维护，纯文本格式（每行一个URL）
+  > 包含所有已检测到的视频（含Gist已备份 + 待同步）
+  > 防止程序重启后的重复通知，支持手动编辑同步
+  
+- **`urls.txt`** - Gist远程备份 **(已废弃本地存储)**
+  > 仅作为GitHub Gist云端备份使用
+  > 程序从Gist读取到 `memory_urls`（已备份的视频）
+  > 本地不再维护此文件，所有状态在 `local_known.txt`
+
 - **`mtime.txt`** - 历史发布时间戳数据库 **(WGMM算法核心数据)**
   > 自动生成，包含所有历史视频的发布时间，用于机器学习训练
+  
+- **`wgmm_config.json`** - WGMM算法持久化状态
+  > 自动生成，保存算法的8个核心参数
+  > 包含维度权重、方差趋势、惩罚计数、手动运行标志等
 
 ### 📝 系统状态与日志
 - **`urls.log`** - 主运行日志 (INFO/WARNING/ERROR级别)
@@ -483,17 +502,32 @@ project/
 ├── monitor.sh                 # 🚀 启动管理脚本
 ├── requirements.txt           # 📦 Python依赖包列表
 ├── video-monitor.service      # 🔧 systemd服务配置
+├── .env                       # 🔐 环境变量配置（需手动创建）
+├── .env.example              # 📋 环境变量配置模板
 ├── cookies.txt               # 🍪 B站cookies（需手动提供）
 │
-├── urls.txt                  # 📄 所有发现的视频链接
+├── urls.txt                  # 📄 所有发现的视频链接（废弃，仅Gist备份）
+├── local_known.txt           # 💾 本地已知URL列表（自动生成，可手动同步）
 ├── mtime.txt                 # ⏰ 历史发布时间戳（自动生成）
 ├── urls.log                  # 📝 详细运行日志
 ├── critical_errors.log       # ⚠️  重大错误专用日志
 │
-├── check_frequency.conf      # ⏱️  下次检查时间戳
-├── last_update.timestamp     # 🕐 最后更新时间
-└── last_video_id.cache      # 💾 最新视频ID缓存
+├── wgmm_config.json          # ⚙️  WGMM算法状态（自动生成）
+├── check_frequency.conf      # ⏱️  下次检查时间戳（废弃）
+├── last_update.timestamp     # 🕐 最后更新时间（废弃）
+└── last_video_id.cache      # 💾 最新视频ID缓存（废弃）
 ```
+
+### 📂 核心文件说明
+
+| 文件 | 用途 | 是否需要手动配置 | 版本控制 |
+|------|------|-----------------|---------|
+| **`.env`** | 敏感凭据配置 | ✅ 必需 | ❌ 已排除 |
+| **`cookies.txt`** | B站登录凭证 | ✅ 必需 | ❌ 已排除 |
+| **`local_known.txt`** | 本地已知URL | ❌ 自动生成 | ❌ 已排除 |
+| **`wgmm_config.json`** | WGMM算法状态 | ❌ 自动生成 | ❌ 已排除 |
+| **`monitor.py`** | 主程序 | ❌ 无需修改 | ✅ 已纳入 |
+| **`requirements.txt`** | Python依赖 | ❌ 无需修改 | ✅ 已纳入 |
 
 ## 🎮 管理命令
 
