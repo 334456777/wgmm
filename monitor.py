@@ -208,18 +208,8 @@ class VideoMonitor:
         try:
             if os.path.exists(self.local_known_file):
                 with open(self.local_known_file, 'r', encoding='utf-8') as f:
-                    # 支持两种格式：纯文本（每行一个URL）或 JSON 数组
-                    content = f.read().strip()
-                    if content.startswith('['):
-                        # JSON 数组格式（向后兼容）
-                        data = json.loads(content)
-                        if isinstance(data, list):
-                            self.known_urls = set(data)
-                        else:
-                            self.known_urls = set(data.get('known_urls', []))
-                    else:
-                        # 纯文本格式（推荐）
-                        self.known_urls = set(line.strip() for line in content.splitlines() if line.strip())
+                    # 纯文本格式：每行一个 URL
+                    self.known_urls = set(line.strip() for line in f if line.strip())
             else:
                 # 文件不存在，创建初始空文件
                 self.known_urls = set()
