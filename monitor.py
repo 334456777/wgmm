@@ -2044,11 +2044,30 @@ class VideoMonitor:
             truly_new_urls = gist_missing_urls - self.known_urls  # 真正的新视频
 
             if gist_missing_urls:
-                # 使用星号表示视频数量：*** ** 表示 Gist 未备份3个，新视频2个
-                gist_stars = '*' * len(gist_missing_urls)
-                new_stars = '*' * len(truly_new_urls)
-                self.log_info(f"{gist_stars} {new_stars}")
-                
+                # 显示逻辑优化：准确区分旧视频和新视频
+                old_count = len(gist_missing_urls) - len(truly_new_urls)
+                new_count = len(truly_new_urls)
+
+                # 情况1：新视频就是 gist 未同步的视频（都是新视频）
+                # 显示：*** （3个星号表示3个新视频）
+                if old_count == 0 and new_count > 0:
+                    stars = '*' * new_count
+                    self.log_info(f"{stars}")
+
+                # 情况2：未同步的视频中既有旧视频又有新视频
+                # 显示：*** ** （前3个星号表示2个旧视频+1个新视频，后2个星号表示2个新视频）
+                # 说明：前面的星号 = 旧视频数量，后面的星号 = 新视频数量
+                elif old_count > 0 and new_count > 0:
+                    old_stars = '*' * old_count
+                    new_stars = '*' * new_count
+                    self.log_info(f"{old_stars} {new_stars}")
+
+                # 情况3：只有旧视频未同步（没有真正的新视频）
+                # 显示：*** （3个星号表示3个旧视频，都是本地已知的）
+                elif old_count > 0 and new_count == 0:
+                    old_stars = '*' * old_count
+                    self.log_info(f"{old_stars}")
+
                 # 发送通知 - 通知所有 Gist 中没有的视频
                 link_count = len(gist_missing_urls)
                 
