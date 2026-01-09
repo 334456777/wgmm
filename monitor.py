@@ -820,8 +820,6 @@ class VideoMonitor:
         timestamps = []
         current_time = int(time.time())
         
-        self.log_info(f"正在获取 {len(new_urls)} 个新视频的真实上传时间...")
-        
         for url in new_urls:
             upload_time = self.get_video_upload_time(url)
             
@@ -841,7 +839,6 @@ class VideoMonitor:
                     f.write(f"{ts}\n")
             
             self.limit_file_lines(self.mtime_file, 100000)
-            self.log_info(f"成功保存 {len(timestamps)} 个真实上传时间戳")
 
     def create_mtime_from_info_json(self) -> bool:
         """使用 yt-dlp 获取视频元信息创建 mtime.txt
@@ -889,7 +886,6 @@ class VideoMonitor:
                     if file.endswith('.info.json'):
                         info_files.append(os.path.join(root, file))
                         
-            self.log_info(f"找到 {len(info_files)} 个 info.json 文件")
             
             # 解析每个 info.json 文件获取时间戳
             for info_file in info_files:
@@ -1165,7 +1161,6 @@ class VideoMonitor:
                 decay_amount = int(elapsed_hours / avg_publish_interval_hours)
                 if decay_amount > 0:
                     false_positive_count = max(0, false_positive_count - decay_amount)
-                    self.log_info(f"时间遗忘: 距上次检查 {elapsed_hours:.1f}小时，遗忘周期 {avg_publish_interval_hours:.1f}小时，减少惩罚 {decay_amount} 次")
         
         # 更新失败计数器 (仅在自动运行时计数)
         if is_manual_run:
