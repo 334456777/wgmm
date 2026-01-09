@@ -4,20 +4,17 @@
 Bilibili 视频监控系统
 ======================
 
-基于智能频率调整的视频更新检测系统, 支持分片预检查、快速检查和完整检查的多层级检测策略。
+基于智能频率调整的视频更新检测系统, 支持多层级检测策略。
 
 主要功能:
     - 监控指定 Bilibili 用户空间的视频更新
-    - 使用 WGMM (加权高斯混合模型) 算法智能调整检查频率
+    - 使用 WGMM 算法智能调整检查频率
     - 通过 Bark 推送通知新视频发现和系统异常
     - 支持多分片视频的智能检测
 
 依赖:
-    - yt-dlp: 用于获取视频信息
-    - requests: 用于 API 调用
-    
-作者: VideoMonitor Team
-版本: 2.0.0
+    - yt-dlp: 获取视频信息
+    - requests: API 调用
 """
 
 import os
@@ -67,36 +64,35 @@ load_env_file()
 
 class VideoMonitor:
     """Bilibili 视频监控系统主类
-    
+
     该类实现了一个完整的视频更新监控系统, 包含以下核心功能：
-    
+
     1. **多层级检测策略**:
        - 分片预检查：检测已有多分片视频的新分片
        - 快速检查：通过最新视频 ID 快速判断是否有更新
        - 完整检查：获取所有视频链接并进行比对
-    
+
     2. **智能频率调整 (WGMM)**:
        使用加权高斯混合模型算法, 根据历史发布时间模式
        动态调整检查频率, 在活跃时段增加检查频率。
-    
+
     3. **分级通知系统**:
        通过 Bark API 发送推送通知, 支持不同优先级：
        - critical: 严重错误, 强制响铃
        - timeSensitive: 时效性通知, 可突破专注模式
        - active: 普通通知
        - passive: 静默通知
-    
+
     Attributes:
         GIST_ID: GitHub Gist ID, 用于存储已备份的视频 URL 列表
         GITHUB_TOKEN: GitHub API 访问令牌
+        BILIBILI_UID: Bilibili 用户 ID
         memory_urls: 内存中缓存的已备份视频 URL 列表
         known_urls: 本地已知的所有视频 URL 集合（包括已备份和待备份）
         bark_device_key: Bark 推送服务的设备密钥
-        
-    Example:
-        >>> monitor = VideoMonitor()
-        >>> monitor.run_monitor()  # 执行一次检查
-        
+        last_ytdlp_duration: 最后一次 yt-dlp 耗时 (秒)
+        normal_ytdlp_duration: 正常耗时基准 (秒)
+
     Note:
         运行前需要确保:
         - yt-dlp 已安装并可用
@@ -252,22 +248,16 @@ class VideoMonitor:
 
     def log_message(self, message: str, level: str = 'INFO') -> None:
         """记录日志消息到文件和控制台
-        
+
         这是日志系统的核心方法, 所有日志记录最终都通过此方法执行。
         日志会同时写入文件和输出到控制台, 并自动管理日志文件大小。
-        
+
         Args:
             message: 日志消息内容
-            level: 日志级别, 可选值:
-                   - 'INFO': 信息 (默认)
-                   - 'WARNING': 警告
-                   - 'ERROR': 错误
-                   - 'CRITICAL': 严重错误
-                   
-        日志格式::
-        
-            YYYY-MM-DD HH:MM:SS - LEVEL - 消息内容
-            
+            level: 日志级别, 可选值: 'INFO', 'WARNING', 'ERROR', 'CRITICAL'
+
+        日志格式: YYYY-MM-DD HH:MM:SS - LEVEL - 消息内容
+
         Note:
             日志文件会自动限制在 100,000 行以内, 超出时保留最新的日志。
         """
@@ -338,29 +328,24 @@ class VideoMonitor:
                 print(f"{timestamp} - WARNING - 错误通知发送失败")
 
     def log_critical_error(
-        self, 
-        message: str, 
-        context: str = "", 
+        self,
+        message: str,
+        context: str = "",
         send_notification: bool = True
     ) -> None:
         """记录严重错误并发送 Bark 通知
-        
-        这是最高级别的错误处理方法。除了记录到日志文件外, 
+
+        这是最高级别的错误处理方法。除了记录到日志文件外,
         还会发送 ``critical`` 级别的 Bark 通知。
-        
+
         Args:
             message: 错误消息内容
             context: 错误发生的上下文 (如方法名、阶段等)
             send_notification: 是否发送 Bark 通知
-                              - True: 发送通知 (默认)
-                              - False: 仅记录日志
-                              
+
         Note:
             - 错误会同时记录到 ``urls.log`` 和 ``critical_errors.log``
             - 使用 ``critical`` 级别通知, 会忽略设备静音设置
-            message: 错误消息
-            context: 错误上下文信息
-            send_notification: 是否发送 Bark 通知
         """
         timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
         full_message = f"{message}"
@@ -463,45 +448,23 @@ class VideoMonitor:
         volume: int | None = None
     ) -> bool:
         """发送 Bark 推送通知 (统一接口)
-        
-        根据 Bark API v2.0 规范发送推送通知。这是所有通知方法的底层实现, 
-        支持完整的 Bark API 参数。
-        
+
+        根据 Bark API v2.0 规范发送推送通知。所有通知方法的底层实现。
+
         Args:
-            title: 通知标题, 在通知中以粗体显示
+            title: 通知标题
             body: 通知正文内容
-            level: 通知优先级, 控制通知的展示行为
-                   
-                   - ``"active"``: 默认级别, 立即亮屏显示
-                   - ``"timeSensitive"``: 时效性通知, 可突破专注模式
-                   - ``"passive"``: 被动通知, 仅添加到通知列表, 不亮屏
-                   - ``"critical"``: 严重警告, 忽略静音和勿扰模式
-                   
-            sound: 通知铃声名称 (如 ``"minuet"``, ``"alarm"``, ``"bell"``)
-            group: 通知分组名称, 相同分组的通知会聚合显示
-            icon: 自定义图标的 URL (需要 iOS 15+)
-            url: 点击通知后跳转的 URL, 支持 http/https 和自定义 scheme
-            is_archive: 是否将通知保存到 Bark 历史记录
-            call: 是否启用持续响铃模式 (响铃 30 秒, 适合重要提醒)
-            volume: 通知音量 (0-10), 仅在 ``level="critical"`` 时生效
-            
+            level: 通知优先级 - "active", "timeSensitive", "passive", "critical"
+            sound: 通知铃声名称
+            group: 通知分组名称
+            icon: 自定义图标的 URL
+            url: 点击通知后跳转的 URL
+            is_archive: 是否保存到 Bark 历史记录
+            call: 是否启用持续响铃模式 (30秒)
+            volume: 通知音量 (0-10), 仅在 critical 级别生效
+
         Returns:
-            发送是否成功。``True`` 表示服务器返回 200 状态码。
-            
-        Example:
-            >>> # 发送普通通知
-            >>> self.send_bark_push("标题", "内容")
-            True
-            
-            >>> # 发送紧急通知 (忽略勿扰模式)
-            >>> self.send_bark_push(
-            ...     title="紧急警告",
-            ...     body="服务器宕机",
-            ...     level="critical",
-            ...     sound="alarm",
-            ...     volume=10,
-            ...     call=True
-            ... )
+            bool: 发送是否成功 (服务器返回 200 状态码)
         """
         import urllib.parse
         
@@ -555,17 +518,14 @@ class VideoMonitor:
 
     def notify_new_videos(self, count: int, has_new_parts: bool = False) -> bool:
         """发送新视频发现通知
-        
+
         当检测到新视频时调用此方法发送推送通知。
         使用 ``timeSensitive`` 级别, 可以突破 iOS 专注模式。
-        
+
         Args:
             count: 发现的新视频数量
             has_new_parts: 是否包含多分片视频的新分片
-            
-        Returns:
-            通知是否发送成功
-            
+
         Returns:
             bool: 发送是否成功
         """
@@ -584,15 +544,14 @@ class VideoMonitor:
 
     def notify_error(self, message: str) -> bool:
         """发送普通错误通知
-        
-        用于通知一般性错误, 使用 ``active`` 级别 (默认)。
-        这类错误通常不会导致程序崩溃, 但需要用户注意。
-        
+
+        用于通知一般性错误, 使用 ``active`` 级别。
+
         Args:
             message: 错误消息内容
-            
+
         Returns:
-            通知是否发送成功
+            bool: 通知是否发送成功
         """
         return self.send_bark_push(
             title=f"{self.bark_app_title} - 错误",
@@ -603,17 +562,17 @@ class VideoMonitor:
 
     def notify_critical_error(self, message: str, context: str = "") -> bool:
         """发送严重错误通知
-        
+
         用于通知系统级的严重错误, 使用 ``critical`` 级别。
         此级别会忽略设备的静音和勿扰模式, 强制播放警报声。
-        
+
         Args:
             message: 错误消息内容
             context: 错误发生的上下文信息 (可选)
-            
+
         Returns:
-            通知是否发送成功
-            
+            bool: 通知是否发送成功
+
         Note:
             此方法会启用持续响铃模式 (30秒), 确保用户注意到通知。
         """
@@ -633,15 +592,15 @@ class VideoMonitor:
 
     def notify_service_issue(self, message: str) -> bool:
         """发送服务异常通知
-        
+
         用于通知外部服务问题 (如 Gist 同步失败、API 超时等)。
         使用 ``timeSensitive`` 级别, 可以突破专注模式但不会强制响铃。
-        
+
         Args:
             message: 问题描述
-            
+
         Returns:
-            通知是否发送成功
+            bool: 通知是否发送成功
         """
         return self.send_bark_push(
             title=f"{self.bark_app_title} - 服务异常",
@@ -706,13 +665,13 @@ class VideoMonitor:
 
     def sync_urls_from_gist(self) -> bool:
         """从 GitHub Gist 下载内容并更新内存中的 URL 列表
-        
-        使用 GitHub API 获取 Gist 内容, 并将其解析为 URL 列表
-        存储在 ``self.memory_urls`` 中。
-        
+
+        使用 GitHub API 获取 Gist 内容, 并将其解析为 URL 列表存储在 ``self.memory_urls`` 中。
+        同时会将 Gist 中的 URL 加入到 ``self.known_urls`` 以保持双层 URL 管理的一致性。
+
         Returns:
             是否成功同步 URL 列表
-            
+
         Note:
             - 验证 GIST_ID 和 GITHUB_TOKEN 必须存在
             - 验证 Gist 必须只包含一个文件
@@ -835,21 +794,20 @@ class VideoMonitor:
 
     def save_real_upload_timestamps(self, new_urls: set[str]) -> None:
         """保存新视频的真实上传时间戳
-        
+
         为每个新发现的视频获取其真实上传时间, 并追加到 mtime.txt。
         这确保了 WGMM 算法使用的是视频实际发布时间, 而非检查发现时间。
-        
+
         Args:
             new_urls: 新发现的视频 URL 集合
-            
+
         Note:
             - 如果无法获取某个视频的上传时间, 会使用当前时间作为降级方案
             - 如果 mtime.txt 不存在, 会尝试自动创建
             - 获取到的时间戳会按升序排序后追加
-            
+
         See Also:
             - ``get_video_upload_time()``: 获取单个视频的上传时间
-            - ``save_discovery_timestamp()``: 旧方法 (使用当前时间)
         """
         if not new_urls:
             return
@@ -1045,38 +1003,28 @@ class VideoMonitor:
 
     def adjust_check_frequency(self, found_new_content: bool = False) -> None:
         """WGMM (加权高斯混合模型)自适应智能频率预测算法
-        
+
         基于历史事件的时间周期性模式, 使用高斯核函数和指数衰减权重
         来预测当前时间点发生新事件的概率, 并动态调整检查频率。
-        
-        **控制论优化**: 实现完整的 PID 控制 + 反馈抑制 + 安全阻尼
-        
+
+        实现了完整的控制论优化: PID控制 + 反馈抑制 + 安全阻尼
+
         核心算法：
-        1. 将历史时间戳转换为多维周期性特征 (sin/cos编码)
-        2. 自动学习各维度的最优权重并保存到配置文件
-        3. 使用高斯核函数和时间衰减权重计算热力得分
-        4. 通过非线性映射将得分转换为检查间隔
-        5. 根据历史数据自适应调整参数并持久化
-        6. **PID-D 项**: 融入方差变化趋势,预判规律演变方向
-        7. **反馈抑制**: 追踪预测失败,对连续未命中时段施加惩罚
-        8. **时间遗忘**: 自动衰减历史失败记录,避免长期偏见
-        9. **安全阻尼**: 根据网络耗时动态调整请求频率
-        
+        1. 多维周期性特征转换 (日/周/月/年)
+        2. 自动学习维度权重
+        3. 高斯核函数计算热力得分
+        4. 非线性映射转换为检查间隔
+        5. PID-D项融入方差趋势预测
+        6. 反馈抑制处理预测失败
+        7. 时间遗忘机制避免长期偏见
+        8. 网络阻抗自适应阻尼
+
         Args:
             found_new_content: 本次检查是否发现新内容
-                             - True: 发现新内容 (预测成功,强化该时段模式)
-                             - False: 未发现新内容 (可能是预测失败,触发抑制机制)
-        
-        周期性维度：
-        - 日内周期：一天内的时刻 (0-86400秒)
-        - 周内周期：一周内的时刻 (0-604800秒)
-        - 月内周期：一月内第几周 (ISO标准)
-        - 年内周期：一年内第几月 (1-12月)
-        
-        配置文件：wgmm_config.json (自动创建和更新)
-        - 存储学习到的维度权重
-        - 存储最后使用的衰减率
-        - 存储最后更新时间戳
+                             - True: 发现新内容 (预测成功)
+                             - False: 未发现新内容 (预测失败)
+
+        配置文件: wgmm_config.json (自动创建和更新)
         """
         import math
         import calendar
@@ -1716,35 +1664,16 @@ class VideoMonitor:
 
     def run_yt_dlp(self, command_args: list[str], timeout: int = 300) -> tuple[bool, str, str]:
         """执行 yt-dlp 命令
-        
+
         安全地执行 yt-dlp 命令, 包含超时控制和错误处理。
-        
-        **控制论优化**: 捕获实际运行耗时，作为网络环境健康度指标
-        
-        耗时数据用途：
-        - 更新 `last_ytdlp_duration` (最近一次耗时)
-        - 更新 `normal_ytdlp_duration` (移动平均基准)
-        - 触发网络阻抗阻尼机制 (耗时异常时降低请求频率)
-        
+        捕获实际运行耗时，作为网络环境健康度指标，用于触发网络阻抗阻尼机制。
+
         Args:
             command_args: yt-dlp 命令参数列表 (不包含 ``yt-dlp`` 本身)
             timeout: 命令超时时间 (秒), 默认 300 秒
-            
+
         Returns:
-            三元组 ``(success, stdout, stderr)``：
-            - ``success``: 命令是否执行成功 (返回码为 0)
-            - ``stdout``: 标准输出内容
-            - ``stderr``: 标准错误内容或错误消息
-            
-        Example:
-            >>> success, stdout, stderr = self.run_yt_dlp([
-            ...     '--cookies', 'cookies.txt',
-            ...     '--flat-playlist',
-            ...     '--print', '%(id)s',
-            ...     'https://space.bilibili.com/xxx/video'
-            ... ])
-            >>> if success:
-            ...     video_ids = stdout.split('\\n')
+            tuple[bool, str, str]: 三元组 (success, stdout, stderr)
         """
         start_time = time.time()
         try:
@@ -1777,20 +1706,16 @@ class VideoMonitor:
 
     def quick_precheck(self) -> bool:
         """快速预检查功能
-        
+
         获取最新视频的 ID, 检查是否已存在于 Gist 同步的 memory_urls 中。
-        这样可以确保每次都以 Gist 数据为基准, 不会因本地缓存问题漏检。
-        
+        确保每次都以 Gist 数据为基准, 不会因本地缓存问题漏检。
+
         Returns:
-            是否发现新内容 (需要进行完整检查)
-            
+            bool: 是否发现新内容 (需要进行完整检查)
+
         Note:
             - 如果预检查失败, 返回 ``True`` 触发完整检查以确保不漏检
-            - 使用视频 ID 对比 (纯字母数字, 避免文件名特殊字符问题)
-            - 直接与 memory_urls 对比, 不依赖本地缓存文件
-            
-        See Also:
-            ``run_monitor()``: 调用此方法进行快速预检
+            - 使用视频 ID 对比, 直接与 memory_urls 对比
         """
         # 确保 memory_urls 有数据
         if not self.memory_urls:
@@ -1976,14 +1901,9 @@ class VideoMonitor:
 
     def cleanup_and_wait(self) -> None:
         """清理资源并等待下次检查
-        
-        执行以下操作：
-        
-        1. 清理临时文件
-        2. 读取下次检查时间配置
-        3. 计算等待时间
-        4. 进入休眠状态直到下次检查
-        
+
+        执行清理临时文件、读取检查时间配置、计算等待时间并进入休眠。
+
         Note:
             - 如果等待时间为负数或无效, 使用默认 400 分钟间隔
             - 休眠期间可被信号中断
@@ -2040,22 +1960,21 @@ class VideoMonitor:
 
     def run_monitor(self) -> None:
         """主监控流程
-        
+
         执行三层检测策略：
-        
         1. **分片预检查**: 检查现有多分片视频的新分片
         2. **快速检查**: 检查最新视频 ID 变化
         3. **完整检查**: 获取所有视频链接并对比
-        
+
         这种分层策略可以显著提高检查效率, 减少不必要的网络请求。
-        
-        Flow:
+
+        执行流程:
             1. 从 GitHub Gist 同步 URL 数据到内存
             2. 执行分片预检查和快速预检查
             3. 如果发现可能的新内容, 执行完整检查
             4. 对比新旧 URL 列表, 发现新视频时发送通知
             5. 调整检查频率并等待下次检查
-            
+
         Note:
             - 捕获所有异常, 确保程序持续运行
             - 严重错误会触发 CRITICAL 级别通知
