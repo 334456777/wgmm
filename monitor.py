@@ -224,7 +224,7 @@ class VideoMonitor:
                 # 保存为纯文本格式，每行一个 URL（按字典序排序便于查看和对比）
                 f.write('\n'.join(sorted(self.known_urls)))
         except Exception as e:
-            self.log_warning(f"保存本地已知 URL 失败: {e}")
+            self.log_critical_error(f"保存本地已知 URL 失败: {e}", "save_known_urls 方法", send_notification=False)
 
     def signal_handler(self, signum: int, frame: FrameType | None) -> None:
         """系统信号处理器
@@ -661,7 +661,7 @@ class VideoMonitor:
             with open(self.wgmm_config_file, 'w', encoding='utf-8') as f:
                 json.dump(config, f, indent=2, ensure_ascii=False)
         except Exception as e:
-            self.log_warning(f"保存next_check_time失败: {e}")
+            self.log_critical_error(f"保存next_check_time失败: {e}", "save_next_check_time 方法", send_notification=False)
 
     def sync_urls_from_gist(self) -> bool:
         """从 GitHub Gist 下载内容并更新内存中的 URL 列表
@@ -998,99 +998,78 @@ class VideoMonitor:
         return False
 
     def adjust_check_frequency(self, found_new_content: bool = False) -> None:
-        """WGMM (加权高斯混合模型)自适应智能频率预测算法
+        """WGMM 2.0: 基于双波源对抗机制的智能频率预测算法
 
-        基于历史事件的时间周期性模式, 使用高斯核函数和指数衰减权重
-        来预测当前时间点发生新事件的概率, 并动态调整检查频率。
-
-        实现了完整的控制论优化: PID控制 + 反馈抑制 + 安全阻尼
-
-        核心算法：
-        1. 多维周期性特征转换 (日/周/月/年)
-        2. 自动学习维度权重
-        3. 高斯核函数计算热力得分
-        4. 非线性映射转换为检查间隔
-        5. PID-D项融入方差趋势预测
-        6. 反馈抑制处理预测失败
-        7. 时间遗忘机制避免长期偏见
-        8. 网络阻抗自适应阻尼
+        算法核心：
+        - 双波源对抗：正向得分 - 阻力系数 × 负向得分
+        - 未来展望：15天窗口搜索峰值，智能提前唤醒
+        - 数据剪枝：自动清理失效历史数据
+        - 纯计算解耦：提高代码可维护性
 
         Args:
-            found_new_content: 本次检查是否发现新内容
-                             - True: 发现新内容 (预测成功)
-                             - False: 未发现新内容 (预测失败)
-
-        配置文件: wgmm_config.json (自动创建和更新)
+            found_new_content: 是否发现新内容，影响历史记录写入
         """
         import math
         import calendar
         import json
         from collections import defaultdict
-        
+
         # ==================== 模型超参数配置 ====================
         # 各维度的高斯核标准差 (控制时间模式匹配的严格程度)
         SIGMA_DAY = 0.8           # 日内周期标准差
         SIGMA_WEEK = 1.0          # 周内周期标准差
         SIGMA_MONTH_WEEK = 1.5    # 月内周数标准差
         SIGMA_YEAR_MONTH = 2.0    # 年内月份标准差
-        
+
         # 初始维度权重 (算法会自动学习调整)
         WEIGHT_DAY = 0.5          # 日内周期初始权重
         WEIGHT_WEEK = 1.0         # 周内周期初始权重
         WEIGHT_MONTH_WEEK = 0.3   # 月内周数初始权重
         WEIGHT_YEAR_MONTH = 0.2   # 年内月份初始权重
-        
+
         # 时间衰减参数
         LAMBDA_MIN = 0.00005      # 最小衰减率 (规律发布时)
         LAMBDA_BASE = 0.0001      # 基础衰减率
         LAMBDA_MAX = 0.0005       # 最大衰减率 (不规律发布时)
-        
+
         # 轮询间隔参数
         DEFAULT_INTERVAL = 3600   # 默认基础轮询间隔 (秒)
         MAX_INTERVAL = 300        # 最高频轮询间隔 (秒)
-        
+
         # 非线性映射参数
         MAPPING_CURVE = 2.0       # 指数映射曲线陡峭度 (值越大, 高得分时越敏感)
-        
+
         # 学习参数
         LEARNING_RATE = 0.1       # 权重平滑学习率 (避免剧烈变化)
         MIN_HISTORY_COUNT = 10    # 最小历史数据量要求
-        
+
+        # 双波源对抗参数
+        RESISTANCE_COEFFICIENT = 0.8  # 阻力系数 (建议默认 0.8)
+        WEIGHT_THRESHOLD = 0.001      # 数据剪枝阈值
+        LOOKAHEAD_DAYS = 15           # 未来展望天数
+        PEAK_ADVANCE_MINUTES = 10     # 峰值提前分钟数
+
         # 时间常量
         SECONDS_IN_DAY = 86400
         SECONDS_IN_WEEK = 604800
-        
-        # ==================== 配置文件管理 ====================
-        # 配置文件路径 (与mtime.txt同目录)
+
+        # 配置文件管理
         config_file = os.path.join(os.path.dirname(self.mtime_file), 'wgmm_config.json')
-        
-        # 加载或初始化配置
+
         def load_config():
-            """加载配置文件, 如果不存在则创建"""
             default_config = {
-                'dimension_weights': {
-                    'day': WEIGHT_DAY,
-                    'week': WEIGHT_WEEK,
-                    'month_week': WEIGHT_MONTH_WEEK,
-                    'year_month': WEIGHT_YEAR_MONTH
-                },
+                'dimension_weights': {'day': WEIGHT_DAY, 'week': WEIGHT_WEEK, 'month_week': WEIGHT_MONTH_WEEK, 'year_month': WEIGHT_YEAR_MONTH},
                 'last_lambda': LAMBDA_BASE,
+                'last_pos_variance': 0.0,
+                'last_neg_variance': 0.0,
                 'last_update': 0,
                 'next_check_time': 0,
-                # ==================== 运行模式标识 ====================
-                'is_manual_run': True,  # 手动运行标识 (True=手动运行不惩罚, False=自动运行会惩罚)
-                # ==================== 控制论优化：反馈抑制追踪 ====================
-                'false_positive_count': 0,  # 连续"未命中"次数 (预测高分但无新内容)
-                # ==================== 控制论优化：方差趋势追踪 (PID-D 项) ====================
-                'last_variance': 0.0,  # 上次计算的方差值
-                'variance_trend': 0.0  # 方差变化趋势 (正=不规律加剧, 负=规律形成)
+                'is_manual_run': True,
             }
-            
             try:
                 if os.path.exists(config_file):
                     with open(config_file, 'r', encoding='utf-8') as f:
                         config = json.load(f)
-                    # 合并默认配置 (处理新增字段)
                     for key, value in default_config.items():
                         if key not in config:
                             config[key] = value
@@ -1100,7 +1079,6 @@ class VideoMonitor:
                                     config[key][sub_key] = sub_value
                     return config
                 else:
-                    # 文件不存在, 创建新配置
                     with open(config_file, 'w', encoding='utf-8') as f:
                         json.dump(default_config, f, indent=2, ensure_ascii=False)
                     self.log_info(f"已创建WGMM配置文件: {config_file}")
@@ -1108,541 +1086,402 @@ class VideoMonitor:
             except Exception as e:
                 self.log_warning(f"加载WGMM配置文件失败, 使用默认配置: {e}")
                 return default_config
-        
+
         def save_config(config_data):
-            """保存配置到文件"""
             try:
                 with open(config_file, 'w', encoding='utf-8') as f:
                     json.dump(config_data, f, indent=2, ensure_ascii=False)
             except Exception as e:
-                self.log_warning(f"保存WGMM配置文件失败: {e}")
-        
-        # 加载配置
+                self.log_critical_error(f"保存WGMM配置文件失败: {e}", "save_config 方法", send_notification=False)
+
         config = load_config()
         dimension_weights_from_config = config['dimension_weights']
-        
-        # ==================== 控制论优化 1: 反馈抑制机制 + 时间遗忘 ====================
-        # 目标：从"预测失败"中学习，避免在低价值时段过度检查
-        # 原理：追踪连续未命中次数，施加递增惩罚；同时引入时间衰减，避免长期偏见
-        
-        false_positive_count = config.get('false_positive_count', 0)
-        last_update_time = config.get('last_update', 0)
-        is_manual_run = config.get('is_manual_run', True)  # 默认为手动运行
-        
-        # ==================== 时间遗忘机制：基于历史发布间隔的智能衰减 ====================
-        # 目标：避免"带着昨天的偏见处理今天的任务"
-        # 策略：基于历史平均发布间隔，动态计算遗忘周期
-        # 读取历史数据计算平均发布间隔
-        avg_publish_interval_hours = 4.0  # 默认4小时（向后兼容）
-        
-        if os.path.exists(self.mtime_file):
-            try:
-                with open(self.mtime_file, 'r') as f:
-                    timestamps = [int(line.strip()) for line in f if line.strip().isdigit()]
-                
-                if len(timestamps) >= 2:
-                    # 计算相邻视频的平均发布间隔
-                    sorted_ts = sorted(timestamps)
-                    intervals = [sorted_ts[i+1] - sorted_ts[i] for i in range(len(sorted_ts)-1)]
-                    avg_interval_seconds = sum(intervals) / len(intervals)
-                    avg_publish_interval_hours = avg_interval_seconds / 3600.0
-                    
-                    # 遗忘周期 = 平均发布间隔 * 0.5（保守策略）
-                    # 理由：如果平均2天发一个视频，那么1天后应该开始遗忘之前的惩罚
-                    avg_publish_interval_hours = max(1.0, avg_publish_interval_hours * 0.5)
-            except Exception as e:
-                self.log_warning(f"计算平均发布间隔失败: {e}, 使用默认值4小时")
-        
-        # 应用时间遗忘：每经过一个遗忘周期，原谅1次失败
-        if last_update_time > 0:
-            elapsed_hours = (int(time.time()) - last_update_time) / 3600.0
-            
-            if elapsed_hours > avg_publish_interval_hours:
-                decay_amount = int(elapsed_hours / avg_publish_interval_hours)
-                if decay_amount > 0:
-                    false_positive_count = max(0, false_positive_count - decay_amount)
-        
-        # 更新失败计数器 (仅在自动运行时计数)
+        is_manual_run = config.get('is_manual_run', True)
+
+        # 手动运行豁免处理
         if is_manual_run:
-            # 手动运行：不更新计数器，避免误触发惩罚
-            # 但需要将标志设为 False，以便下次自动运行时正常工作
             config['is_manual_run'] = False
-        else:
-            # 自动运行：正常更新失败计数器
-            if found_new_content:
-                # 预测成功：重置失败计数，强化当前时段模式
-                false_positive_count = 0
-            else:
-                # 预测失败：累积失败计数，准备施加抑制
-                false_positive_count += 1
-        
-        config['false_positive_count'] = false_positive_count
-        
-        # 计算抑制惩罚强度
-        # 阈值：连续失败 ≥3 次时触发
-        # 强度：每多失败 1 次，增加 15% 惩罚 (上限 60%)
-        inhibition_penalty = 0.0
-        if false_positive_count >= 3:
-            inhibition_penalty = min(0.6, (false_positive_count - 2) * 0.15)
-        
-        # ==================== 获取当前时间 ====================
+
         current_timestamp = int(time.time())
         current_dt = datetime.fromtimestamp(current_timestamp)
         
-        # ==================== 检查和生成历史数据文件 ====================
+        # 失败历史记录管理
+        miss_history_file = "miss_history.txt"
+
+        def load_miss_history():
+            if not os.path.exists(miss_history_file):
+                return []
+            try:
+                with open(miss_history_file, 'r') as f:
+                    return [int(line.strip()) for line in f if line.strip().isdigit()]
+            except Exception as e:
+                self.log_warning(f"读取失败历史记录失败: {e}")
+                return []
+
+        def save_to_miss_history(timestamp):
+            if is_manual_run:
+                return
+            try:
+                with open(miss_history_file, 'a') as f:
+                    f.write(f"{timestamp}\n")
+                self.limit_file_lines(miss_history_file, 100000)
+            except Exception as e:
+                self.log_warning(f"写入失败历史记录失败: {e}")
+
+        # 检查并生成历史数据
         if not os.path.exists(self.mtime_file):
             if not self.generate_mtime_file("adjust_check_frequency"):
-                frequency_sec = 7200  # 120分钟
-                next_check_timestamp = int(time.time()) + frequency_sec
-                next_check_time = datetime.fromtimestamp(next_check_timestamp).strftime('%Y年%m月%d日 %H:%M:%S')
-                self.log_info(f"WGMM调频 - mtime.txt无法生成, 使用默认频率: 2小时 下次检查: {next_check_time}")  # 改为INFO, 降级处理
-                self.save_next_check_time(next_check_timestamp)
+                self.save_next_check_time(int(time.time()) + 7200)
                 return
-        
-        # ==================== 加载历史时间戳数据 ====================
-        historical_events = []
-        try:
-            with open(self.mtime_file, 'r') as f:
-                raw_data = [line.strip() for line in f if line.strip().isdigit()]
-                # 去重并保持时间顺序
+
+        def load_history_file(filepath):
+            try:
+                with open(filepath, 'r') as f:
+                    raw_data = [line.strip() for line in f if line.strip().isdigit()]
                 seen_timestamps = set()
+                filtered = []
                 for timestamp_str in raw_data:
                     timestamp = int(timestamp_str)
                     if timestamp > 0 and timestamp not in seen_timestamps:
-                        historical_events.append(timestamp)
+                        filtered.append(timestamp)
                         seen_timestamps.add(timestamp)
-        except Exception as e:
-            self.log_warning(f"读取mtime.txt失败: {e}, 尝试重新生成")  # 降级为WARNING, 可自动恢复
-            if self.generate_mtime_file("读取失败后重新生成"):
-                # 重新尝试读取
-                try:
-                    with open(self.mtime_file, 'r') as f:
-                        raw_data = [line.strip() for line in f if line.strip().isdigit()]
-                        seen_timestamps = set()
-                        for timestamp_str in raw_data:
-                            timestamp = int(timestamp_str)
-                            if timestamp > 0 and timestamp not in seen_timestamps:
-                                historical_events.append(timestamp)
-                                seen_timestamps.add(timestamp)
-                    self.log_info("重新生成mtime.txt后读取成功")
-                except Exception as e2:
-                    self.log_warning(f"重新生成mtime.txt后仍无法读取: {e2}, 使用默认频率")  # 降级为WARNING
-                    frequency_sec = 7200
-                    next_check_timestamp = int(time.time()) + frequency_sec
-                    next_check_time = datetime.fromtimestamp(next_check_timestamp).strftime('%Y年%m月%d日 %H:%M:%S')
-                    self.log_info(f"WGMM调频 - 使用默认频率: 2小时 下次检查: {next_check_time}")  # 改为INFO
-                    self.save_next_check_time(next_check_timestamp)
-                    return
-        
-        # ==================== 数据质量检查：过滤离群点 ====================
+                return filtered
+            except Exception as e:
+                self.log_warning(f"读取历史文件失败 {filepath}: {e}")
+                return []
+
+        positive_events = load_history_file(self.mtime_file)
+        negative_events = load_miss_history()
+
+        # 数据质量检查
         def filter_outliers(timestamps, current_time):
-            """使用IQR方法过滤异常时间戳"""
             if len(timestamps) < 3:
                 return [ts for ts in timestamps if ts <= current_time]
-            
             sorted_ts = sorted(timestamps)
             intervals = [sorted_ts[i+1] - sorted_ts[i] for i in range(len(sorted_ts)-1)]
-            
             if not intervals:
                 return sorted_ts
-            
-            # 计算四分位数和IQR
             intervals_sorted = sorted(intervals)
-            q1_idx = len(intervals_sorted) // 4
-            q3_idx = (3 * len(intervals_sorted)) // 4
-            q1 = intervals_sorted[q1_idx]
-            q3 = intervals_sorted[q3_idx]
+            q1 = intervals_sorted[len(intervals_sorted) // 4]
+            q3 = intervals_sorted[(3 * len(intervals_sorted)) // 4]
             iqr = q3 - q1
-            
-            # 定义离群值边界 (使用3倍IQR, 比较宽松)
             lower_bound = q1 - 3 * iqr
             upper_bound = q3 + 3 * iqr
-            
-            # 过滤掉间隔异常的时间戳
             filtered = [sorted_ts[0]]
             for i in range(len(intervals)):
                 if lower_bound <= intervals[i] <= upper_bound:
                     filtered.append(sorted_ts[i+1])
-            
-            # 移除未来时间戳
             return [ts for ts in filtered if ts <= current_time]
-        
-        historical_events = filter_outliers(historical_events, current_timestamp)
-        
-        # ==================== 检查是否有足够的历史数据 ====================
-        if not historical_events:
-            self.log_warning("无有效历史数据, 尝试重新生成")
-            if self.generate_mtime_file("无有效数据重新生成"):
+
+        positive_events = filter_outliers(positive_events, current_timestamp)
+        negative_events = filter_outliers(negative_events, current_timestamp)
+
+        # 数据剪枝
+        def prune_old_data(events, last_lambda, threshold):
+            if not events or not os.path.exists(self.mtime_file if events is positive_events else miss_history_file):
+                return events
+            pruned = []
+            removed_count = 0
+            for timestamp in events:
+                age_hours = (current_timestamp - timestamp) / 3600.0
+                if age_hours < 0:
+                    continue
+                weight = math.exp(-last_lambda * age_hours)
+                if weight >= threshold:
+                    pruned.append(timestamp)
+                else:
+                    removed_count += 1
+            if removed_count > 0:
+                filepath = self.mtime_file if events is positive_events else miss_history_file
                 try:
-                    with open(self.mtime_file, 'r') as f:
-                        raw_data = [line.strip() for line in f if line.strip().isdigit()]
-                        seen_timestamps = set()
-                        for timestamp_str in raw_data:
-                            timestamp = int(timestamp_str)
-                            if timestamp > 0 and timestamp not in seen_timestamps:
-                                historical_events.append(timestamp)
-                                seen_timestamps.add(timestamp)
-                    historical_events = filter_outliers(historical_events, current_timestamp)
-                except Exception:
-                    pass
-                    
-            if not historical_events:
-                frequency_sec = 7200
-                next_check_timestamp = int(time.time()) + frequency_sec
-                next_check_time = datetime.fromtimestamp(next_check_timestamp).strftime('%Y年%m月%d日 %H:%M:%S')
-                self.log_info(f"WGMM调频 - 仍无有效历史数据, 使用默认频率: 2小时 下次检查: {next_check_time}")  # 改为INFO
-                self.save_next_check_time(next_check_timestamp)
-                return
-        
-        # 最小数据量检查：数据不足进入学习期
-        if len(historical_events) < MIN_HISTORY_COUNT:
-            self.log_info(f"历史数据不足({len(historical_events)}条), 进入学习期模式")  # 改为INFO, 正常学习阶段
-            frequency_sec = 3600  # 学习期使用1小时间隔
-            next_check_timestamp = int(time.time()) + frequency_sec
-            next_check_time = datetime.fromtimestamp(next_check_timestamp).strftime('%Y年%m月%d日 %H:%M:%S')
-            self.log_info(f"WGMM调频 - 学习期模式: 1小时 下次检查: {next_check_time}")
-            self.save_next_check_time(next_check_timestamp)
+                    with open(filepath, 'w') as f:
+                        for ts in pruned:
+                            f.write(f"{ts}\n")
+                except Exception as e:
+                    self.log_warning(f"数据剪枝失败: {e}")
+                    return events
+            return pruned
+
+        last_lambda = config.get('last_lambda', LAMBDA_BASE)
+        positive_events = prune_old_data(positive_events, last_lambda, WEIGHT_THRESHOLD)
+        negative_events = prune_old_data(negative_events, last_lambda, WEIGHT_THRESHOLD)
+
+        # 历史数据检查
+        def check_history_sufficient(events, name):
+            if not events:
+                # 无论正向还是负向,历史数据不足都是正常程序设计阶段或初始状态,无需警告
+                return False
+            if len(events) < MIN_HISTORY_COUNT:
+                self.log_info(f"{name}正向数据不足({len(events)}条)")
+                return False
+            return True
+
+        pos_sufficient = check_history_sufficient(positive_events, "正向")
+        neg_sufficient = check_history_sufficient(negative_events, "负向")
+
+        if not pos_sufficient:
+            self.log_info("正向数据不足, 进入学习期模式")
+            if not os.path.exists(self.mtime_file):
+                self.generate_mtime_file("学习期数据不足")
+            self.save_next_check_time(int(time.time()) + 3600)
+            if is_manual_run:
+                config['is_manual_run'] = False
+                save_config(config)
             return
-        
-        # ==================== 计算历史统计信息 ====================
+
         def calculate_interval_stats(timestamps):
-            """计算历史间隔的均值和方差"""
             sorted_ts = sorted(timestamps)
             if len(sorted_ts) < 2:
                 return DEFAULT_INTERVAL, 0
-            
             intervals = [sorted_ts[i+1] - sorted_ts[i] for i in range(len(sorted_ts)-1)]
             mean_interval = sum(intervals) / len(intervals)
             variance = sum((x - mean_interval) ** 2 for x in intervals) / len(intervals)
-            
             return int(mean_interval), variance
-        
-        BASE_INTERVAL, interval_variance = calculate_interval_stats(historical_events)
-        
-        # ==================== 控制论优化 2: 方差变化趋势分析 (PID-D 项)====================
-        # 目标：不仅看"当前方差大小"，更要看"方差变化方向"
-        # 原理：实现 PID 控制的微分项(D)，预判规律演变趋势
-        
-        last_variance = config.get('last_variance', 0.0)
-        if last_variance > 0:
-            # 计算方差变化率 (标准化，以上次方差为基准)
-            variance_trend = interval_variance - last_variance
-            variance_trend_normalized = variance_trend / last_variance
-        else:
-            variance_trend = 0.0
-            variance_trend_normalized = 0.0
-        
-        # 持久化当前方差，供下次使用
-        config['last_variance'] = interval_variance
-        config['variance_trend'] = variance_trend
-        
-        # ==================== 自适应调整衰减率 (融入方差趋势信号)====================
-        def calculate_adaptive_lambda(variance, variance_trend_norm):
-            """根据方差和方差趋势自适应调整时间衰减率
-            
-            **控制论优化**: 融入 PID 控制的微分项 (D-term)
-            
-            传统方法 (仅 P 项)：
-                仅看当前方差 → 方差大 = 不规律 → 高衰减率
-            
-            优化方法 (P + D 项)：
-                情况 A: 方差减小 (负趋势)→ 规律正在形成 → 降低衰减率 (信任模型)
-                情况 B: 方差增大 (正趋势)→ 规律正在崩塌 → 提高衰减率 (怀疑模型)
-            
-            Args:
-                variance: 当前方差值 (绝对值)
-                variance_trend_norm: 标准化的方差变化率 (相对值，-1 到 1)
-            
-            Returns:
-                自适应时间衰减率 λ ∈ [LAMBDA_MIN, LAMBDA_MAX]
-            """
-            # 基于当前方差的基础衰减率 (P 项)
-            normalized_variance = variance / (86400 ** 2)
-            
-            if normalized_variance > 0:
-                lambda_factor = math.log(1 + normalized_variance * 10) / math.log(11)
-            else:
-                lambda_factor = 0
-            
+
+        BASE_INTERVAL, pos_interval_variance = calculate_interval_stats(positive_events)
+        neg_interval_variance = calculate_interval_stats(negative_events)[1] if neg_sufficient else 0.0
+
+        def _calculate_adaptive_lambda(timestamps, last_variance) -> tuple[float, float]:
+            if len(timestamps) < 2:
+                return LAMBDA_BASE, 0.0
+            sorted_ts = sorted(timestamps)
+            intervals = [sorted_ts[i+1] - sorted_ts[i] for i in range(len(sorted_ts)-1)]
+            current_variance = sum((x - sum(intervals)/len(intervals)) ** 2 for x in intervals) / len(intervals)
+            variance_trend_normalized = (current_variance - last_variance) / last_variance if last_variance > 0 else 0.0
+            normalized_variance = current_variance / (86400 ** 2)
+            lambda_factor = math.log(1 + normalized_variance * 10) / math.log(11) if normalized_variance > 0 else 0
             base_adaptive_lambda = LAMBDA_MIN + (LAMBDA_MAX - LAMBDA_MIN) * lambda_factor
-            
-            # 基于方差趋势的修正量 (D 项)
-            # 修正幅度：基础衰减率的 ±30%
-            trend_correction = variance_trend_norm * 0.3 * base_adaptive_lambda
-            
-            # 合成最终衰减率并限制在合理范围
+            trend_correction = variance_trend_normalized * 0.3 * base_adaptive_lambda
             adaptive_lambda = base_adaptive_lambda + trend_correction
-            adaptive_lambda = max(LAMBDA_MIN, min(LAMBDA_MAX, adaptive_lambda))
-            
-            return adaptive_lambda
-        
-        LAMBDA = calculate_adaptive_lambda(interval_variance, variance_trend_normalized)
-        
-        # ==================== ISO标准月内周数计算 ====================
+            return max(LAMBDA_MIN, min(LAMBDA_MAX, adaptive_lambda)), current_variance
+
+        # 双向参数计算
+        last_pos_variance = config.get('last_pos_variance', 0.0)
+        pos_lambda, pos_current_variance = _calculate_adaptive_lambda(positive_events, last_pos_variance)
+        last_neg_variance = config.get('last_neg_variance', 0.0)
+        neg_lambda, neg_current_variance = _calculate_adaptive_lambda(negative_events, last_neg_variance) if neg_sufficient else (pos_lambda, 0.0)
+
+        # ISO标准月内周数计算
         def get_week_of_month(dt):
-            """使用ISO标准计算月内第几周 (1-6)"""
             month_calendar = calendar.monthcalendar(dt.year, dt.month)
-            
-            # 找到当前日期在第几周
             for week_num, week in enumerate(month_calendar, 1):
                 if dt.day in week:
                     return week_num
-            
-            return 1  # 默认返回第1周
-        
-        # ==================== 自动学习维度权重 ====================
+            return 1
+
+        # 维度权重学习
         def calculate_dimension_strength(timestamps, dimension):
-            """计算单个维度的周期性强度
-            
-            通过分析历史数据在该维度上的分布集中度来评估周期性
-            集中度越高, 说明该维度的周期性越强
-            """
             counts = defaultdict(int)
-            
             for ts in timestamps:
                 dt = datetime.fromtimestamp(ts)
-                
-                match dimension:
-                    case 'day':
-                        key = dt.hour  # 按小时分组
-                    case 'week':
-                        key = dt.weekday()  # 按星期几分组
-                    case 'month_week':
-                        key = get_week_of_month(dt)  # 按月内第几周分组
-                    case 'year_month':
-                        key = dt.month  # 按月份分组
-                    case _:
-                        continue
-                
+                if dimension == 'day':
+                    key = dt.hour
+                elif dimension == 'week':
+                    key = dt.weekday()
+                elif dimension == 'month_week':
+                    key = get_week_of_month(dt)
+                elif dimension == 'year_month':
+                    key = dt.month
+                else:
+                    continue
                 counts[key] += 1
-            
             if not counts:
                 return 0.0
-            
-            # 计算分布的集中度 (使用变异系数的倒数)
             values = list(counts.values())
             mean_val = sum(values) / len(values)
-            
             if mean_val == 0:
                 return 0.0
-            
             variance = sum((x - mean_val) ** 2 for x in values) / len(values)
             std_dev = math.sqrt(variance)
-            
-            # 标准差越小, 周期性越强
-            # 使用 mean/std 作为强度指标
-            if std_dev > 0:
-                strength = mean_val / std_dev
-            else:
-                strength = mean_val
-            
-            return strength
-        
+            return mean_val / std_dev if std_dev > 0 else mean_val
+
         def learn_dimension_weights(timestamps, old_weights):
-            """根据历史数据自动学习各维度的最优权重"""
             if len(timestamps) < 20:
-                # 数据不足, 使用当前权重
                 return old_weights
-            
-            # 计算各维度的周期性强度
             dimension_scores = {
                 'day': calculate_dimension_strength(timestamps, 'day'),
                 'week': calculate_dimension_strength(timestamps, 'week'),
                 'month_week': calculate_dimension_strength(timestamps, 'month_week'),
                 'year_month': calculate_dimension_strength(timestamps, 'year_month')
             }
-            
-            # 标准化为权重 (总和约为2.0)
             total_score = sum(dimension_scores.values())
             if total_score > 0:
                 new_weights = {k: v / total_score * 2.0 for k, v in dimension_scores.items()}
             else:
                 new_weights = old_weights
-            
-            # 与历史权重平滑融合 (避免剧烈变化)
             smoothed_weights = {}
             for key in new_weights:
                 smoothed_weights[key] = old_weights[key] * (1 - LEARNING_RATE) + new_weights[key] * LEARNING_RATE
-            
             return smoothed_weights
-        
-        # 学习并更新维度权重
-        dimension_weights = learn_dimension_weights(historical_events, dimension_weights_from_config)
-        
-        # ==================== 计算当前时间的周期性特征 ====================
-        # 基础时间信息
-        current_second_of_day = current_dt.hour * 3600 + current_dt.minute * 60 + current_dt.second
-        current_second_of_week = (current_dt.weekday() * SECONDS_IN_DAY) + current_second_of_day
-        current_week_of_month = get_week_of_month(current_dt)
-        current_month_of_year = current_dt.month
-        
-        # 日内周期特征 (24小时循环)
-        current_day_sin = math.sin(2 * math.pi * current_second_of_day / SECONDS_IN_DAY)
-        current_day_cos = math.cos(2 * math.pi * current_second_of_day / SECONDS_IN_DAY)
-        
-        # 周内周期特征 (7天循环)
-        current_week_sin = math.sin(2 * math.pi * current_second_of_week / SECONDS_IN_WEEK)
-        current_week_cos = math.cos(2 * math.pi * current_second_of_week / SECONDS_IN_WEEK)
-        
-        # 月内周数特征 (最多6周循环)
-        current_month_week_sin = math.sin(2 * math.pi * current_week_of_month / 6)
-        current_month_week_cos = math.cos(2 * math.pi * current_week_of_month / 6)
-        
-        # 年内月份特征 (12个月循环)
-        current_year_month_sin = math.sin(2 * math.pi * current_month_of_year / 12)
-        current_year_month_cos = math.cos(2 * math.pi * current_month_of_year / 12)
-        
-        # ==================== 计算WGMM热力得分 ====================
-        total_score = 0.0
-        valid_events = 0
-        scores = []  # 记录所有单个得分用于后续标准化
-        
-        for event_timestamp in historical_events:
-            try:
-                # 计算事件年龄 (小时)
-                age_hours = (current_timestamp - event_timestamp) / 3600.0
-                if age_hours < 0:  # 跳过未来时间戳 (理论上已被过滤)
-                    continue
-                
-                # 计算时间衰减权重 (越久远权重越低)
-                weight = math.exp(-LAMBDA * age_hours)
-                
-                # ==================== 计算历史事件的周期性特征 ====================
-                event_dt = datetime.fromtimestamp(event_timestamp)
-                event_second_of_day = event_dt.hour * 3600 + event_dt.minute * 60 + event_dt.second
-                event_second_of_week = (event_dt.weekday() * SECONDS_IN_DAY) + event_second_of_day
-                event_week_of_month = get_week_of_month(event_dt)
-                event_month_of_year = event_dt.month
-                
-                # 日内周期特征
-                event_day_sin = math.sin(2 * math.pi * event_second_of_day / SECONDS_IN_DAY)
-                event_day_cos = math.cos(2 * math.pi * event_second_of_day / SECONDS_IN_DAY)
-                
-                # 周内周期特征
-                event_week_sin = math.sin(2 * math.pi * event_second_of_week / SECONDS_IN_WEEK)
-                event_week_cos = math.cos(2 * math.pi * event_second_of_week / SECONDS_IN_WEEK)
-                
-                # 月内周数特征
-                event_month_week_sin = math.sin(2 * math.pi * event_week_of_month / 6)
-                event_month_week_cos = math.cos(2 * math.pi * event_week_of_month / 6)
-                
-                # 年内月份特征
-                event_year_month_sin = math.sin(2 * math.pi * event_month_of_year / 12)
-                event_year_month_cos = math.cos(2 * math.pi * event_month_of_year / 12)
-                
-                # ==================== 计算各维度的高斯相似度 ====================
-                # 日内周期距离和高斯值
-                day_dist_sq = ((current_day_sin - event_day_sin) ** 2 + 
-                              (current_day_cos - event_day_cos) ** 2)
-                day_gaussian = math.exp(-day_dist_sq / (2 * SIGMA_DAY ** 2))
-                
-                # 周内周期距离和高斯值
-                week_dist_sq = ((current_week_sin - event_week_sin) ** 2 + 
-                               (current_week_cos - event_week_cos) ** 2)
-                week_gaussian = math.exp(-week_dist_sq / (2 * SIGMA_WEEK ** 2))
-                
-                # 月内周数距离和高斯值
-                month_week_dist_sq = ((current_month_week_sin - event_month_week_sin) ** 2 + 
-                                     (current_month_week_cos - event_month_week_cos) ** 2)
-                month_week_gaussian = math.exp(-month_week_dist_sq / (2 * SIGMA_MONTH_WEEK ** 2))
-                
-                # 年内月份距离和高斯值
-                year_month_dist_sq = ((current_year_month_sin - event_year_month_sin) ** 2 + 
-                                     (current_year_month_cos - event_year_month_cos) ** 2)
-                year_month_gaussian = math.exp(-year_month_dist_sq / (2 * SIGMA_YEAR_MONTH ** 2))
-                
-                # ==================== 使用学习到的权重组合各维度 ====================
-                combined_gaussian = (dimension_weights['day'] * day_gaussian + 
-                                    dimension_weights['week'] * week_gaussian + 
-                                    dimension_weights['month_week'] * month_week_gaussian + 
-                                    dimension_weights['year_month'] * year_month_gaussian)
-                
-                # 计算最终得分：时间衰减权重 × 周期性相似度
-                score = weight * combined_gaussian
-                total_score += score
-                scores.append(score)
-                valid_events += 1
-                
-            except (ValueError, OSError) as e:
-                # 跳过异常数据点
-                continue
-        
-        # ==================== 处理无有效事件的情况 ====================
-        if valid_events == 0:
-            frequency_sec = 7200
-            next_check_timestamp = int(time.time()) + frequency_sec
-            next_check_time = datetime.fromtimestamp(next_check_timestamp).strftime('%Y年%m月%d日 %H:%M:%S')
-            self.log_info(f"WGMM调频 - 无有效历史事件, 使用默认频率: 2小时 下次检查: {next_check_time}")  # 改为INFO
-            self.save_next_check_time(next_check_timestamp)
-            return
-        
-        # ==================== 使用Min-Max方法标准化得分 ====================
-        if len(scores) > 0:
-            min_score = min(scores)
-            max_score = max(scores)
-            
-            # 如果所有得分相同, 使用中间值
-            if max_score > min_score:
-                normalized_score = (total_score / valid_events - min_score) / (max_score - min_score)
+
+        dimension_weights = learn_dimension_weights(positive_events, dimension_weights_from_config)
+
+        # 纯计算方法：单点得分计算
+        def _calculate_point_score(target_timestamp, pos_events, neg_events, dimension_weights, pos_lambda, neg_lambda) -> float:
+            target_dt = datetime.fromtimestamp(target_timestamp)
+            current_second_of_day = target_dt.hour * 3600 + target_dt.minute * 60 + target_dt.second
+            current_second_of_week = (target_dt.weekday() * SECONDS_IN_DAY) + current_second_of_day
+            current_week_of_month = get_week_of_month(target_dt)
+            current_month_of_year = target_dt.month
+
+            current_day_sin = math.sin(2 * math.pi * current_second_of_day / SECONDS_IN_DAY)
+            current_day_cos = math.cos(2 * math.pi * current_second_of_day / SECONDS_IN_DAY)
+            current_week_sin = math.sin(2 * math.pi * current_second_of_week / SECONDS_IN_WEEK)
+            current_week_cos = math.cos(2 * math.pi * current_second_of_week / SECONDS_IN_WEEK)
+            current_month_week_sin = math.sin(2 * math.pi * current_week_of_month / 6)
+            current_month_week_cos = math.cos(2 * math.pi * current_week_of_month / 6)
+            current_year_month_sin = math.sin(2 * math.pi * current_month_of_year / 12)
+            current_year_month_cos = math.cos(2 * math.pi * current_month_of_year / 12)
+
+            def calculate_source_score(events, lambda_decay):
+                if not events:
+                    return 0.0
+                total_score = 0.0
+                valid_events = 0
+                scores = []
+                for event_timestamp in events:
+                    try:
+                        age_hours = (target_timestamp - event_timestamp) / 3600.0
+                        if age_hours < 0:
+                            continue
+                        weight = math.exp(-lambda_decay * age_hours)
+                        event_dt = datetime.fromtimestamp(event_timestamp)
+                        event_second_of_day = event_dt.hour * 3600 + event_dt.minute * 60 + event_dt.second
+                        event_second_of_week = (event_dt.weekday() * SECONDS_IN_DAY) + event_second_of_day
+                        event_week_of_month = get_week_of_month(event_dt)
+                        event_month_of_year = event_dt.month
+
+                        event_day_sin = math.sin(2 * math.pi * event_second_of_day / SECONDS_IN_DAY)
+                        event_day_cos = math.cos(2 * math.pi * event_second_of_day / SECONDS_IN_DAY)
+                        event_week_sin = math.sin(2 * math.pi * event_second_of_week / SECONDS_IN_WEEK)
+                        event_week_cos = math.cos(2 * math.pi * event_second_of_week / SECONDS_IN_WEEK)
+                        event_month_week_sin = math.sin(2 * math.pi * event_week_of_month / 6)
+                        event_month_week_cos = math.cos(2 * math.pi * event_week_of_month / 6)
+                        event_year_month_sin = math.sin(2 * math.pi * event_month_of_year / 12)
+                        event_year_month_cos = math.cos(2 * math.pi * event_month_of_year / 12)
+
+                        day_dist_sq = ((current_day_sin - event_day_sin) ** 2 + (current_day_cos - event_day_cos) ** 2)
+                        day_gaussian = math.exp(-day_dist_sq / (2 * SIGMA_DAY ** 2))
+                        week_dist_sq = ((current_week_sin - event_week_sin) ** 2 + (current_week_cos - event_week_cos) ** 2)
+                        week_gaussian = math.exp(-week_dist_sq / (2 * SIGMA_WEEK ** 2))
+                        month_week_dist_sq = ((current_month_week_sin - event_month_week_sin) ** 2 + (current_month_week_cos - event_month_week_cos) ** 2)
+                        month_week_gaussian = math.exp(-month_week_dist_sq / (2 * SIGMA_MONTH_WEEK ** 2))
+                        year_month_dist_sq = ((current_year_month_sin - event_year_month_sin) ** 2 + (current_year_month_cos - event_year_month_cos) ** 2)
+                        year_month_gaussian = math.exp(-year_month_dist_sq / (2 * SIGMA_YEAR_MONTH ** 2))
+
+                        combined_gaussian = (dimension_weights['day'] * day_gaussian +
+                                           dimension_weights['week'] * week_gaussian +
+                                           dimension_weights['month_week'] * month_week_gaussian +
+                                           dimension_weights['year_month'] * year_month_gaussian)
+                        score = weight * combined_gaussian
+                        total_score += score
+                        scores.append(score)
+                        valid_events += 1
+                    except (ValueError, OSError):
+                        continue
+                if valid_events == 0:
+                    return 0.0
+                if len(scores) > 0:
+                    min_score = min(scores)
+                    max_score = max(scores)
+                    if max_score > min_score:
+                        normalized_score = (total_score / valid_events - min_score) / (max_score - min_score)
+                    else:
+                        normalized_score = 0.5
+                else:
+                    normalized_score = 0.5
+                return max(0.0, min(1.0, normalized_score))
+
+            pos_score = calculate_source_score(pos_events, pos_lambda)
+            neg_score = calculate_source_score(neg_events, neg_lambda) if neg_events else 0.0
+            final_score = pos_score - RESISTANCE_COEFFICIENT * neg_score
+            return max(0.0, min(1.0, final_score))
+
+        # 基础间隔计算和当前得分
+        BASE_INTERVAL, _ = calculate_interval_stats(positive_events)
+        current_score = _calculate_point_score(current_timestamp, positive_events, negative_events, dimension_weights, pos_lambda, neg_lambda)
+
+        # 非线性映射
+        exponential_score = current_score ** MAPPING_CURVE
+        base_interval_sec = BASE_INTERVAL - (BASE_INTERVAL - MAX_INTERVAL) * exponential_score
+        base_frequency_sec = int(max(MAX_INTERVAL, min(BASE_INTERVAL * 2, base_interval_sec)))
+
+        # 未来展望与唤醒校准
+        lookahead_seconds = LOOKAHEAD_DAYS * SECONDS_IN_DAY
+        lookahead_start = current_timestamp + base_frequency_sec
+        lookahead_end = current_timestamp + lookahead_seconds
+        gaussian_width = (SIGMA_DAY * SECONDS_IN_DAY / 24) * 2
+        min_step = gaussian_width * 0.5
+        max_step = gaussian_width * 4
+        scan_start = max(lookahead_start, current_timestamp + 600)
+
+        best_peak_time = None
+        best_peak_score = 0.0
+        scan_time = scan_start
+        last_score = current_score
+
+        while scan_time <= lookahead_end:
+            scan_score = _calculate_point_score(scan_time, positive_events, negative_events, dimension_weights, pos_lambda, neg_lambda)
+            gradient = scan_score - last_score
+            is_peak = False
+            if scan_time > scan_start:
+                if scan_score > last_score:
+                    next_scan = scan_time + min_step
+                    if next_scan <= lookahead_end:
+                        next_score = _calculate_point_score(next_scan, positive_events, negative_events, dimension_weights, pos_lambda, neg_lambda)
+                        if scan_score > next_score:
+                            is_peak = True
+            if is_peak and scan_score > best_peak_score:
+                best_peak_score = scan_score
+                best_peak_time = scan_time
+            if abs(gradient) < 0.01:
+                step = min(max_step, min_step * 3)
             else:
-                normalized_score = 0.5
-        else:
-            normalized_score = 0.5
-        
-        # 限制得分范围在[0, 1]之间
-        normalized_score = max(0.0, min(1.0, normalized_score))
-        
-        # ==================== 控制论优化 1: 应用反馈抑制惩罚 ====================
-        # 根据连续失败次数，强制降低热力得分
-        # 效果：在连续"预测失败"的时段，系统会自动降低检查频率
-        if inhibition_penalty > 0:
-            normalized_score = normalized_score * (1.0 - inhibition_penalty)
-        
-        # ==================== 非线性映射：得分转换为轮询间隔 ====================
-        # 使用指数曲线使高得分时更敏感
-        exponential_score = normalized_score ** MAPPING_CURVE
-        
-        # 线性插值：score=0时用BASE_INTERVAL, score=1时用MAX_INTERVAL
-        polling_interval_sec = BASE_INTERVAL - (BASE_INTERVAL - MAX_INTERVAL) * exponential_score
-        
-        # 应用边界限制：不能低于MAX_INTERVAL, 不能高于BASE_INTERVAL的2倍
-        base_frequency_sec = int(max(MAX_INTERVAL, min(BASE_INTERVAL * 2, polling_interval_sec)))
-        
-        # ==================== 控制论优化 3: 网络阻抗自适应阻尼 ====================
-        # 目标：检测网络拥堵或风控，自动降低请求频率，避免被封禁
-        # 原理：监控 yt-dlp 实际耗时，耗时异常时施加"冷却惩罚"
-        
+                step = min_step
+            if is_peak or (scan_score > 0.7 and abs(gradient) < 0.05):
+                step = min_step * 0.5
+            last_score = scan_score
+            scan_time += step
+
+        # 唤醒决策
+        final_frequency_sec = base_frequency_sec
+        if best_peak_time and best_peak_score > 0.6:
+            peak_interval = best_peak_time - current_timestamp
+            if peak_interval < base_frequency_sec * 1.2:
+                advanced_time = best_peak_time - (PEAK_ADVANCE_MINUTES * 60)
+                advanced_interval = advanced_time - current_timestamp
+                if advanced_interval > 300:
+                    final_frequency_sec = int(advanced_interval)
+                    # 峰值发现和提前唤醒逻辑正常执行，但不输出详细日志
+                # 其他情况保持基础间隔不变
+
+        # 网络阻抗阻尼
         impedance_factor = 1.0
         if self.last_ytdlp_duration > self.normal_ytdlp_duration * 2:
-            # 计算阻抗比率：实际耗时 / 正常耗时
             impedance_ratio = self.last_ytdlp_duration / max(self.normal_ytdlp_duration, 1.0)
-            # 阻尼系数：耗时越长，冷却越强 (上限 1.5 倍)
             impedance_factor = 1.0 + min(0.5, (impedance_ratio - 2.0) * 0.1)
-        
-        # 应用阻抗阻尼到最终检查频率
-        final_frequency_sec = int(base_frequency_sec * impedance_factor)
-        
-        # ==================== 保存下次检查时间 ====================
+        final_frequency_sec = int(final_frequency_sec * impedance_factor)
+
+        # 写入失败历史记录
+        if not found_new_content and not is_manual_run:
+            save_to_miss_history(current_timestamp)
+
+        # 保存配置和日志
         next_check_timestamp = int(time.time()) + final_frequency_sec
-        next_check_time = datetime.fromtimestamp(next_check_timestamp).strftime('%Y年%m月%d日 %H:%M:%S')
-        
         self.save_next_check_time(next_check_timestamp)
-        
-        # 保存更新后的配置
         config['dimension_weights'] = dimension_weights
-        config['last_lambda'] = LAMBDA
+        config['last_lambda'] = pos_lambda
+        config['last_pos_variance'] = pos_current_variance
+        config['last_neg_variance'] = neg_current_variance
         config['last_update'] = current_timestamp
         config['next_check_time'] = next_check_timestamp
         save_config(config)
-        
-        # ==================== 格式化并记录日志 ====================
-        # 将轮询间隔转换为天时分秒格式
+
+        # 格式化日志
         polling_days = final_frequency_sec // 86400
         polling_hours = (final_frequency_sec % 86400) // 3600
         polling_minutes = (final_frequency_sec % 3600) // 60
         polling_seconds = final_frequency_sec % 60
-        
-        # 构建轮询间隔时间格式字符串 (只显示非零的部分)
         polling_interval_parts = []
         if polling_days > 0:
             polling_interval_parts.append(f"{polling_days} 天")
@@ -1653,8 +1492,6 @@ class VideoMonitor:
         if polling_seconds > 0 or not polling_interval_parts:
             polling_interval_parts.append(f"{polling_seconds} 秒")
         polling_interval_str = " ".join(polling_interval_parts)
-
-        # 记录WGMM计算结果
         self.log_info(f"WGMM调频 - 轮询间隔: {polling_interval_str}")
 
     def run_yt_dlp(self, command_args: list[str], timeout: int = 300) -> tuple[bool, str, str]:
@@ -1714,7 +1551,7 @@ class VideoMonitor:
         """
         # 确保 memory_urls 有数据
         if not self.memory_urls:
-            self.log_warning("memory_urls 为空, 触发完整检查")
+            self.log_info("memory_urls 为空, 触发完整检查")
             return True
             
         success, stdout, stderr = self.run_yt_dlp([
@@ -1726,7 +1563,7 @@ class VideoMonitor:
         ])
         
         if not success or not stdout:
-            self.log_warning("快速检查失败, 触发完整检查")
+            self.log_info("快速检查失败, 触发完整检查")
             return True  # 失败时触发完整检查, 确保不漏检
             
         latest_id = stdout.strip()
@@ -1917,7 +1754,7 @@ class VideoMonitor:
                     frequency_sec = 24000  # 400 分钟 = 24000 秒
                     next_check_timestamp = current_timestamp + frequency_sec
                     wait_seconds = frequency_sec
-                    self.log_warning("等待时间出现负数, 使用默认 400 分钟间隔")
+                    self.log_info("等待时间出现负数, 使用默认 400 分钟间隔")
 
                     # 更新 next_check_time
                     self.save_next_check_time(next_check_timestamp)
@@ -2029,7 +1866,7 @@ class VideoMonitor:
             all_parts = self.get_all_videos_parallel(video_urls)
 
             if not all_parts:
-                self.log_warning("处理分片时出错, 错误已处理")
+                self.log_info("处理分片时出错, 错误已处理")
                 all_parts = video_urls  # 使用原始视频 URLs 作为后备
 
             # 4. 内存比对 - 使用两层检测逻辑
@@ -2070,7 +1907,7 @@ class VideoMonitor:
                     # 不记录成功通知日志, 避免日志过多
                     pass
                 else:
-                    self.log_warning("通知发送失败")
+                    self.log_critical_error("通知发送失败 - 无法向用户推送新视频通知", "notify_new_videos 方法", send_notification=False)
                 
                 # 只有真正的新视频才算"发现新内容"，影响惩罚机制
                 if truly_new_urls:
@@ -2079,15 +1916,13 @@ class VideoMonitor:
                     # Gist 缺失但本地已知，说明是重复检查，不算新内容
                     self.adjust_check_frequency(found_new_content=False)
             else:
-                self.log_info("完整检查未发现新内容")
+                # 没有发现新视频，说明可能的情况
                 if found_new_parts:
-                    # 分片检查发现了新内容
+                    self.log_info("完整检查未发现新视频 - 但发现新分片，已处理")
                     self.adjust_check_frequency(found_new_content=True)
-                    self.log_info("检查完成 - 仅发现新分片")
                 else:
-                    # 快速检查误报, 完整检查未确认
+                    self.log_info("完整检查未发现新内容 - 快速检查结果已确认，无更新")
                     self.adjust_check_frequency(found_new_content=False)
-                    self.log_info("检查完成 - 快速检查发现新内容但完整检查未确认")
 
             # 不写日志 - 视频检查完成
             self.cleanup_and_wait()
