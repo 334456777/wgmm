@@ -247,7 +247,6 @@ class VideoMonitor:
         # 保存已知 URL 状态到本地文件
         try:
             self.save_known_urls()
-            self.log_message("已保存 URL 状态到 local_known.txt")
         except Exception as e:
             self.log_message(f"保存 URL 状态失败: {e}")
         self.cleanup()
