@@ -4,11 +4,11 @@
 
 这是一个基于**加权高斯混合模型 (WGMM)** 的智能B站视频监控系统，采用先进的机器学习算法自动学习UP主的发布规律，实现自适应的智能监控频率调整。系统能够显著提高监控效率，减少不必要的网络请求，同时确保及时捕获新发布的视频。
 
-## ⚙️ 首次配置（必需）
+## ⚙️ 馅配置（仅需2个文件）
 
-### 🔐 环境变量配置
+**🎉 优势：只需要手动准备2个文件，其他所有文件程序会自动创建！**
 
-在运行程序前，您需要配置必要的环境变量：
+### 🔐 第一步：配置环境变量
 
 **1. 复制配置模板：**
 ```bash
@@ -29,6 +29,11 @@ GIST_ID=your_gist_id_here
 # 哔哩哔哩用户UID（要监控的UP主ID）
 BILIBILI_UID=your_bilibili_uid_here
 ```
+
+**⚠️ 安全提示：**
+- `.env` 文件已被 `.gitignore` 排除，不会被提交到 Git
+- 请勿将 `.env` 文件分享给他人
+- 定期更换 Token 以保证安全
 
 **3. 如何获取这些配置：**
 
@@ -52,14 +57,7 @@ BILIBILI_UID=your_bilibili_uid_here
   2. 从 URL 中获取 UID（如：`https://space.bilibili.com/123456789` 中的 `123456789`）
   3. 或在UP主主页点击"个人中心"查看 UID
 
-**⚠️ 安全提示：**
-- `.env` 文件已被 `.gitignore` 排除，不会被提交到 Git
-- 请勿将 `.env` 文件分享给他人
-- 定期更换 Token 以保证安全
-
-### 🍪 cookies.txt 配置
-
-除了环境变量，您还需要配置 Bilibili cookies：
+### 🍪 第二步：配置 cookies.txt
 
 **获取方法：**
 1. 在浏览器中登录 B站
@@ -72,6 +70,20 @@ BILIBILI_UID=your_bilibili_uid_here
 ```
 # Netscape HTTP Cookie File
 .bilibili.com	TRUE	/	FALSE	1234567890	cookie_name	cookie_value
+```
+
+### 🎉 第三步：启动程序（全自动）
+
+```bash
+# 就是这么简单！
+./monitor.sh start
+
+# 程序会自动创建：
+# ✅ local_known.txt - 本地已知URL列表
+# ✅ wgmm_config.json - WGMM算法状态
+# ✅ mtime.txt - 历史发布时间戳（首次运行）
+# ✅ urls.log - 主运行日志
+# ✅ critical_errors.log - 重大错误日志
 ```
 
 
@@ -115,7 +127,7 @@ BILIBILI_UID=your_bilibili_uid_here
 - **`known_urls` (本地持久层)**：包含所有已检测到的视频（已备份 + 待同步）
 - **防重复通知**：只有 `truly_new_urls`（不在 `known_urls` 中）才触发通知
 - **Gist延迟容错**：即使Gist未及时更新，也不会重复通知已检测到的视频
-- **本地持久化**：`local_known.txt` 保证程序重启后不丢失状态
+- **本地持久化**：`local_known.txt` 保证程序重启后不丢失状态 **🤖 自动创建和更新**
 
 ### 🔧 **企业级系统管理**
 - **自动历史数据生成**：首次运行时自动获取所有历史视频的发布时间戳
@@ -145,6 +157,7 @@ BILIBILI_UID=your_bilibili_uid_here
   > 自动生成和维护，纯文本格式（每行一个URL）
   > 包含所有已检测到的视频（含Gist已备份 + 待同步）
   > 防止程序重启后的重复通知，支持手动编辑同步
+  > 🤖 **自动创建时机**：程序启动时检查，Gist同步后立即保存，发现新视频时更新
   
 - **`urls.txt`** - Gist远程备份 **(已废弃本地存储)**
   > 仅作为GitHub Gist云端备份使用
@@ -173,25 +186,33 @@ BILIBILI_UID=your_bilibili_uid_here
 
 ### ⚡ 一键智能部署（推荐）
 
-无需任何预配置，系统将自动完成所有设置：
+**🎉 超级简单：只需要2个文件，其他全自动生成！**
 
 ```bash
-# 第一步：全面系统检查（可选但推荐）
+# 第一步：准备2个必需文件（仅需一次）
+cp .env.example .env              # 编辑填入你的配置
+# 从浏览器导出cookies.txt         # 保存到项目目录
+
+# 第二步：全面系统检查（可选但推荐）
 ./monitor.sh test
+# ✅ 检查2个必需文件是否存在
 # ✅ 检查Python环境、yt-dlp工具、网络连接
-# ✅ 验证cookies.txt文件有效性  
+# ✅ 验证cookies.txt文件有效性
 # ✅ 评估系统资源和磁盘空间
 
-# 第二步：智能启动监控系统
+# 第三步：智能启动监控系统
 ./monitor.sh start
 # 🤖 自动检测并创建Python虚拟环境
 # 📦 自动安装所有必需依赖包 (yt-dlp, requests等)
+# 🤖 自动创建 local_known.txt（本地状态）
+# 🤖 自动创建 wgmm_config.json（算法配置）
 # 📊 自动生成历史数据 (mtime.txt) 用于WGMM学习
 # 🧠 启动WGMM智能算法，开始预测最优检查频率
+# 📝 自动创建日志文件
 # 🔄 启动后台守护进程，持续监控
 
-# 第三步：查看系统运行状态
-./monitor.sh status  
+# 第四步：查看系统运行状态
+./monitor.sh status
 # 📈 显示WGMM算法当前预测状态
 # 🔥 显示当前时间点的热力得分
 # ⏰ 显示下次检查时间和间隔
@@ -520,14 +541,171 @@ project/
 
 ### 📂 核心文件说明
 
-| 文件 | 用途 | 是否需要手动配置 | 版本控制 |
-|------|------|-----------------|---------|
-| **`.env`** | 敏感凭据配置 | ✅ 必需 | ❌ 已排除 |
-| **`cookies.txt`** | B站登录凭证 | ✅ 必需 | ❌ 已排除 |
-| **`local_known.txt`** | 本地已知URL | ❌ 自动生成 | ❌ 已排除 |
-| **`wgmm_config.json`** | WGMM算法状态 | ❌ 自动生成 | ❌ 已排除 |
-| **`monitor.py`** | 主程序 | ❌ 无需修改 | ✅ 已纳入 |
-| **`requirements.txt`** | Python依赖 | ❌ 无需修改 | ✅ 已纳入 |
+| 文件 | 用途 | 是否需要手动配置 | 版本控制 | 自动生成时机 |
+|------|------|-----------------|---------|-------------|
+| **`.env`** | 敏感凭据配置 | ✅ 必需 | ❌ 已排除 | 需手动创建 |
+| **`cookies.txt`** | B站登录凭证 | ✅ 必需 | ❌ 已排除 | 需手动创建 |
+| **`local_known.txt`** | 本地已知URL | ❌ 自动生成 | ❌ 已排除 | 程序启动/同步Gist后 |
+| **`wgmm_config.json`** | WGMM算法状态 | ❌ 自动生成 | ❌ 已排除 | 首次运行时 |
+| **`mtime.txt`** | 历史发布时间戳 | ❌ 自动生成 | ❌ 已排除 | 首次运行时 |
+| **`urls.log`** | 主运行日志 | ❌ 自动创建 | ❌ 已排除 | 首次记录日志时 |
+| **`critical_errors.log`** | 重大错误日志 | ❌ 自动创建 | ❌ 已排除 | 首次记录错误时 |
+| **`monitor.py`** | 主程序 | ❌ 无需修改 | ✅ 已纳入 | - |
+| **`requirements.txt`** | Python依赖 | ❌ 无需修改 | ✅ 已纳入 | - |
+
+## 🤖 文件自动生成机制
+
+### 📋 必需 vs 可自动生成文件
+
+**程序运行只需要两个手动文件：**
+1. **`.env`** - 环境变量配置（**必需**）
+2. **`cookies.txt`** - Bilibili登录凭证（**必需**）
+
+**其他所有文件都可以自动生成！**
+
+### 🔧 自动创建流程
+
+#### 首次运行时自动创建
+```bash
+程序启动
+    ↓
+检查 .env（必需，需手动创建）
+    ↓
+检查 cookies.txt（必需，需手动创建）
+    ↓
+初始化时创建 local_known.txt（如果不存在）
+    ↓
+第一次同步 Gist → 自动填充 local_known.txt
+    ↓
+需要时自动生成：
+- wgmm_config.json（WGMM算法配置）
+- mtime.txt（视频发布时间戳历史）
+- urls.log（主日志文件）
+- critical_errors.log（错误日志）
+- miss_history.txt（失败历史记录）
+```
+
+### 🎯 关键文件自动生成详解
+
+#### `local_known.txt` - 本地已知URL列表
+
+**自动生成机制：**
+1. **程序启动时**：`__init__()` 调用 `load_known_urls()`
+   - 如果文件不存在 → 创建空文件并保存
+   - 如果文件存在 → 读取内容到内存
+
+2. **Gist同步时**：`sync_urls_from_gist()`
+   - 从Gist获取URL列表 → 更新 `known_urls`
+   - **立即保存**到 `local_known.txt`
+
+3. **发现新视频时**：`run_monitor()`
+   - 更新 `known_urls` → **立即保存**到文件
+
+4. **程序退出时**：`signal_handler()`
+   - 通过 `save_known_urls()` 保存当前状态
+
+**文件格式：**
+```
+https://www.bilibili.com/video/BV123456789
+https://www.bilibili.com/video/BV987654321
+https://www.bilibili.com/video/BV111111111
+```
+
+#### `mtime.txt` - 历史发布时间戳
+
+**首次运行自动生成：**
+```python
+# 程序流程
+1. 检查 mtime.txt 是否存在
+2. 如果不存在，调用 generate_mtime_file()
+3. 使用 yt-dlp --write-info-json 获取所有视频元信息
+4. 提取 timestamp 或 upload_date 字段
+5. 按时间排序后写入 mtime.txt
+6. 最多重试3次，失败则发送CRITICAL通知
+```
+
+#### `wgmm_config.json` - WGMM算法状态
+
+**首次运行时自动生成：**
+```json
+{
+  "dimension_weights": {
+    "day": 0.5,
+    "week": 1.0,
+    "month_week": 0.3,
+    "year_month": 0.2
+  },
+  "last_lambda": 0.0001,
+  "last_pos_variance": 0.0,
+  "last_neg_variance": 0.0,
+  "last_update": 0,
+  "next_check_time": 0,
+  "is_manual_run": true
+}
+```
+
+### 🛡️ 自动化优势
+
+#### ✅ 零配置启动
+- 无需手动创建任何数据文件
+- 无需担心文件格式问题
+- 无需手动维护状态文件
+
+#### ✅ 智能容错
+```python
+# 文件缺失时的处理
+if not os.path.exists(file):
+    # 自动创建空文件或默认配置
+    self.create_default_file()
+
+# 文件损坏时的处理
+except Exception as e:
+    # 自动重试或重新生成
+    self.regenerate_file()
+```
+
+#### ✅ 状态持久化
+- 每次重要更新后立即保存
+- 程序退出时自动保存状态
+- 防止数据丢失和重复通知
+
+#### ✅ 安全管理
+- 敏感文件自动加入 `.gitignore`
+- 配置文件和日志文件不纳入版本控制
+- 本地状态独立管理，不影响团队协作
+
+### 🔍 首次运行示例
+
+```bash
+# 准备两个必需文件
+echo "GIST_ID=xxx" > .env
+echo "BARK_DEVICE_KEY=yyy" >> .env
+# ... 添加其他环境变量
+
+# 准备 cookies.txt
+# 从浏览器导出并保存
+
+# 启动程序
+./monitor.sh start
+
+# 程序会自动：
+# 1. 创建 local_known.txt（空文件）
+# 2. 同步 Gist → 填充 local_known.txt
+# 3. 创建 wgmm_config.json
+# 4. 创建 mtime.txt（首次运行时）
+# 5. 开始监控并创建日志文件
+```
+
+### 📊 依赖关系总结
+
+| 手动准备 | 自动生成 | 运行时创建 |
+|---------|---------|-----------|
+| .env ✅ | local_known.txt | urls.log |
+| cookies.txt ✅ | wgmm_config.json | critical_errors.log |
+| - | mtime.txt | miss_history.txt |
+| - | - | tmp_outputs/ |
+
+**结论：只需要准备2个文件，其他一切自动化！** 🎉
 
 ## 🎮 管理命令
 

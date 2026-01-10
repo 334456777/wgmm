@@ -228,21 +228,27 @@ class VideoMonitor:
 
     def signal_handler(self, signum: int, frame: FrameType | None) -> None:
         """系统信号处理器
-        
+
         处理 SIGTERM 和 SIGINT 信号, 确保程序能够优雅地退出。
         在退出前会清理临时文件和资源。
-        
+
         Args:
             signum: 接收到的信号编号
                    - SIGTERM (15): 终止信号
                    - SIGINT (2): 键盘中断 (Ctrl+C)
             frame: 当前的栈帧对象, 用于调试 (通常不使用)
-            
+
         Note:
             此方法被注册为信号处理器, 由操作系统在接收到信号时调用。
             调用 :meth:`cleanup` 清理资源后, 程序以状态码 0 退出。
         """
         self.log_message(f"收到信号 {signum}, 正在清理并退出...")
+        # 保存已知 URL 状态到本地文件
+        try:
+            self.save_known_urls()
+            self.log_message("已保存 URL 状态到 local_known.txt")
+        except Exception as e:
+            self.log_message(f"保存 URL 状态失败: {e}")
         self.cleanup()
         sys.exit(0)
 
@@ -1902,6 +1908,7 @@ class VideoMonitor:
                 
                 # 更新本地已知 URL 集合
                 self.known_urls.update(gist_missing_urls)
+                self.save_known_urls()  # 立即保存到本地文件
 
                 if self.notify_new_videos(link_count, has_new_parts=found_new_parts):
                     # 不记录成功通知日志, 避免日志过多
