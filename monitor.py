@@ -147,6 +147,7 @@ class VideoMonitor:
         self.wgmm_config_file: str = "wgmm_config.json"  # WGMM 算法配置文件
         self.local_known_file: str = "local_known.txt"  # 本地已知 URL 持久化文件
         self.mtime_file: str = "mtime.txt"  # 视频发布时间戳历史
+        self.miss_history_file: str = "miss_history.txt"  # 失败历史记录文件
         self.cookies_file: str = "cookies.txt"  # Bilibili 登录凭证
         self.tmp_outputs_dir: str = "tmp_outputs"  # 临时输出目录
         
@@ -1112,13 +1113,11 @@ class VideoMonitor:
         current_dt = datetime.fromtimestamp(current_timestamp)
         
         # 失败历史记录管理
-        miss_history_file = "miss_history.txt"
-
         def load_miss_history():
-            if not os.path.exists(miss_history_file):
+            if not os.path.exists(self.miss_history_file):
                 return []
             try:
-                with open(miss_history_file, 'r') as f:
+                with open(self.miss_history_file, 'r') as f:
                     return [int(line.strip()) for line in f if line.strip().isdigit()]
             except Exception as e:
                 self.log_warning(f"读取失败历史记录失败: {e}")
@@ -1128,9 +1127,9 @@ class VideoMonitor:
             if is_manual_run:
                 return
             try:
-                with open(miss_history_file, 'a') as f:
+                with open(self.miss_history_file, 'a') as f:
                     f.write(f"{timestamp}\n")
-                self.limit_file_lines(miss_history_file, 100000)
+                self.limit_file_lines(self.miss_history_file, 100000)
             except Exception as e:
                 self.log_warning(f"写入失败历史记录失败: {e}")
 
@@ -1184,7 +1183,7 @@ class VideoMonitor:
 
         # 数据剪枝
         def prune_old_data(events, last_lambda, threshold):
-            if not events or not os.path.exists(self.mtime_file if events is positive_events else miss_history_file):
+            if not events or not os.path.exists(self.mtime_file if events is positive_events else self.miss_history_file):
                 return events
             pruned = []
             removed_count = 0
@@ -1198,7 +1197,7 @@ class VideoMonitor:
                 else:
                     removed_count += 1
             if removed_count > 0:
-                filepath = self.mtime_file if events is positive_events else miss_history_file
+                filepath = self.mtime_file if events is positive_events else self.miss_history_file
                 try:
                     with open(filepath, 'w') as f:
                         for ts in pruned:
