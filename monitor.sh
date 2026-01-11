@@ -534,16 +534,6 @@ test_config() {
         echo "    提示: 创建 check_frequency.conf 文件并输入检查间隔(分钟)"
     fi
     
-    # 检查URLs文件
-    if [ -f "urls.txt" ]; then
-        URL_COUNT=$(grep -v '^#' "urls.txt" | grep -v '^$' | wc -l 2>/dev/null || echo "0")
-        echo "  ✓ URL列表: urls.txt ($URL_COUNT 个有效URL)"
-    else
-        echo "  ✗ URL列表: urls.txt (不存在)"
-        echo "    提示: 创建 urls.txt 文件并添加要监控的URL"
-        all_ok=false
-    fi
-    
     echo ""
     echo "2. Python环境检查:"
     
