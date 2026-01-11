@@ -93,6 +93,11 @@ class VideoMonitor:
         self.GIST_BASE_URL: str = "https://api.github.com/gists"
         self.BILIBILI_UID: str = os.getenv("BILIBILI_UID", "")
 
+        # ==================== Bark 推送通知配置 ====================
+        self.bark_device_key: str = os.getenv("BARK_DEVICE_KEY", "")
+        self.bark_base_url: str = "https://api.day.app"
+        self.bark_app_title: str = "菠萝视频备份"
+
         # 验证必要配置
         if not all([self.GIST_ID, self.GITHUB_TOKEN, self.BILIBILI_UID, self.bark_device_key]):
             print("Error: Missing required environment variables in .env", file=sys.stderr)
@@ -111,11 +116,6 @@ class VideoMonitor:
         self.miss_history_file: str = "miss_history.txt"  # 失败历史记录文件
         self.cookies_file: str = "cookies.txt"  # Bilibili 登录凭证
         self.tmp_outputs_dir: str = "tmp_outputs"  # 临时输出目录
-        
-        # ==================== Bark 推送通知配置 ====================
-        self.bark_device_key: str = os.getenv("BARK_DEVICE_KEY", "")
-        self.bark_base_url: str = "https://api.day.app"
-        self.bark_app_title: str = "菠萝视频备份"
         
         # ==================== 网络阻抗监控 ====================
         self.last_ytdlp_duration: float = 0.0  # yt-dlp耗时 (秒)
