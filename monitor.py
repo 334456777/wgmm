@@ -1,20 +1,21 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Bilibili 视频监控系统
-======================
+Bilibili视频监控系统
 
-基于智能频率调整的视频更新检测系统, 支持多层级检测策略。
+核心功能: 
+- 基于加权高斯混合模型的智能频率预测
+- 三层检测策略: 分片预检查 + 快速检查 + 完整检查
+- 双波源对抗机制: 正向得分 - 阻力系数 × 负向得分
+- 分级通知系统: Bark推送集成
 
-主要功能:
-    - 监控指定 Bilibili 用户空间的视频更新
-    - 使用 WGMM 算法智能调整检查频率
-    - 通过 Bark 推送通知新视频发现和系统异常
-    - 支持多分片视频的智能检测
+数据文件: 
+- mtime.txt: 正向事件 (视频发布时间戳)
+- miss_history.txt: 负向事件 (检测失败时间戳)
+- wgmm_config.json: 算法状态持久化
+- local_known.txt: 本地已知URL记录
 
-依赖:
-    - yt-dlp: 获取视频信息
-    - requests: API 调用
+依赖: yt-dlp, requests
 """
 
 import os
@@ -31,12 +32,12 @@ import signal
 from typing import TYPE_CHECKING, Any
 from types import FrameType
 
-# ==================== 加载环境变量 ====================
+# ==================== 环境配置 ====================
 def load_env_file(env_path: str = '.env') -> None:
-    """加载 .env 文件中的环境变量
-    
+    """从.env文件加载环境变量
+
     Args:
-        env_path: .env 文件路径，默认为当前目录的 .env
+        env_path: .env文件路径, 默认为当前目录
     """
     if not os.path.exists(env_path):
         return
@@ -45,59 +46,35 @@ def load_env_file(env_path: str = '.env') -> None:
         with open(env_path, 'r', encoding='utf-8') as f:
             for line in f:
                 line = line.strip()
-                # 跳过空行和注释
                 if not line or line.startswith('#'):
                     continue
-                # 解析 KEY=VALUE
                 if '=' in line:
                     key, value = line.split('=', 1)
                     key = key.strip()
                     value = value.strip()
-                    # 只在环境变量不存在时设置
                     if key and not os.getenv(key):
                         os.environ[key] = value
     except Exception as e:
         print(f"Warning: Failed to load .env file: {e}", file=sys.stderr)
 
-# 在导入后立即加载 .env
+# 在导入后加载 .env
 load_env_file()
 
 class VideoMonitor:
-    """Bilibili 视频监控系统主类
+    """Bilibili视频监控系统主类
 
-    该类实现了一个完整的视频更新监控系统, 包含以下核心功能：
+    核心机制: 
+    1. 多层级检测策略: 分片预检查 → 快速检查 → 完整检查
+    2. WGMM智能频率: 基于历史模式的自适应调整
+    3. 分级通知: Bark推送 (critical/timeSensitive/active/passive)
 
-    1. **多层级检测策略**:
-       - 分片预检查：检测已有多分片视频的新分片
-       - 快速检查：通过最新视频 ID 快速判断是否有更新
-       - 完整检查：获取所有视频链接并进行比对
+    属性说明: 
+    - memory_urls: Gist同步的已备份URL (内存化替代文件读写)
+    - known_urls: 本地已知URL集合 (双层管理机制)
+    - ytdlp耗时监控: 用于网络阻抗阻尼计算
 
-    2. **智能频率调整 (WGMM)**:
-       使用加权高斯混合模型算法, 根据历史发布时间模式
-       动态调整检查频率, 在活跃时段增加检查频率。
-
-    3. **分级通知系统**:
-       通过 Bark API 发送推送通知, 支持不同优先级：
-       - critical: 严重错误, 强制响铃
-       - timeSensitive: 时效性通知, 可突破专注模式
-       - active: 普通通知
-       - passive: 静默通知
-
-    Attributes:
-        GIST_ID: GitHub Gist ID, 用于存储已备份的视频 URL 列表
-        GITHUB_TOKEN: GitHub API 访问令牌
-        BILIBILI_UID: Bilibili 用户 ID
-        memory_urls: 内存中缓存的已备份视频 URL 列表
-        known_urls: 本地已知的所有视频 URL 集合（包括已备份和待备份）
-        bark_device_key: Bark 推送服务的设备密钥
-        last_ytdlp_duration: 最后一次 yt-dlp 耗时 (秒)
-        normal_ytdlp_duration: 正常耗时基准 (秒)
-
-    Note:
-        运行前需要确保:
-        - yt-dlp 已安装并可用
-        - cookies.txt 文件包含有效的 Bilibili 登录凭证
-        - GitHub Token 具有 Gist 读取权限
+    运行要求: 
+    - yt-dlp可用 + cookies.txt有效 + GitHub Token具备Gist权限
     """
     
     # 类常量定义
@@ -106,40 +83,24 @@ class VideoMonitor:
     MAX_RETRY_ATTEMPTS: int = 3  # 最大重试次数
 
     def __init__(self) -> None:
-        """初始化视频监控系统实例
-        
-        执行以下初始化操作：
-        1. 配置 GitHub Gist API 访问参数
-        2. 初始化内存数据结构
-        3. 设置文件路径常量
-        4. 配置 Bark 推送通知参数
-        5. 初始化日志系统
-        6. 注册系统信号处理器
-        
-        Raises:
-            无直接异常, 但信号注册失败会导致程序无法优雅退出
+        """初始化监控系统
+
+        配置GitHub Gist、Bark通知、日志系统和信号处理器
         """
         # ==================== GitHub Gist 配置 ====================
-        # 用于存储和同步已备份视频的 URL 列表
         self.GIST_ID: str = os.getenv("GIST_ID", "")
         self.GITHUB_TOKEN: str = os.getenv("GITHUB_TOKEN", "")
         self.GIST_BASE_URL: str = "https://api.github.com/gists"
         self.BILIBILI_UID: str = os.getenv("BILIBILI_UID", "")
-        
-        # 验证必要的环境变量
-        if not self.GIST_ID or not self.GITHUB_TOKEN:
-            print("Error: Missing required environment variables. Please check your .env file.", file=sys.stderr)
-            print("Required: GIST_ID, GITHUB_TOKEN, BILIBILI_UID", file=sys.stderr)
-            sys.exit(1)
-        
-        if not self.BILIBILI_UID:
-            print("Error: Missing BILIBILI_UID in .env file.", file=sys.stderr)
+
+        # 验证必要配置
+        if not all([self.GIST_ID, self.GITHUB_TOKEN, self.BILIBILI_UID, self.bark_device_key]):
+            print("Error: Missing required environment variables in .env", file=sys.stderr)
             sys.exit(1)
 
         # ==================== 核心数据结构 ====================
-        # 内存化的 URL 列表, 替代文件读写提高性能
-        self.memory_urls: list[str] = []  # 从 Gist 同步的 URL 列表（代表已备份的视频）
-        self.known_urls: set[str] = set()  # 本地已知的所有 URL（包括 Gist 未同步的）
+        self.memory_urls: list[str] = []  # Gist同步的已备份URL
+        self.known_urls: set[str] = set()  # 本地已知URL (防止重复通知)
 
         # ==================== 文件路径配置 ====================
         self.log_file: str = "urls.log"  # 主日志文件
@@ -156,37 +117,22 @@ class VideoMonitor:
         self.bark_base_url: str = "https://api.day.app"
         self.bark_app_title: str = "菠萝视频备份"
         
-        # 验证 Bark 配置
-        if not self.bark_device_key:
-            print("Error: Missing BARK_DEVICE_KEY in .env file.", file=sys.stderr)
-            sys.exit(1)
-        
-        # ==================== 控制论优化：运行时性能监控 ====================
-        # 捕获 yt-dlp 实际运行耗时,作为网络环境健康度指标
-        # 用于实现循环阻尼(Loop Damping),防止在网络拥堵时过度请求
-        self.last_ytdlp_duration: float = 0.0  # 最后一次 yt-dlp 耗时 (秒)
-        self.normal_ytdlp_duration: float = 30.0  # 正常耗时基准 (秒,通过移动平均自适应)
-        
+        # ==================== 网络阻抗监控 ====================
+        self.last_ytdlp_duration: float = 0.0  # yt-dlp耗时 (秒)
+        self.normal_ytdlp_duration: float = 60.0  # 正常耗时基准 (移动平均)
+
         # ==================== 初始化子系统 ====================
         self.setup_logging()
-        self.load_known_urls()  # 加载本地已知 URL
-        
-        # ==================== 注册信号处理器 ====================
-        # 确保程序能够优雅地响应终止信号
+        self.load_known_urls()
+
+        # ==================== 信号处理器 ====================
         signal.signal(signal.SIGTERM, self.signal_handler)
         signal.signal(signal.SIGINT, self.signal_handler)
 
     def setup_logging(self) -> None:
         """配置日志系统
-        
-        初始化 Python 标准 logging 模块, 设置统一的日志格式和级别。
-        日志同时输出到控制台和文件。
-        
-        日志格式: ``YYYY-MM-DD HH:MM:SS - 消息内容``
-        
-        Note:
-            此方法仅初始化 logging 模块, 实际的日志写入
-            由 :meth:`log_message` 方法处理。
+
+        初始化Python logging模块, 统一日志格式和级别
         """
         logging.basicConfig(
             level=logging.INFO,
@@ -196,55 +142,36 @@ class VideoMonitor:
         self.logger: logging.Logger = logging.getLogger(__name__)
 
     def load_known_urls(self) -> None:
-        """从本地文件加载已知 URL 集合
-        
-        读取 local_known.txt 文件，恢复程序上次运行时的已知 URL 状态。
-        如果文件不存在，将自动创建空文件。
-        """
+        """从本地文件加载已知URL集合"""
         try:
             if os.path.exists(self.local_known_file):
                 with open(self.local_known_file, 'r', encoding='utf-8') as f:
-                    # 纯文本格式：每行一个 URL
                     self.known_urls = set(line.strip() for line in f if line.strip())
             else:
-                # 文件不存在，创建初始空文件
                 self.known_urls = set()
                 self.save_known_urls()
         except Exception as e:
-            self.log_warning(f"加载本地已知 URL 失败: {e}，将使用空集合")
+            self.log_warning(f"加载本地已知 URL 失败: {e}, 将使用空集合")
             self.known_urls = set()
 
     def save_known_urls(self) -> None:
-        """保存已知 URL 集合到本地文件
-        
-        将当前的 known_urls 集合持久化到 local_known.txt 文件，
-        以便程序重启后能够恢复状态。使用纯文本格式，每行一个 URL。
-        """
+        """保存已知URL集合到本地文件"""
         try:
             with open(self.local_known_file, 'w', encoding='utf-8') as f:
-                # 保存为纯文本格式，每行一个 URL（按字典序排序便于查看和对比）
                 f.write('\n'.join(sorted(self.known_urls)))
         except Exception as e:
-            self.log_critical_error(f"保存本地已知 URL 失败: {e}", "save_known_urls 方法", send_notification=False)
+            self.log_critical_error(f"保存本地已知 URL 失败: {e}", "save_known_urls", send_notification=False)
 
     def signal_handler(self, signum: int, frame: FrameType | None) -> None:
         """系统信号处理器
 
-        处理 SIGTERM 和 SIGINT 信号, 确保程序能够优雅地退出。
-        在退出前会清理临时文件和资源。
+        处理SIGTERM和SIGINT信号, 确保程序优雅退出
 
         Args:
-            signum: 接收到的信号编号
-                   - SIGTERM (15): 终止信号
-                   - SIGINT (2): 键盘中断 (Ctrl+C)
-            frame: 当前的栈帧对象, 用于调试 (通常不使用)
-
-        Note:
-            此方法被注册为信号处理器, 由操作系统在接收到信号时调用。
-            调用 :meth:`cleanup` 清理资源后, 程序以状态码 0 退出。
+            signum: 信号编号 (SIGTERM=15, SIGINT=2)
+            frame: 栈帧对象 (调试用)
         """
         self.log_message(f"收到信号 {signum}, 正在清理并退出...")
-        # 保存已知 URL 状态到本地文件
         try:
             self.save_known_urls()
         except Exception as e:
@@ -255,17 +182,9 @@ class VideoMonitor:
     def log_message(self, message: str, level: str = 'INFO') -> None:
         """记录日志消息到文件和控制台
 
-        这是日志系统的核心方法, 所有日志记录最终都通过此方法执行。
-        日志会同时写入文件和输出到控制台, 并自动管理日志文件大小。
-
         Args:
             message: 日志消息内容
-            level: 日志级别, 可选值: 'INFO', 'WARNING', 'ERROR', 'CRITICAL'
-
-        日志格式: YYYY-MM-DD HH:MM:SS - LEVEL - 消息内容
-
-        Note:
-            日志文件会自动限制在 100,000 行以内, 超出时保留最新的日志。
+            level: 日志级别 (INFO/WARNING/ERROR/CRITICAL)
         """
         timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
         log_entry = f"{timestamp} - {level} - {message}\n"
@@ -277,54 +196,22 @@ class VideoMonitor:
         print(f"{timestamp} - {level} - {message}")
 
     def log_info(self, message: str) -> None:
-        """记录信息级别的日志
-        
-        用于记录正常运行状态和关键事件。
-        
-        Args:
-            message: 信息消息内容
-            
-        Example:
-            >>> self.log_info("检查开始")
-            >>> self.log_info(f"发现 {count} 个新视频")
-        """
+        """记录信息级别日志"""
         self.log_message(message, 'INFO')
 
     def log_warning(self, message: str) -> None:
-        """记录警告级别的日志
-        
-        警告表示预期内的异常情况, 程序可以自动降级处理。
-        不会触发 Bark 通知。
-        
-        Args:
-            message: 警告消息内容
-            
-        Example:
-            >>> self.log_warning("缓存文件不存在, 使用默认值")
-        """
+        """记录警告级别日志"""
         self.log_message(message, 'WARNING')
 
     def log_error(self, message: str, send_bark_notification: bool = True) -> None:
-        """记录错误日志并可选发送 Bark 推送通知
-        
-        记录 ERROR 级别的日志, 并根据参数决定是否发送 Bark 通知。
-        用于记录功能性错误, 这些错误通常不会导致程序崩溃。
-        
+        """记录错误日志并可选发送通知
+
         Args:
-            message: 错误消息内容
-            send_bark_notification: 是否发送 Bark 通知
-                                   - True: 发送通知 (默认)
-                                   - False: 仅记录日志
-                                   
-        Example:
-            >>> # 发送通知的错误
-            >>> self.log_error("API 请求失败")
-            >>> # 不发送通知的错误 (避免通知轰炸)
-            >>> self.log_error("缓存读取失败", send_bark_notification=False)
+            message: 错误消息
+            send_bark_notification: 是否发送Bark通知
         """
         self.log_message(message, 'ERROR')
-        
-        # 发送 Bark 通知
+
         if send_bark_notification:
             if self.notify_error(message):
                 timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
@@ -339,45 +226,32 @@ class VideoMonitor:
         context: str = "",
         send_notification: bool = True
     ) -> None:
-        """记录严重错误并发送 Bark 通知
-
-        这是最高级别的错误处理方法。除了记录到日志文件外,
-        还会发送 ``critical`` 级别的 Bark 通知。
+        """记录严重错误并发送通知
 
         Args:
-            message: 错误消息内容
-            context: 错误发生的上下文 (如方法名、阶段等)
-            send_notification: 是否发送 Bark 通知
-
-        Note:
-            - 错误会同时记录到 ``urls.log`` 和 ``critical_errors.log``
-            - 使用 ``critical`` 级别通知, 会忽略设备静音设置
+            message: 错误消息
+            context: 错误上下文 (方法名、阶段等)
+            send_notification: 是否发送critical级别通知
         """
         timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
         full_message = f"{message}"
         if context:
             full_message += f" [上下文: {context}]"
-            
-        # 记录到重大错误专用日志文件 (直接写入, 避免调用可能有问题的方法)
+
         try:
             critical_log_entry = f"{timestamp} - CRITICAL - {full_message}\n"
             with open(self.critical_log_file, 'a', encoding='utf-8') as f:
                 f.write(critical_log_entry)
-            
-            # 限制日志文件大小
             self._limit_critical_log_lines()
         except Exception as e:
-            # 日志写入失败时, 至少输出到控制台
             print(f"{timestamp} - CRITICAL - 无法写入重大错误日志: {e}")
             print(f"{timestamp} - CRITICAL - 原始错误: {full_message}")
-            
-        # 同时记录到常规日志
+
         try:
-            self.log_error(full_message, send_bark_notification=False)  # 避免重复通知
+            self.log_error(full_message, send_bark_notification=False)
         except Exception:
             print(f"{timestamp} - ERROR - {full_message}")
-            
-        # 发送 Bark 通知 (使用 critical 级别)
+
         if send_notification:
             if self.notify_critical_error(message, context):
                 print(f"{timestamp} - INFO - 重大错误通知已发送")
@@ -385,15 +259,10 @@ class VideoMonitor:
                 print(f"{timestamp} - WARNING - 重大错误通知发送失败")
 
     def _limit_critical_log_lines(self, max_lines: int = 20000) -> None:
-        """限制重大错误日志文件的行数 (内部方法)
-        
-        保持重大错误日志文件在合理大小范围内, 避免占用过多磁盘空间。
-        
+        """限制重大错误日志文件行数 (内部方法)
+
         Args:
-            max_lines: 最大保留行数, 默认 20,000 行
-            
-        Note:
-            此方法静默忽略所有错误, 避免在错误处理流程中产生无限递归。
+            max_lines: 最大保留行数
         """
         try:
             self.limit_file_lines(self.critical_log_file, max_lines)
@@ -403,41 +272,27 @@ class VideoMonitor:
 
     def limit_file_lines(self, filepath: str, max_lines: int) -> None:
         """限制指定文件的行数
-        
-        根据不同文件类型采用不同的日志轮转策略：
-        
-        - ``urls.log``: 保留前 2 行 (标题), 删除中间的旧日志
-        - ``critical_errors.log``: 保留第 1 行 (标题), 删除中间的旧日志  
-        - 其他文件: 保留最新的指定行数
-        
+
         Args:
-            filepath: 要限制的文件路径
+            filepath: 文件路径
             max_lines: 最大保留行数
-            
-        Raises:
-            此方法内部捕获所有异常并记录到重大错误日志。
         """
         try:
             if os.path.exists(filepath):
                 with open(filepath, 'r', encoding='utf-8') as f:
                     lines = f.readlines()
-                
+
                 if len(lines) > max_lines:
-                    # 根据文件类型确定保留策略
-                    if filepath == self.log_file:  # urls.log
-                        # 保留前2行 (注释和标题), 然后保留最新的 max_lines-2 行
+                    if filepath == self.log_file:
                         keep_lines = lines[:2] + lines[-(max_lines-2):]
-                    elif filepath == self.critical_log_file:  # critical_errors.log
-                        # 保留第1行 (注释), 然后保留最新的 max_lines-1 行
+                    elif filepath == self.critical_log_file:
                         keep_lines = lines[:1] + lines[-(max_lines-1):]
                     else:
-                        # 其他文件保留最新的指定行数
                         keep_lines = lines[-max_lines:]
-                    
+
                     with open(filepath, 'w', encoding='utf-8') as f:
                         f.writelines(keep_lines)
         except Exception as e:
-            # 记录到重大错误日志, 避免无限递归
             self.log_critical_error(f"限制文件行数时出错: {e}", f"文件: {filepath}", send_notification=False)
 
     def send_bark_push(
@@ -453,70 +308,51 @@ class VideoMonitor:
         call: bool = False,
         volume: int | None = None
     ) -> bool:
-        """发送 Bark 推送通知 (统一接口)
+        """发送Bark推送通知 (统一接口)
 
-        根据 Bark API v2.0 规范发送推送通知。所有通知方法的底层实现。
+        所有通知方法的底层实现, 基于Bark API v2.0规范
 
         Args:
             title: 通知标题
-            body: 通知正文内容
-            level: 通知优先级 - "active", "timeSensitive", "passive", "critical"
-            sound: 通知铃声名称
-            group: 通知分组名称
-            icon: 自定义图标的 URL
-            url: 点击通知后跳转的 URL
-            is_archive: 是否保存到 Bark 历史记录
-            call: 是否启用持续响铃模式 (30秒)
-            volume: 通知音量 (0-10), 仅在 critical 级别生效
+            body: 通知正文
+            level: 通知优先级 (active/timeSensitive/passive/critical)
+            sound: 铃声名称
+            group: 通知分组
+            url: 点击跳转链接
+            call: 是否持续响铃 (30秒)
 
         Returns:
-            bool: 发送是否成功 (服务器返回 200 状态码)
+            是否发送成功
         """
         import urllib.parse
         
         try:
-            # 构建基础URL: /device_key/title/body
             encoded_title = urllib.parse.quote(title)
             encoded_body = urllib.parse.quote(body)
             base_url = f"{self.bark_base_url}/{self.bark_device_key}/{encoded_title}/{encoded_body}"
-            
-            # 构建查询参数列表
+
             params = []
-            
-            # 通知级别 (active 是默认值, 不需要显式传递)
             if level and level != "active":
                 params.append(f"level={level}")
-            
-            # 声音相关参数
             if sound:
                 params.append(f"sound={urllib.parse.quote(sound)}")
             if call:
                 params.append("call=1")
             if volume is not None and level == "critical":
                 params.append(f"volume={volume}")
-            
-            # 通知分组
             if group:
                 params.append(f"group={urllib.parse.quote(group)}")
-            
-            # 自定义图标
             if icon:
                 params.append(f"icon={urllib.parse.quote(icon)}")
-            
-            # 点击跳转 URL
             if url:
                 params.append(f"url={urllib.parse.quote(url)}")
-            
-            # 保存到历史记录
             if is_archive:
                 params.append("isArchive=1")
-            
-            # 组装完整 URL
+
             full_url = f"{base_url}?{'&'.join(params)}" if params else base_url
-            
             response = requests.get(full_url, timeout=30)
             return response.status_code == 200
-            
+
         except Exception as e:
             timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
             print(f"{timestamp} - WARNING - Bark推送失败: {e}")
@@ -525,40 +361,20 @@ class VideoMonitor:
     def notify_new_videos(self, count: int, has_new_parts: bool = False) -> bool:
         """发送新视频发现通知
 
-        当检测到新视频时调用此方法发送推送通知。
-        使用 ``timeSensitive`` 级别, 可以突破 iOS 专注模式。
-
-        Args:
-            count: 发现的新视频数量
-            has_new_parts: 是否包含多分片视频的新分片
-
-        Returns:
-            bool: 发送是否成功
+        检测到新视频时发送推送, timeSensitive级别可突破专注模式。
         """
-        if has_new_parts:
-            body = f"发现 {count} 个新视频(含新分片)等待备份"
-        else:
-            body = f"发现 {count} 个新视频等待备份"
-        
+        body = f"发现 {count} 个新视频{'(含新分片)' if has_new_parts else ''}等待备份"
+
         return self.send_bark_push(
             title=self.bark_app_title,
             body=body,
-            level="timeSensitive",  # 时效性通知, 可突破专注模式
+            level="timeSensitive",
             sound="minuet",
             group="新视频"
         )
 
     def notify_error(self, message: str) -> bool:
-        """发送普通错误通知
-
-        用于通知一般性错误, 使用 ``active`` 级别。
-
-        Args:
-            message: 错误消息内容
-
-        Returns:
-            bool: 通知是否发送成功
-        """
+        """发送普通错误通知, active级别"""
         return self.send_bark_push(
             title=f"{self.bark_app_title} - 错误",
             body=message,
@@ -567,47 +383,21 @@ class VideoMonitor:
         )
 
     def notify_critical_error(self, message: str, context: str = "") -> bool:
-        """发送严重错误通知
+        """发送严重错误通知, critical级别, 忽略静音和持续响铃"""
+        body = message + (f" ({context})" if context else "")
 
-        用于通知系统级的严重错误, 使用 ``critical`` 级别。
-        此级别会忽略设备的静音和勿扰模式, 强制播放警报声。
-
-        Args:
-            message: 错误消息内容
-            context: 错误发生的上下文信息 (可选)
-
-        Returns:
-            bool: 通知是否发送成功
-
-        Note:
-            此方法会启用持续响铃模式 (30秒), 确保用户注意到通知。
-        """
-        body = message
-        if context:
-            body += f" ({context})"
-        
         return self.send_bark_push(
             title=f"⚠️ {self.bark_app_title} - 严重错误",
             body=body,
-            level="critical",  # 忽略静音和勿扰模式
+            level="critical",
             sound="alarm",
             volume=8,
-            call=True,  # 持续响铃 30 秒
+            call=True,
             group="严重错误"
         )
 
     def notify_service_issue(self, message: str) -> bool:
-        """发送服务异常通知
-
-        用于通知外部服务问题 (如 Gist 同步失败、API 超时等)。
-        使用 ``timeSensitive`` 级别, 可以突破专注模式但不会强制响铃。
-
-        Args:
-            message: 问题描述
-
-        Returns:
-            bool: 通知是否发送成功
-        """
+        """发送服务异常通知, timeSensitive级别"""
         return self.send_bark_push(
             title=f"{self.bark_app_title} - 服务异常",
             body=message,
@@ -616,21 +406,7 @@ class VideoMonitor:
         )
 
     def get_next_check_time(self) -> int:
-        """从 WGMM 配置文件读取下次检查时间戳
-        
-        从 ``wgmm_config.json`` 文件中读取预计算的下次检查时间。
-        该时间由 WGMM 算法根据历史数据模式计算得出。
-        
-        Returns:
-            下次检查的 Unix 时间戳 (秒)。
-            如果文件不存在或读取失败, 返回 0。
-            
-        Example:
-            >>> monitor = VideoMonitor()
-            >>> next_time = monitor.get_next_check_time()
-            >>> if next_time > 0:
-            ...     print(f"下次检查: {datetime.fromtimestamp(next_time)}")
-        """
+        """从 WGMM 配置文件读取下次检查时间戳"""
         try:
             if os.path.exists(self.wgmm_config_file):
                 with open(self.wgmm_config_file, 'r', encoding='utf-8') as f:
@@ -642,233 +418,129 @@ class VideoMonitor:
             return 0
 
     def save_next_check_time(self, next_check_timestamp: int) -> None:
-        """保存下次检查时间到配置文件
-        
-        将计算得出的下次检查时间戳持久化到 ``wgmm_config.json``, 
-        以便程序重启后能够恢复检查计划。
-        
-        Args:
-            next_check_timestamp: 下次检查的 Unix 时间戳 (秒)
-            
-        Note:
-            此方法会保留配置文件中的其他字段 (如维度权重等)。
-        """
+        """保存下次检查时间到配置文件"""
         try:
             # 读取现有配置, 保留其他字段
             config: dict[str, Any] = {}
             if os.path.exists(self.wgmm_config_file):
                 with open(self.wgmm_config_file, 'r', encoding='utf-8') as f:
                     config = json.load(f)
-            
-            # 更新 next_check_time 字段
+
+            # 更新并写回
             config['next_check_time'] = next_check_timestamp
-            
-            # 写回文件
             with open(self.wgmm_config_file, 'w', encoding='utf-8') as f:
                 json.dump(config, f, indent=2, ensure_ascii=False)
         except Exception as e:
             self.log_critical_error(f"保存next_check_time失败: {e}", "save_next_check_time 方法", send_notification=False)
 
     def sync_urls_from_gist(self) -> bool:
-        """从 GitHub Gist 下载内容并更新内存中的 URL 列表
-
-        使用 GitHub API 获取 Gist 内容, 并将其解析为 URL 列表存储在 ``self.memory_urls`` 中。
-        同时会将 Gist 中的 URL 加入到 ``self.known_urls`` 以保持双层 URL 管理的一致性。
-
-        Returns:
-            是否成功同步 URL 列表
-
-        Note:
-            - 验证 GIST_ID 和 GITHUB_TOKEN 必须存在
-            - 验证 Gist 必须只包含一个文件
-            - 失败时会发送 CRITICAL 级别错误通知
-            - 超时时间为 30 秒
-        """
-        # 验证必需的配置
+        """从 GitHub Gist 同步 URL 列表到内存和已知列表"""
         if not self.GIST_ID:
             self.log_critical_error("GIST_ID 未配置", "Gist 同步", send_notification=True)
             return False
-            
+
         if not self.GITHUB_TOKEN:
             self.log_critical_error("GITHUB_TOKEN 未配置", "Gist 同步", send_notification=True)
             return False
-        
-        headers = {
-            "Authorization": f"Bearer {self.GITHUB_TOKEN}",
-            "Accept": "application/vnd.github.v3+json",
-        }
+
+        headers = {"Authorization": f"Bearer {self.GITHUB_TOKEN}", "Accept": "application/vnd.github.v3+json"}
         url = f"{self.GIST_BASE_URL}/{self.GIST_ID}"
-        
+
         try:
-            response: requests.Response = requests.get(url, headers=headers, timeout=30)
+            response = requests.get(url, headers=headers, timeout=30)
             response.raise_for_status()
-            data: dict[str, Any] = response.json()
-            
-            files: dict[str, Any] = data.get("files", {})
-            
-            # 验证 Gist 必须只包含一个文件
-            file_count = len(files)
-            if file_count != 1:
-                self.log_critical_error(
-                    f"Gist 文件数量错误: 期望 1 个，实际 {file_count} 个",
-                    "Gist 同步验证",
-                    send_notification=True
-                )
+            data = response.json()
+            files = data.get("files", {})
+
+            if len(files) != 1:
+                self.log_critical_error(f"Gist 文件数量错误: 期望 1 个, 实际 {len(files)} 个", "Gist 同步验证", send_notification=True)
                 return False
-            
-            # 获取唯一的文件（不再验证文件名）
-            file_data: dict[str, Any] = next(iter(files.values()))
-            content: str = file_data.get("content", "")
-            
-            # 直接在内存中处理字符串, 分割成列表
+
+            content = next(iter(files.values())).get("content", "")
             self.memory_urls = [line.strip() for line in content.splitlines() if line.strip()]
-            
-            # 将 Gist 中的 URL 也加入 known_urls（这些是已备份的视频，应该标记为已知）
             self.known_urls.update(self.memory_urls)
-            self.save_known_urls()  # 立即保存
-            
+            self.save_known_urls()
             return True
-            
+
         except requests.exceptions.HTTPError as e:
-            self.log_critical_error(
-                f"Gist API 请求失败: HTTP {e.response.status_code}",
-                "Gist 同步",
-                send_notification=True
-            )
+            self.log_critical_error(f"Gist API 请求失败: HTTP {e.response.status_code}", "Gist 同步", send_notification=True)
             return False
         except Exception as e:
-            self.log_critical_error(
-                f"从 Gist 获取数据失败: {str(e)}",
-                "Gist 同步",
-                send_notification=True
-            )
+            self.log_critical_error(f"从 Gist 获取数据失败: {str(e)}", "Gist 同步", send_notification=True)
             return False
 
     def get_video_upload_time(self, video_url: str) -> int | None:
-        """获取视频的真实上传时间戳
-        
-        通过 yt-dlp 获取视频的元信息, 提取真实的上传时间戳。
-        
-        Args:
-            video_url: 视频的 URL 地址
-            
-        Returns:
-            视频的上传时间戳 (Unix timestamp), 获取失败时返回 None
-            
-        Note:
-            - 优先使用 timestamp 字段
-            - 其次使用 upload_date 字段 (格式 YYYYMMDD)
-            - 如果都无法获取, 返回 None
-        """
+        """获取视频的真实上传时间戳"""
         try:
-            # 使用 --print 获取时间戳和上传日期
             success, stdout, stderr = self.run_yt_dlp([
                 '--cookies', self.cookies_file,
                 '--print', '%(timestamp)s|%(upload_date)s',
                 '--no-download',
                 video_url
             ], timeout=60)
-            
+
             if not success or not stdout:
                 self.log_warning(f"获取视频上传时间失败: {video_url[:50]}...")
                 return None
-            
-            # 解析输出：timestamp|upload_date
+
             parts = stdout.strip().split('|')
-            
+
             # 优先使用 timestamp
             if len(parts) >= 1 and parts[0] and parts[0] != 'NA':
                 try:
                     return int(parts[0])
                 except ValueError:
                     pass
-            
-            # 其次使用 upload_date (格式: YYYYMMDD)
+
+            # 其次使用 upload_date
             if len(parts) >= 2 and parts[1] and parts[1] != 'NA':
                 try:
                     dt = datetime.strptime(parts[1], '%Y%m%d')
                     return int(dt.timestamp())
                 except ValueError:
                     pass
-            
+
             self.log_warning(f"无法解析视频上传时间: {stdout[:50]}")
             return None
-            
+
         except Exception as e:
             self.log_warning(f"获取视频上传时间异常: {e}")
             return None
 
     def save_real_upload_timestamps(self, new_urls: set[str]) -> None:
-        """保存新视频的真实上传时间戳
-
-        为每个新发现的视频获取其真实上传时间, 并追加到 mtime.txt。
-        这确保了 WGMM 算法使用的是视频实际发布时间, 而非检查发现时间。
-
-        Args:
-            new_urls: 新发现的视频 URL 集合
-
-        Note:
-            - 如果无法获取某个视频的上传时间, 会使用当前时间作为降级方案
-            - 如果 mtime.txt 不存在, 会尝试自动创建
-            - 获取到的时间戳会按升序排序后追加
-
-        See Also:
-            - ``get_video_upload_time()``: 获取单个视频的上传时间
-        """
+        """保存新视频的真实上传时间戳"""
         if not new_urls:
             return
-            
+
         # 确保 mtime.txt 存在
         if not os.path.exists(self.mtime_file):
             if not self.generate_mtime_file("save_real_upload_timestamps"):
                 self.log_warning("无法创建 mtime.txt, 仍然保存时间戳")
-        
+
         timestamps = []
         current_time = int(time.time())
-        
+
         for url in new_urls:
             upload_time = self.get_video_upload_time(url)
-            
             if upload_time:
                 timestamps.append(upload_time)
             else:
-                # 降级：无法获取真实时间时使用当前时间
                 self.log_warning(f"降级使用当前时间: {url[:50]}...")
                 timestamps.append(current_time)
-        
+
         if timestamps:
-            # 按时间排序后追加
             sorted_timestamps = sorted(timestamps)
-            
             with open(self.mtime_file, 'a') as f:
                 for ts in sorted_timestamps:
                     f.write(f"{ts}\n")
-            
             self.limit_file_lines(self.mtime_file, 100000)
 
     def create_mtime_from_info_json(self) -> bool:
-        """使用 yt-dlp 获取视频元信息创建 mtime.txt
-        
-        当 ``mtime.txt`` 不存在时, 通过 yt-dlp 的 ``--write-info-json`` 功能
-        获取所有视频的发布时间, 并将这些时间戳写入 ``mtime.txt`` 文件。
-        
-        Returns:
-            是否成功创建 ``mtime.txt`` 文件
-            
-        Note:
-            - 此操作可能需要较长时间 (最多 10 分钟超时)
-            - 临时文件存储在 ``temp_info_json`` 目录
-            - 操作完成后会自动清理临时目录
-            
-        See Also:
-            ``generate_mtime_file()``: 包装此方法的主入口
-        """
-        # 创建临时目录用于存储 info json 文件
+        """使用 yt-dlp 获取视频元信息创建 mtime.txt"""
         temp_info_dir = "temp_info_json"
         os.makedirs(temp_info_dir, exist_ok=True)
-        
+
         try:
-            # 使用 yt-dlp 获取所有视频的元信息
             success, stdout, stderr = self.run_yt_dlp([
                 '--cookies', self.cookies_file,
                 '--write-info-json',
@@ -876,76 +548,62 @@ class VideoMonitor:
                 '--restrict-filenames',
                 '--output', f'{temp_info_dir}/%(id)s.%(ext)s',
                 f'https://space.bilibili.com/{self.BILIBILI_UID}/video'
-            ], timeout=600)  # 增加超时时间到 10 分钟
-            
+            ], timeout=600)
+
             if not success:
-                self.log_warning(f"获取元信息失败: {stderr[:100]}")  # 降级为 WARNING, 会在 generate_mtime_file 中重试
+                self.log_warning(f"获取元信息失败: {stderr[:100]}")
                 return False
-                
-            # 收集所有 .info.json 文件中的上传时间戳
+
             timestamps = []
             info_files = []
-            
-            # 查找所有 .info.json 文件
+
             for root, dirs, files in os.walk(temp_info_dir):
                 for file in files:
                     if file.endswith('.info.json'):
                         info_files.append(os.path.join(root, file))
-                        
-            
-            # 解析每个 info.json 文件获取时间戳
+
             for info_file in info_files:
                 try:
                     with open(info_file, 'r', encoding='utf-8') as f:
                         info_data = json.load(f)
-                        
-                    # 尝试获取上传时间戳
+
                     upload_timestamp = None
-                    
-                    # 优先使用 timestamp 字段
+
                     if 'timestamp' in info_data and info_data['timestamp']:
                         upload_timestamp = int(info_data['timestamp'])
-                    # 其次使用 upload_date 字段
                     elif 'upload_date' in info_data and info_data['upload_date']:
-                        upload_date = info_data['upload_date']
                         try:
-                            # upload_date 格式通常是 YYYYMMDD
-                            dt = datetime.strptime(upload_date, '%Y%m%d')
+                            dt = datetime.strptime(info_data['upload_date'], '%Y%m%d')
                             upload_timestamp = int(dt.timestamp())
                         except ValueError:
                             pass
-                        
+
                     if upload_timestamp and upload_timestamp > 0:
                         timestamps.append(upload_timestamp)
-                        
+
                 except Exception as e:
                     self.log_warning(f"解析 info.json 文件失败: {info_file} - {e}")
                     continue
-                    
-            # 清理临时目录
+
             try:
                 shutil.rmtree(temp_info_dir)
             except Exception as e:
                 self.log_warning(f"清理临时目录失败: {e}")
-                
+
             if not timestamps:
                 self.log_warning("未能从任何 info.json 文件中提取到有效时间戳")
                 return False
-                
-            # 排序时间戳 (保留重复的时间戳)
+
             sorted_timestamps = sorted(timestamps)
-            
-            # 写入 mtime.txt
             with open(self.mtime_file, 'w') as f:
                 for timestamp in sorted_timestamps:
                     f.write(f"{timestamp}\n")
-                    
+
             self.log_info(f"成功创建 mtime.txt, 包含 {len(sorted_timestamps)} 个时间戳")
             return True
-            
+
         except Exception as e:
             self.log_warning(f"创建 mtime.txt 时出错: {e}")
-            # 清理临时目录
             try:
                 shutil.rmtree(temp_info_dir)
             except:
@@ -953,41 +611,21 @@ class VideoMonitor:
             return False
 
     def generate_mtime_file(self, context: str = "") -> bool:
-        """生成 mtime.txt 文件的通用函数
-        
-        当 ``mtime.txt`` 不存在时, 尝试通过 yt-dlp 获取所有视频的发布时间
-        并将这些时间戳写入 ``mtime.txt`` 文件。如果失败会进行多次重试。
-        
-        Args:
-            context: 调用上下文信息, 用于日志记录和问题诊断
-            
-        Returns:
-            是否成功生成 ``mtime.txt`` 文件
-            
-        Note:
-            - 最多尝试 3 次
-            - 所有尝试失败后会触发 CRITICAL 级别错误通知
-            
-        See Also:
-            ``create_mtime_from_info_json()``: 实际执行文件创建的方法
-        """
+        """生成 mtime.txt 文件的通用函数, 支持多次重试"""
         max_attempts = 3
         attempt = 0
-        
+
         while attempt < max_attempts:
-            # 检查文件是否存在且不为空
             if os.path.exists(self.mtime_file) and os.path.getsize(self.mtime_file) > 0:
                 return True
-                
+
             attempt += 1
             if attempt == 1:
                 self.log_info(f"mtime.txt 不可用, 第 {attempt} 次尝试生成 [{context}]")
             else:
                 self.log_warning(f"mtime.txt 仍不可用, 第 {attempt} 次尝试生成 [{context}]")
-                
-            # 尝试生成 mtime.txt
+
             if self.create_mtime_from_info_json():
-                # 生成成功后再次检查
                 if os.path.exists(self.mtime_file) and os.path.getsize(self.mtime_file) > 0:
                     self.log_info(f"mtime.txt 第 {attempt} 次生成成功 [{context}]")
                     return True
@@ -995,8 +633,7 @@ class VideoMonitor:
                     self.log_warning(f"mtime.txt 第 {attempt} 次生成后仍不可用 [{context}]")
             else:
                 self.log_warning(f"mtime.txt 第 {attempt} 次生成失败 [{context}]")
-                
-        # 所有尝试都失败了
+
         error_msg = f"经过 {max_attempts} 次尝试仍无法生成可用的 mtime.txt"
         if context:
             error_msg += f" [上下文: {context}]"
@@ -1004,16 +641,13 @@ class VideoMonitor:
         return False
 
     def adjust_check_frequency(self, found_new_content: bool = False) -> None:
-        """WGMM 2.0: 基于双波源对抗机制的智能频率预测算法
+        """WGMM 2.0: 基于双波源对抗的智能频率预测
 
-        算法核心：
-        - 双波源对抗：正向得分 - 阻力系数 × 负向得分
-        - 未来展望：15天窗口搜索峰值，智能提前唤醒
-        - 数据剪枝：自动清理失效历史数据
-        - 纯计算解耦：提高代码可维护性
+        算法核心: 正向得分 - 阻力系数 × 负向得分
+        未来展望: 15天窗口搜索峰值, 智能提前唤醒
 
         Args:
-            found_new_content: 是否发现新内容，影响历史记录写入
+            found_new_content: 是否发现新内容, 影响历史记录写入
         """
         import math
         import calendar
@@ -1021,39 +655,37 @@ class VideoMonitor:
         from collections import defaultdict
 
         # ==================== 模型超参数配置 ====================
-        # 各维度的高斯核标准差 (控制时间模式匹配的严格程度)
-        SIGMA_DAY = 0.8           # 日内周期标准差
-        SIGMA_WEEK = 1.0          # 周内周期标准差
-        SIGMA_MONTH_WEEK = 1.5    # 月内周数标准差
-        SIGMA_YEAR_MONTH = 2.0    # 年内月份标准差
+        # 高斯核标准差
+        SIGMA_DAY = 0.8
+        SIGMA_WEEK = 1.0
+        SIGMA_MONTH_WEEK = 1.5
+        SIGMA_YEAR_MONTH = 2.0
 
-        # 初始维度权重 (算法会自动学习调整)
-        WEIGHT_DAY = 0.5          # 日内周期初始权重
-        WEIGHT_WEEK = 1.0         # 周内周期初始权重
-        WEIGHT_MONTH_WEEK = 0.3   # 月内周数初始权重
-        WEIGHT_YEAR_MONTH = 0.2   # 年内月份初始权重
+        # 维度权重
+        WEIGHT_DAY = 0.5
+        WEIGHT_WEEK = 1.0
+        WEIGHT_MONTH_WEEK = 0.3
+        WEIGHT_YEAR_MONTH = 0.2
 
-        # 时间衰减参数
-        LAMBDA_MIN = 0.00005      # 最小衰减率 (规律发布时)
-        LAMBDA_BASE = 0.0001      # 基础衰减率
-        LAMBDA_MAX = 0.0005       # 最大衰减率 (不规律发布时)
+        # 时间衰减
+        LAMBDA_MIN = 0.00005
+        LAMBDA_BASE = 0.0001
+        LAMBDA_MAX = 0.0005
 
-        # 轮询间隔参数
-        DEFAULT_INTERVAL = 3600   # 默认基础轮询间隔 (秒)
-        MAX_INTERVAL = 300        # 最高频轮询间隔 (秒)
+        # 轮询间隔
+        DEFAULT_INTERVAL = 3600
+        MAX_INTERVAL = 300
 
-        # 非线性映射参数
-        MAPPING_CURVE = 2.0       # 指数映射曲线陡峭度 (值越大, 高得分时越敏感)
+        # 映射参数
+        MAPPING_CURVE = 2.0
+        LEARNING_RATE = 0.1
+        MIN_HISTORY_COUNT = 10
 
-        # 学习参数
-        LEARNING_RATE = 0.1       # 权重平滑学习率 (避免剧烈变化)
-        MIN_HISTORY_COUNT = 10    # 最小历史数据量要求
-
-        # 双波源对抗参数
-        RESISTANCE_COEFFICIENT = 0.8  # 阻力系数 (建议默认 0.8)
-        WEIGHT_THRESHOLD = 0.001      # 数据剪枝阈值
-        LOOKAHEAD_DAYS = 15           # 未来展望天数
-        PEAK_ADVANCE_MINUTES = 10     # 峰值提前分钟数
+        # 双波源对抗
+        RESISTANCE_COEFFICIENT = 0.8
+        WEIGHT_THRESHOLD = 0.001
+        LOOKAHEAD_DAYS = 15
+        PEAK_ADVANCE_MINUTES = 5
 
         # 时间常量
         SECONDS_IN_DAY = 86400
@@ -1104,14 +736,12 @@ class VideoMonitor:
         dimension_weights_from_config = config['dimension_weights']
         is_manual_run = config.get('is_manual_run', True)
 
-        # 手动运行豁免处理
         if is_manual_run:
             config['is_manual_run'] = False
 
         current_timestamp = int(time.time())
         current_dt = datetime.fromtimestamp(current_timestamp)
-        
-        # 失败历史记录管理
+
         def load_miss_history():
             if not os.path.exists(self.miss_history_file):
                 return []
@@ -1132,7 +762,6 @@ class VideoMonitor:
             except Exception as e:
                 self.log_warning(f"写入失败历史记录失败: {e}")
 
-        # 检查并生成历史数据
         if not os.path.exists(self.mtime_file):
             if not self.generate_mtime_file("adjust_check_frequency"):
                 self.save_next_check_time(int(time.time()) + 7200)
@@ -1157,7 +786,6 @@ class VideoMonitor:
         positive_events = load_history_file(self.mtime_file)
         negative_events = load_miss_history()
 
-        # 数据质量检查
         def filter_outliers(timestamps, current_time):
             if len(timestamps) < 3:
                 return [ts for ts in timestamps if ts <= current_time]
@@ -1180,7 +808,6 @@ class VideoMonitor:
         positive_events = filter_outliers(positive_events, current_timestamp)
         negative_events = filter_outliers(negative_events, current_timestamp)
 
-        # 数据剪枝
         def prune_old_data(events, last_lambda, threshold):
             if not events or not os.path.exists(self.mtime_file if events is positive_events else self.miss_history_file):
                 return events
@@ -1210,10 +837,8 @@ class VideoMonitor:
         positive_events = prune_old_data(positive_events, last_lambda, WEIGHT_THRESHOLD)
         negative_events = prune_old_data(negative_events, last_lambda, WEIGHT_THRESHOLD)
 
-        # 历史数据检查
         def check_history_sufficient(events, name):
             if not events:
-                # 无论正向还是负向,历史数据不足都是正常程序设计阶段或初始状态,无需警告
                 return False
             if len(events) < MIN_HISTORY_COUNT:
                 self.log_info(f"{name}正向数据不足({len(events)}条)")
@@ -1259,13 +884,11 @@ class VideoMonitor:
             adaptive_lambda = base_adaptive_lambda + trend_correction
             return max(LAMBDA_MIN, min(LAMBDA_MAX, adaptive_lambda)), current_variance
 
-        # 双向参数计算
         last_pos_variance = config.get('last_pos_variance', 0.0)
         pos_lambda, pos_current_variance = _calculate_adaptive_lambda(positive_events, last_pos_variance)
         last_neg_variance = config.get('last_neg_variance', 0.0)
         neg_lambda, neg_current_variance = _calculate_adaptive_lambda(negative_events, last_neg_variance) if neg_sufficient else (pos_lambda, 0.0)
 
-        # ISO标准月内周数计算
         def get_week_of_month(dt):
             month_calendar = calendar.monthcalendar(dt.year, dt.month)
             for week_num, week in enumerate(month_calendar, 1):
@@ -1273,7 +896,6 @@ class VideoMonitor:
                     return week_num
             return 1
 
-        # 维度权重学习
         def calculate_dimension_strength(timestamps, dimension):
             counts = defaultdict(int)
             for ts in timestamps:
@@ -1320,14 +942,16 @@ class VideoMonitor:
 
         dimension_weights = learn_dimension_weights(positive_events, dimension_weights_from_config)
 
-        # 纯计算方法：单点得分计算
+        # 纯计算方法: 单点得分计算
         def _calculate_point_score(target_timestamp, pos_events, neg_events, dimension_weights, pos_lambda, neg_lambda) -> float:
+            # 步骤1: 时间特征向量化
             target_dt = datetime.fromtimestamp(target_timestamp)
             current_second_of_day = target_dt.hour * 3600 + target_dt.minute * 60 + target_dt.second
             current_second_of_week = (target_dt.weekday() * SECONDS_IN_DAY) + current_second_of_day
             current_week_of_month = get_week_of_month(target_dt)
             current_month_of_year = target_dt.month
 
+            # 步骤2: 三角函数特征变换
             current_day_sin = math.sin(2 * math.pi * current_second_of_day / SECONDS_IN_DAY)
             current_day_cos = math.cos(2 * math.pi * current_second_of_day / SECONDS_IN_DAY)
             current_week_sin = math.sin(2 * math.pi * current_second_of_week / SECONDS_IN_WEEK)
@@ -1338,6 +962,7 @@ class VideoMonitor:
             current_year_month_cos = math.cos(2 * math.pi * current_month_of_year / 12)
 
             def calculate_source_score(events, lambda_decay):
+                # 步骤3: 双波源计算 (正向/负向)
                 if not events:
                     return 0.0
                 total_score = 0.0
@@ -1373,6 +998,7 @@ class VideoMonitor:
                         year_month_dist_sq = ((current_year_month_sin - event_year_month_sin) ** 2 + (current_year_month_cos - event_year_month_cos) ** 2)
                         year_month_gaussian = math.exp(-year_month_dist_sq / (2 * SIGMA_YEAR_MONTH ** 2))
 
+                        # 步骤4: 加权高斯混合合成
                         combined_gaussian = (dimension_weights['day'] * day_gaussian +
                                            dimension_weights['week'] * week_gaussian +
                                            dimension_weights['month_week'] * month_week_gaussian +
@@ -1396,21 +1022,22 @@ class VideoMonitor:
                     normalized_score = 0.5
                 return max(0.0, min(1.0, normalized_score))
 
+            # 步骤5: 对抗机制合成
             pos_score = calculate_source_score(pos_events, pos_lambda)
             neg_score = calculate_source_score(neg_events, neg_lambda) if neg_events else 0.0
             final_score = pos_score - RESISTANCE_COEFFICIENT * neg_score
             return max(0.0, min(1.0, final_score))
 
-        # 基础间隔计算和当前得分
+        # 步骤6: 当前得分计算
         BASE_INTERVAL, _ = calculate_interval_stats(positive_events)
         current_score = _calculate_point_score(current_timestamp, positive_events, negative_events, dimension_weights, pos_lambda, neg_lambda)
 
-        # 非线性映射
+        # 步骤7: 非线性映射
         exponential_score = current_score ** MAPPING_CURVE
         base_interval_sec = BASE_INTERVAL - (BASE_INTERVAL - MAX_INTERVAL) * exponential_score
         base_frequency_sec = int(max(MAX_INTERVAL, min(BASE_INTERVAL * 2, base_interval_sec)))
 
-        # 未来展望与唤醒校准
+        # 步骤8: 未来展望与峰值预测
         lookahead_seconds = LOOKAHEAD_DAYS * SECONDS_IN_DAY
         lookahead_start = current_timestamp + base_frequency_sec
         lookahead_end = current_timestamp + lookahead_seconds
@@ -1447,7 +1074,7 @@ class VideoMonitor:
             last_score = scan_score
             scan_time += step
 
-        # 唤醒决策
+        # 步骤9: 唤醒决策
         final_frequency_sec = base_frequency_sec
         if best_peak_time and best_peak_score > 0.6:
             peak_interval = best_peak_time - current_timestamp
@@ -1456,21 +1083,19 @@ class VideoMonitor:
                 advanced_interval = advanced_time - current_timestamp
                 if advanced_interval > 300:
                     final_frequency_sec = int(advanced_interval)
-                    # 峰值发现和提前唤醒逻辑正常执行，但不输出详细日志
-                # 其他情况保持基础间隔不变
 
-        # 网络阻抗阻尼
+        # 步骤10: 网络阻抗阻尼
         impedance_factor = 1.0
         if self.last_ytdlp_duration > self.normal_ytdlp_duration * 2:
             impedance_ratio = self.last_ytdlp_duration / max(self.normal_ytdlp_duration, 1.0)
             impedance_factor = 1.0 + min(0.5, (impedance_ratio - 2.0) * 0.1)
         final_frequency_sec = int(final_frequency_sec * impedance_factor)
 
-        # 写入失败历史记录
+        # 步骤11: 写入失败历史记录
         if not found_new_content and not is_manual_run:
             save_to_miss_history(current_timestamp)
 
-        # 保存配置和日志
+        # 步骤12: 保存配置
         next_check_timestamp = int(time.time()) + final_frequency_sec
         self.save_next_check_time(next_check_timestamp)
         config['dimension_weights'] = dimension_weights
@@ -1499,18 +1124,7 @@ class VideoMonitor:
         self.log_info(f"WGMM调频 - 轮询间隔: {polling_interval_str}")
 
     def run_yt_dlp(self, command_args: list[str], timeout: int = 300) -> tuple[bool, str, str]:
-        """执行 yt-dlp 命令
-
-        安全地执行 yt-dlp 命令, 包含超时控制和错误处理。
-        捕获实际运行耗时，作为网络环境健康度指标，用于触发网络阻抗阻尼机制。
-
-        Args:
-            command_args: yt-dlp 命令参数列表 (不包含 ``yt-dlp`` 本身)
-            timeout: 命令超时时间 (秒), 默认 300 秒
-
-        Returns:
-            tuple[bool, str, str]: 三元组 (success, stdout, stderr)
-        """
+        """执行 yt-dlp 命令, 捕获耗时用于网络阻尼计算"""
         start_time = time.time()
         try:
             result = subprocess.run(
@@ -1522,12 +1136,11 @@ class VideoMonitor:
             )
             elapsed = time.time() - start_time
             self.last_ytdlp_duration = elapsed
-            
-            # 更新正常耗时基准 (移动平均，仅在成功时更新)
-            # 权重：90% 历史 + 10% 当前，平滑波动
+
+            # 更新正常耗时基准 (移动平均, 仅在成功时更新)
             if result.returncode == 0:
                 self.normal_ytdlp_duration = 0.9 * self.normal_ytdlp_duration + 0.1 * elapsed
-            
+
             return result.returncode == 0, result.stdout.strip(), result.stderr.strip()
         except subprocess.TimeoutExpired:
             elapsed = time.time() - start_time
@@ -1541,23 +1154,11 @@ class VideoMonitor:
             return False, "", str(e)
 
     def quick_precheck(self) -> bool:
-        """快速预检查功能
-
-        获取最新视频的 ID, 检查是否已存在于 Gist 同步的 memory_urls 中。
-        确保每次都以 Gist 数据为基准, 不会因本地缓存问题漏检。
-
-        Returns:
-            bool: 是否发现新内容 (需要进行完整检查)
-
-        Note:
-            - 如果预检查失败, 返回 ``True`` 触发完整检查以确保不漏检
-            - 使用视频 ID 对比, 直接与 memory_urls 对比
-        """
-        # 确保 memory_urls 有数据
+        """快速预检查: 通过最新视频ID判断是否需要完整检查"""
         if not self.memory_urls:
             self.log_info("memory_urls 为空, 触发完整检查")
             return True
-            
+
         success, stdout, stderr = self.run_yt_dlp([
             '--cookies', self.cookies_file,
             '--flat-playlist',
@@ -1565,48 +1166,32 @@ class VideoMonitor:
             '--playlist-end', '1',
             f'https://space.bilibili.com/{self.BILIBILI_UID}/video'
         ])
-        
+
         if not success or not stdout:
             self.log_info("快速检查失败, 触发完整检查")
-            return True  # 失败时触发完整检查, 确保不漏检
-            
+            return True
+
         latest_id = stdout.strip()
-        
-        # 检查 memory_urls 中是否包含此视频 ID
-        # URL 格式如: https://www.bilibili.com/video/BVxxxxxx 或 https://www.bilibili.com/video/BVxxxxxx?p=2
         video_exists = any(latest_id in url for url in self.memory_urls)
-        
-        if video_exists:
-            return False  # 视频已存在, 无需完整检查
-        else:
-            return True  # 发现新视频, 触发完整检查
+
+        return not video_exists
 
     def check_potential_new_parts(self) -> bool:
         """检查现有多分片视频是否有新分片
-        
+
         分析已有的多分片视频, 检查是否有新的分片发布。
         这是一个高效的预检查方法, 避免完整扫描。
-        
-        Returns:
-            是否发现新分片
-            
-        Note:
-            - 只检查多分片视频 (分片数 > 1)
-            - 最多向前检查 5 个新分片
-            - 失败时返回 ``False``, 依赖后续完整检查
         """
         if not self.memory_urls:
             self.log_info("内存数据为空, 跳过分片预检查")
             return False
-            
+
         has_new_parts = False
-        
+
         try:
-            urls = self.memory_urls
-                
             # 提取分片视频的基础 URL 和最高分片号
             base_urls = {}
-            for url in urls:
+            for url in self.memory_urls:
                 if '?p=' in url:
                     base_url = url.split('?p=')[0]
                     part_str = url.split('?p=')[1]
@@ -1616,22 +1201,22 @@ class VideoMonitor:
                             base_urls[base_url] = part_num
                     except ValueError:
                         continue
-                        
+
             # 检查是否有新分片
             for base_url, max_part in base_urls.items():
                 if max_part > 1:  # 只检查多分片视频
                     next_part = max_part + 1
                     next_url = f"{base_url}?p={next_part}"
-                    
+
                     success, _, _ = self.run_yt_dlp([
                         '--cookies', self.cookies_file,
                         '--simulate',
                         next_url
                     ])
-                    
+
                     if success:
                         has_new_parts = True
-                        
+
                         # 继续检查更多分片 (最多 5 个)
                         check_part = next_part + 1
                         while check_part <= next_part + 5:
@@ -1645,36 +1230,22 @@ class VideoMonitor:
                                 check_part += 1
                             else:
                                 break
-                                
+
         except Exception as e:
             self.log_warning(f"预测检查出错: {e}")
             return False
-            
+
         return has_new_parts
 
     def get_video_parts(self, video_url: str) -> list[str]:
-        """获取单个视频的所有分片链接
-        
-        使用 yt-dlp 获取指定视频的所有分片 (如果是多分片视频)。
-        
-        Args:
-            video_url: 视频 URL
-            
-        Returns:
-            包含所有分片 URL 的列表。如果获取失败返回空列表。
-            
-        Example:
-            >>> parts = self.get_video_parts('https://www.bilibili.com/video/BV1xxx')
-            >>> for part_url in parts:
-            ...     print(part_url)
-        """
+        """获取单个视频的所有分片链接"""
         success, stdout, stderr = self.run_yt_dlp([
             '--cookies', self.cookies_file,
             '--flat-playlist',
             '--print', '%(webpage_url)s',
             video_url
         ])
-        
+
         if success and stdout:
             return [line.strip() for line in stdout.split('\n') if line.strip()]
         else:
@@ -1682,32 +1253,17 @@ class VideoMonitor:
             return []
 
     def get_all_videos_parallel(self, video_urls: list[str]) -> list[str]:
-        """并行获取所有视频的分片信息
-        
-        使用线程池并行处理多个视频, 提高获取分片信息的效率。
-        
-        Args:
-            video_urls: 视频 URL 列表
-            
-        Returns:
-            包含所有视频分片 URL 的列表
-            
-        Note:
-            - 使用 5 个工作线程并行处理
-            - 单个视频失败不影响其他视频的处理
-            - 严重错误会触发 CRITICAL 级别通知
-        """
+        """并行获取所有视频的分片信息, 使用5线程提高效率"""
         all_parts = []
-        
         os.makedirs(self.tmp_outputs_dir, exist_ok=True)
-        
+
         try:
             with ThreadPoolExecutor(max_workers=5) as executor:
                 future_to_url = {
-                    executor.submit(self.get_video_parts, url): url 
+                    executor.submit(self.get_video_parts, url): url
                     for url in video_urls
                 }
-                
+
                 for future in as_completed(future_to_url):
                     url = future_to_url[future]
                     try:
@@ -1715,20 +1271,14 @@ class VideoMonitor:
                         all_parts.extend(parts)
                     except Exception as e:
                         self.log_warning(f"处理分片出错: {str(url)[:50]}... {e}")
-                        
+
         except Exception as e:
             self.log_critical_error(f"并行处理时出错: {e}", "get_all_videos_parallel 方法", send_notification=True)
-            
+
         return all_parts
 
     def cleanup(self) -> None:
-        """清理临时文件和资源
-        
-        删除临时目录和文件, 释放系统资源。
-        
-        Note:
-            清理失败不发送通知, 避免在程序退出时产生不必要的告警。
-        """
+        """清理临时文件和资源"""
         try:
             if os.path.exists(self.tmp_outputs_dir):
                 shutil.rmtree(self.tmp_outputs_dir)
@@ -1736,51 +1286,38 @@ class VideoMonitor:
             self.log_critical_error(f"清理临时文件失败: {e}", "cleanup 方法", send_notification=False)
 
     def cleanup_and_wait(self) -> None:
-        """清理资源并等待下次检查
-
-        执行清理临时文件、读取检查时间配置、计算等待时间并进入休眠。
-
-        Note:
-            - 如果等待时间为负数或无效, 使用默认 400 分钟间隔
-            - 休眠期间可被信号中断
-        """
+        """清理资源并等待下次检查"""
         self.cleanup()
-        
+
         try:
             next_check_timestamp = self.get_next_check_time()
-            
+
             if next_check_timestamp > 0:
                 current_timestamp = int(time.time())
                 wait_seconds = next_check_timestamp - current_timestamp
-                
-                # 如果计算出的等待时间为负数或过小, 使用默认间隔
+
                 if wait_seconds <= 0:
                     frequency_sec = 24000  # 400 分钟 = 24000 秒
                     next_check_timestamp = current_timestamp + frequency_sec
                     wait_seconds = frequency_sec
                     self.log_info("等待时间出现负数, 使用默认 400 分钟间隔")
-
-                    # 更新 next_check_time
                     self.save_next_check_time(next_check_timestamp)
-                
+
                 next_dt = datetime.fromtimestamp(next_check_timestamp)
                 weekday_name = ['周一', '周二', '周三', '周四', '周五', '周六', '周日'][next_dt.weekday()]
                 next_check_time = f"{next_dt.strftime('%Y年%m月%d日')} {weekday_name} {next_dt.strftime('%H:%M:%S')}"
                 self.log_info(f"下次检查: {next_check_time}")
                 time.sleep(wait_seconds)
             else:
-                # 配置文件不存在或读取失败
                 frequency_sec = 24000  # 400 分钟 = 24000 秒
                 next_check_timestamp = int(time.time()) + frequency_sec
                 next_dt = datetime.fromtimestamp(next_check_timestamp)
                 weekday_name = ['周一', '周二', '周三', '周四', '周五', '周六', '周日'][next_dt.weekday()]
                 next_check_time = f"{next_dt.strftime('%Y年%m月%d日')} {weekday_name} {next_dt.strftime('%H:%M:%S')}"
-                
                 self.save_next_check_time(next_check_timestamp)
-                
                 self.log_info(f"下次检查: {next_check_time}")
                 time.sleep(frequency_sec)
-                        
+
         except (FileNotFoundError, ValueError) as e:
             # 默认 400 分钟 (24000 秒) 后检查
             frequency_sec = 24000  # 400 分钟 = 24000 秒
@@ -1788,62 +1325,45 @@ class VideoMonitor:
             next_dt = datetime.fromtimestamp(next_check_timestamp)
             weekday_name = ['周一', '周二', '周三', '周四', '周五', '周六', '周日'][next_dt.weekday()]
             next_check_time = f"{next_dt.strftime('%Y年%m月%d日')} {weekday_name} {next_dt.strftime('%H:%M:%S')}"
-            
             self.save_next_check_time(next_check_timestamp)
-                
             self.log_info(f"下次检查: {next_check_time}")
             time.sleep(frequency_sec)
 
     def run_monitor(self) -> None:
         """主监控流程
 
-        执行三层检测策略：
-        1. **分片预检查**: 检查现有多分片视频的新分片
-        2. **快速检查**: 检查最新视频 ID 变化
-        3. **完整检查**: 获取所有视频链接并对比
+        执行三层检测策略: 
+        1. 分片预检查: 检测多分片视频的新分片
+        2. 快速检查: 通过最新视频ID快速判断更新
+        3. 完整检查: 获取所有视频链接并对比
 
-        这种分层策略可以显著提高检查效率, 减少不必要的网络请求。
-
-        执行流程:
-            1. 从 GitHub Gist 同步 URL 数据到内存
-            2. 执行分片预检查和快速预检查
-            3. 如果发现可能的新内容, 执行完整检查
-            4. 对比新旧 URL 列表, 发现新视频时发送通知
-            5. 调整检查频率并等待下次检查
-
-        Note:
-            - 捕获所有异常, 确保程序持续运行
-            - 严重错误会触发 CRITICAL 级别通知
+        核心流程: 
+        - GitHub Gist数据同步 → 预检查 → 完整检查 → 新视频发现 → 频率调整
         """
         try:
             self.log_message("检查开始                  <--")
-            # 1. 每次醒来, 先从 GitHub 同步数据到内存
-            # sync_urls_from_gist() 会自动将 Gist 中的 URL 加入 known_urls
+            # 步骤1: Gist数据同步
             sync_success = self.sync_urls_from_gist()
 
-            # 如果获取失败且内存是空的, 无法进行比对, 直接等待下次
             if not sync_success and not self.memory_urls:
                 self.log_warning("无法获取基准数据 (Gist 失败且内存 urls 为空), 跳过本次检查")
                 self.cleanup_and_wait()
                 return
 
-            # 第一层：分片预检查
+            # 步骤2: 两层预检查
             found_new_parts = self.check_potential_new_parts()
-            # 第二层：快速预检查
             found_new_videos = self.quick_precheck()
 
-            # 压缩日志：一行显示两层检查结果
             self.log_info(f"预检查完成 - 预测检查: {'发现新内容' if found_new_parts else '无新内容'} "
                           f"快速检查: {'发现新内容' if found_new_videos else '无新内容'}")
 
-            # 如果两层检查都没发现新内容, 跳过完整检查
+            # 步骤3: 条件性完整检查
             if not (found_new_parts or found_new_videos):
-                # 未发现新内容, 传递 False 给频率调整
                 self.adjust_check_frequency(found_new_content=False)
                 self.cleanup_and_wait()
                 return
 
-            # 第三层：完整检查 - 获取所有视频链接
+            # 步骤4: 完整检查
             success, stdout, stderr = self.run_yt_dlp([
                 '--cookies', self.cookies_file,
                 '--flat-playlist',
@@ -1853,7 +1373,6 @@ class VideoMonitor:
 
             if not success or not stdout:
                 self.log_critical_error("无法获取视频列表", "完整检查阶段", send_notification=True)
-                # 完整检查失败, 不算作"未发现新内容", 因为我们不确定
                 self.adjust_check_frequency(found_new_content=False)
                 self.cleanup_and_wait()
                 return
@@ -1866,70 +1385,53 @@ class VideoMonitor:
                 self.cleanup_and_wait()
                 return
 
-            # 并行获取所有分片链接
+            # 步骤5: 并行获取分片
             all_parts = self.get_all_videos_parallel(video_urls)
 
             if not all_parts:
                 self.log_info("处理分片时出错, 错误已处理")
-                all_parts = video_urls  # 使用原始视频 URLs 作为后备
+                all_parts = video_urls
 
-            # 4. 内存比对 - 使用两层检测逻辑
-            existing_urls_set = set(self.memory_urls)  # Gist 中的 URL（已备份）
-            current_urls_set = set(all_parts)  # 当前 B站上的所有视频
-            
-            # ==================== 两层 URL 集合管理 ====================
-            # gist_missing_urls: Gist 中没有的视频（需要每次通知）
-            # truly_new_urls: 本地也不知道的视频（真正的新视频，影响惩罚机制）
-            
-            gist_missing_urls = current_urls_set - existing_urls_set  # Gist 未同步的
+            # 步骤6: URL比对
+            existing_urls_set = set(self.memory_urls)
+            current_urls_set = set(all_parts)
+
+            # 两层URL集合管理
+            gist_missing_urls = current_urls_set - existing_urls_set  # Gist未同步
             truly_new_urls = gist_missing_urls - self.known_urls  # 真正的新视频
 
             if gist_missing_urls:
-                # ==================== 三层显示逻辑优化 ====================
-                # 1. 新视频就是 gist 未同步的视频：只显示新视频星号（***）
-                # 2. 未同步视频中既有旧视频又有新视频：显示旧视频星号 + 空格 + 新视频星号（*** **）
-                # 3. 只有旧视频未同步：只显示旧视频星号（***）
+                # 步骤7: 三层显示逻辑
+                old_count = len(gist_missing_urls) - len(truly_new_urls)
+                new_count = len(truly_new_urls)
 
-                old_count = len(gist_missing_urls) - len(truly_new_urls)  # Gist未同步但本地已知的旧视频数
-                new_count = len(truly_new_urls)  # 真正的新视频数
-
-                # 生成显示字符串：旧视频星号 + 空格（当两者都有时） + 新视频星号
                 display = f"{'*' * old_count}{' ' if old_count > 0 and new_count > 0 else ''}{'*' * new_count}"
                 self.log_info(display)
 
-                # 发送通知 - 通知所有 Gist 中没有的视频
-                link_count = len(gist_missing_urls)
-                
-                # 只为真正的新视频保存时间戳（避免重复保存）
+                # 步骤8: 时间戳保存与通知
                 if truly_new_urls:
                     self.save_real_upload_timestamps(truly_new_urls)
-                
-                # 更新本地已知 URL 集合
-                self.known_urls.update(gist_missing_urls)
-                self.save_known_urls()  # 立即保存到本地文件
 
-                if self.notify_new_videos(link_count, has_new_parts=found_new_parts):
-                    # 不记录成功通知日志, 避免日志过多
-                    pass
-                else:
-                    self.log_critical_error("通知发送失败 - 无法向用户推送新视频通知", "notify_new_videos 方法", send_notification=False)
+                self.known_urls.update(gist_missing_urls)
+                self.save_known_urls()
+
+                if not self.notify_new_videos(len(gist_missing_urls), has_new_parts=found_new_parts):
+                    self.log_critical_error("通知发送失败 - 无法向用户推送新视频通知", "notify_new_videos", send_notification=False)
                 
-                # 只有真正的新视频才算"发现新内容"，影响惩罚机制
+                # 步骤9: 频率调整
                 if truly_new_urls:
                     self.adjust_check_frequency(found_new_content=True)
                 else:
-                    # Gist 缺失但本地已知，说明是重复检查，不算新内容
                     self.adjust_check_frequency(found_new_content=False)
             else:
-                # 没有发现新视频，说明可能的情况
                 if found_new_parts:
-                    self.log_info("完整检查未发现新视频 - 但发现新分片，已处理")
+                    self.log_info("完整检查未发现新视频 - 但发现新分片, 已处理")
                     self.adjust_check_frequency(found_new_content=True)
                 else:
-                    self.log_info("完整检查未发现新内容 - 快速检查结果已确认，无更新")
+                    self.log_info("完整检查未发现新内容 - 快速检查结果已确认, 无更新")
                     self.adjust_check_frequency(found_new_content=False)
 
-            # 不写日志 - 视频检查完成
+            # 步骤10: 清理并等待
             self.cleanup_and_wait()
 
         except KeyboardInterrupt:
@@ -1937,25 +1439,17 @@ class VideoMonitor:
             self.cleanup()
             sys.exit(0)
         except Exception as e:
-            self.log_critical_error(f"监控脚本运行时出现意外错误: {e}", "run_monitor 方法", send_notification=True)
+            self.log_critical_error(f"监控脚本运行时出现意外错误: {e}", "run_monitor", send_notification=True)
             self.cleanup_and_wait()
 
 def main() -> None:
     """程序入口点
-    
-    创建 VideoMonitor 实例并启动主监控循环。
-    
-    程序会持续运行直到被用户中断 (Ctrl+C) 或发生致命错误。
-    
-    Exit Codes:
-        0: 正常退出 (用户中断)
-        1: 异常退出 (致命错误)
+
+    创建监控实例并启动主循环
     """
     monitor = VideoMonitor()
-    
-    # ==================== 标记为手动运行 ====================
-    # 程序启动时设置 is_manual_run = True
-    # 这样首次运行不会因为没有发现新内容而触发惩罚
+
+    # 标记为手动运行 (避免首次运行惩罚)
     try:
         if os.path.exists(monitor.wgmm_config_file):
             with open(monitor.wgmm_config_file, 'r', encoding='utf-8') as f:
@@ -1965,7 +1459,7 @@ def main() -> None:
                 json.dump(config, f, indent=2, ensure_ascii=False)
     except Exception as e:
         monitor.log_warning(f"设置手动运行标志失败: {e}")
-    
+
     try:
         while True:
             monitor.run_monitor()
@@ -1974,7 +1468,7 @@ def main() -> None:
         monitor.cleanup()
         sys.exit(0)
     except Exception as e:
-        monitor.log_critical_error(f"主循环出现严重错误: {e}", "main 函数", send_notification=True)
+        monitor.log_critical_error(f"主循环出现严重错误: {e}", "main", send_notification=True)
         sys.exit(1)
 
 if __name__ == "__main__":
