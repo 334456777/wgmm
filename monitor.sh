@@ -191,7 +191,7 @@ start_foreground() {
             rm -f "$PID_FILE"
         fi
     fi
-    
+
     # 检查是否有监控程序在运行但没有PID文件（使用通用模式匹配）
     RUNNING_PID=$(pgrep -f "python.*$MONITOR_SCRIPT" | head -1)
     if [ -n "$RUNNING_PID" ]; then
@@ -199,13 +199,91 @@ start_foreground() {
         echo "请先停止现有程序或使用 status 命令查看状态"
         return 1
     fi
-    
+
     # 检查和创建虚拟环境
     check_and_setup_venv
-    
+
     echo "在前台启动视频监控程序..."
     cd "$SCRIPT_DIR"
     exec "$PYTHON_CMD" "$MONITOR_SCRIPT"
+}
+
+dev() {
+    # 开发模式：运行单次检查后退出
+    echo "====== 开发模式 ======"
+    echo "运行单次检查后退出，不等待下次检查时间..."
+    echo ""
+
+    # 检查和创建虚拟环境
+    check_and_setup_venv
+
+    cd "$SCRIPT_DIR"
+
+    # 检查必要的环境变量
+    if [ ! -f ".env" ]; then
+        echo "⚠ 警告: 未找到 .env 文件"
+        echo "请确保已设置以下环境变量:"
+        echo "  - GIST_ID: GitHub Gist ID"
+        echo "  - GITHUB_TOKEN: GitHub Token"
+        echo "  - BILIBILI_UID: Bilibili用户UID"
+        echo "  - BARK_DEVICE_KEY: Bark推送设备密钥 (可选)"
+        echo ""
+        echo "是否继续运行? (y/n)"
+        read -r response
+        if [[ ! "$response" =~ ^[Yy]$ ]]; then
+            echo "已取消运行"
+            return 1
+        fi
+    fi
+
+    # 运行开发模式
+    echo "启动开发模式检查..."
+    echo "=========================================="
+
+    # 设置环境变量（从.env文件加载）
+    if [ -f ".env" ]; then
+        set -a
+        source ".env"
+        set +a
+    fi
+
+    # 运行监控程序（开发模式）
+    "$PYTHON_CMD" "$MONITOR_SCRIPT" --dev
+
+    local exit_code=$?
+    echo ""
+    echo "=========================================="
+
+    if [ $exit_code -eq 0 ]; then
+        echo "✅ 开发模式运行完成"
+        echo "提示: 配置文件未被修改，可安全地继续开发或调试"
+    else
+        echo "❌ 开发模式运行失败 (退出码: $exit_code)"
+        echo "请检查错误信息或运行: $0 test 进行配置检查"
+        return $exit_code
+    fi
+}
+
+# 通用的参数传递函数，支持向Python脚本传递参数
+run_with_args() {
+    local args=("$@")
+
+    if [ ${#args[@]} -eq 0 ]; then
+        echo "用法: $0 run [python参数...]"
+        echo ""
+        echo "示例:"
+        echo "  $0 run --dev              # 运行开发模式"
+        echo "  $0 run --help             # 查看Python脚本帮助"
+        exit 1
+    fi
+
+    # 检查和创建虚拟环境
+    check_and_setup_venv
+
+    cd "$SCRIPT_DIR"
+
+    echo "运行监控程序 (参数: ${args[*]})..."
+    "$PYTHON_CMD" "$MONITOR_SCRIPT" "${args[@]}"
 }
 
 stop() {
@@ -681,6 +759,13 @@ case "$1" in
     start-foreground|foreground)
         start_foreground
         ;;
+    dev)
+        dev
+        ;;
+    run)
+        shift
+        run_with_args "$@"
+        ;;
     stop)
         stop
         ;;
@@ -702,11 +787,13 @@ case "$1" in
         test_config
         ;;
     *)
-        echo "用法: $0 {start|start-foreground|stop|restart|status|logs [行数]|follow|test}"
+        echo "用法: $0 {start|start-foreground|dev|run|stop|restart|status|logs [行数]|follow|test}"
         echo ""
         echo "命令说明:"
         echo "  start            - 后台启动监控程序"
         echo "  start-foreground - 前台启动监控程序（用于systemd）"
+        echo "  dev              - 开发模式：运行单次检查后退出"
+        echo "  run [args]       - 运行监控程序并传递参数"
         echo "  stop             - 停止监控程序"
         echo "  restart          - 重启监控程序"
         echo "  status           - 查看运行状态"
@@ -716,7 +803,8 @@ case "$1" in
         echo ""
         echo "示例:"
         echo "  $0 start                    # 后台启动监控"
-        echo "  $0 start-foreground         # 前台启动监控"
+        echo "  $0 dev                      # 开发模式运行"
+        echo "  $0 run --dev                # 传递参数运行"
         echo "  $0 logs 100                 # 查看最近100行日志"
         echo "  $0 follow                   # 实时查看日志"
         exit 1

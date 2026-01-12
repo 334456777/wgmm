@@ -26,11 +26,20 @@ import shutil
 import requests
 import logging
 import json
+import argparse
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor, as_completed, Future
 import signal
 from typing import TYPE_CHECKING, Any
 from types import FrameType
+
+# ==================== 全局变量和参数解析 ====================
+def parse_arguments():
+    """解析命令行参数"""
+    parser = argparse.ArgumentParser(description='Bilibili视频监控器')
+    parser.add_argument('-d', '--dev', action='store_true',
+                       help='开发模式：运行检查后立即退出，不等待下次检查时间')
+    return parser.parse_args()
 
 # ==================== 环境配置 ====================
 def load_env_file(env_path: str = '.env') -> None:
@@ -82,11 +91,15 @@ class VideoMonitor:
     FALLBACK_INTERVAL: int = 7200  # 降级检查间隔 (秒)= 2小时
     MAX_RETRY_ATTEMPTS: int = 3  # 最大重试次数
 
-    def __init__(self) -> None:
+    def __init__(self, dev_mode: bool = False) -> None:
         """初始化监控系统
 
-        配置GitHub Gist、Bark通知、日志系统和信号处理器
+        Args:
+            dev_mode: 是否为开发模式（沙盒运行）
         """
+        # ==================== 开发模式标志 ====================
+        self.dev_mode: bool = dev_mode
+
         # ==================== GitHub Gist 配置 ====================
         self.GIST_ID: str = os.getenv("GIST_ID", "")
         self.GITHUB_TOKEN: str = os.getenv("GITHUB_TOKEN", "")
@@ -106,6 +119,14 @@ class VideoMonitor:
         # ==================== 核心数据结构 ====================
         self.memory_urls: list[str] = []  # Gist同步的已备份URL
         self.known_urls: set[str] = set()  # 本地已知URL (防止重复通知)
+
+        # 沙盒状态
+        if self.dev_mode:
+            self.sandbox_config: dict = {}
+            self.sandbox_known_urls: set[str] = set()
+            self.sandbox_miss_history: list[int] = []
+            self.sandbox_next_check_time: int = 0
+            self.dev_new_videos: int = 0
 
         # ==================== 文件路径配置 ====================
         self.log_file: str = "urls.log"  # 主日志文件
@@ -149,13 +170,18 @@ class VideoMonitor:
                     self.known_urls = set(line.strip() for line in f if line.strip())
             else:
                 self.known_urls = set()
-                self.save_known_urls()
+                if not self.dev_mode:
+                    self.save_known_urls()
         except Exception as e:
             self.log_warning(f"加载本地已知 URL 失败: {e}, 将使用空集合")
             self.known_urls = set()
 
     def save_known_urls(self) -> None:
         """保存已知URL集合到本地文件"""
+        if self.dev_mode:
+            self.sandbox_known_urls = self.known_urls.copy()
+            return
+
         try:
             with open(self.local_known_file, 'w', encoding='utf-8') as f:
                 f.write('\n'.join(sorted(self.known_urls)))
@@ -188,11 +214,16 @@ class VideoMonitor:
         """
         timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
         log_entry = f"{timestamp} - {level} - {message}\n"
-        
-        with open(self.log_file, 'a', encoding='utf-8') as f:
-            f.write(log_entry)
-            
-        self.limit_file_lines(self.log_file, 100000)
+
+        # Dev模式下只输出到控制台，不写入文件
+        if self.dev_mode:
+            pass  # 不写入文件
+        else:
+            with open(self.log_file, 'a', encoding='utf-8') as f:
+                f.write(log_entry)
+            self.limit_file_lines(self.log_file, 100000)
+
+        # 控制台输出
         print(f"{timestamp} - {level} - {message}")
 
     def log_info(self, message: str) -> None:
@@ -238,21 +269,22 @@ class VideoMonitor:
         if context:
             full_message += f" [上下文: {context}]"
 
-        try:
-            critical_log_entry = f"{timestamp} - CRITICAL - {full_message}\n"
-            with open(self.critical_log_file, 'a', encoding='utf-8') as f:
-                f.write(critical_log_entry)
-            self._limit_critical_log_lines()
-        except Exception as e:
-            print(f"{timestamp} - CRITICAL - 无法写入重大错误日志: {e}")
-            print(f"{timestamp} - CRITICAL - 原始错误: {full_message}")
+        # Dev模式下只输出到控制台，不写入文件
+        if not self.dev_mode:
+            try:
+                critical_log_entry = f"{timestamp} - CRITICAL - {full_message}\n"
+                with open(self.critical_log_file, 'a', encoding='utf-8') as f:
+                    f.write(critical_log_entry)
+                self._limit_critical_log_lines()
+            except Exception as e:
+                print(f"{timestamp} - CRITICAL - 无法写入重大错误日志: {e}")
+                print(f"{timestamp} - CRITICAL - 原始错误: {full_message}")
 
-        try:
-            self.log_error(full_message, send_bark_notification=False)
-        except Exception:
-            print(f"{timestamp} - ERROR - {full_message}")
+        # 控制台输出
+        print(f"{timestamp} - CRITICAL - {full_message}")
 
-        if send_notification:
+        # Dev模式下不发送通知
+        if send_notification and not self.dev_mode:
             if self.notify_critical_error(message, context):
                 print(f"{timestamp} - INFO - 重大错误通知已发送")
             else:
@@ -407,6 +439,9 @@ class VideoMonitor:
 
     def get_next_check_time(self) -> int:
         """从 WGMM 配置文件读取下次检查时间戳"""
+        if self.dev_mode:
+            return self.sandbox_next_check_time
+
         try:
             if os.path.exists(self.wgmm_config_file):
                 with open(self.wgmm_config_file, 'r', encoding='utf-8') as f:
@@ -419,6 +454,10 @@ class VideoMonitor:
 
     def save_next_check_time(self, next_check_timestamp: int) -> None:
         """保存下次检查时间到配置文件"""
+        if self.dev_mode:
+            self.sandbox_next_check_time = next_check_timestamp
+            return
+
         try:
             # 读取现有配置, 保留其他字段
             config: dict[str, Any] = {}
@@ -459,7 +498,9 @@ class VideoMonitor:
             content = next(iter(files.values())).get("content", "")
             self.memory_urls = [line.strip() for line in content.splitlines() if line.strip()]
             self.known_urls.update(self.memory_urls)
-            self.save_known_urls()
+
+            if not self.dev_mode:
+                self.save_known_urls()
             return True
 
         except requests.exceptions.HTTPError as e:
@@ -510,6 +551,22 @@ class VideoMonitor:
     def save_real_upload_timestamps(self, new_urls: set[str]) -> None:
         """保存新视频的真实上传时间戳"""
         if not new_urls:
+            return
+
+        if self.dev_mode:
+            timestamps = []
+            current_time = int(time.time())
+
+            for url in new_urls:
+                upload_time = self.get_video_upload_time(url)
+                if upload_time:
+                    timestamps.append(upload_time)
+                else:
+                    timestamps.append(current_time)
+
+            if timestamps:
+                self.dev_new_videos += len(new_urls)
+
             return
 
         # 确保 mtime.txt 存在
@@ -612,6 +669,9 @@ class VideoMonitor:
 
     def generate_mtime_file(self, context: str = "") -> bool:
         """生成 mtime.txt 文件的通用函数, 支持多次重试"""
+        if self.dev_mode and not (os.path.exists(self.mtime_file) and os.path.getsize(self.mtime_file) > 0):
+            return True
+
         max_attempts = 3
         attempt = 0
 
@@ -726,6 +786,10 @@ class VideoMonitor:
                 return default_config
 
         def save_config(config_data):
+            if self.dev_mode:
+                self.sandbox_config = config_data.copy()
+                return
+
             try:
                 with open(config_file, 'w', encoding='utf-8') as f:
                     json.dump(config_data, f, indent=2, ensure_ascii=False)
@@ -734,10 +798,13 @@ class VideoMonitor:
 
         config = load_config()
         dimension_weights_from_config = config['dimension_weights']
-        is_manual_run = config.get('is_manual_run', True)
 
-        if is_manual_run:
-            config['is_manual_run'] = False
+        if self.dev_mode:
+            is_manual_run = True
+        else:
+            is_manual_run = config.get('is_manual_run', True)
+            if is_manual_run:
+                config['is_manual_run'] = False
 
         current_timestamp = int(time.time())
         current_dt = datetime.fromtimestamp(current_timestamp)
@@ -755,6 +822,9 @@ class VideoMonitor:
         def save_to_miss_history(timestamp):
             if is_manual_run:
                 return
+            if self.dev_mode:
+                self.sandbox_miss_history.append(timestamp)
+                return
             try:
                 with open(self.miss_history_file, 'a') as f:
                     f.write(f"{timestamp}\n")
@@ -764,10 +834,16 @@ class VideoMonitor:
 
         if not os.path.exists(self.mtime_file):
             if not self.generate_mtime_file("adjust_check_frequency"):
-                self.save_next_check_time(int(time.time()) + 7200)
+                if not self.dev_mode:
+                    self.save_next_check_time(int(time.time()) + 7200)
+                else:
+                    pass
                 return
 
         def load_history_file(filepath):
+            if self.dev_mode and filepath == self.mtime_file and not os.path.exists(filepath):
+                return []
+
             try:
                 with open(filepath, 'r') as f:
                     raw_data = [line.strip() for line in f if line.strip().isdigit()]
@@ -852,10 +928,12 @@ class VideoMonitor:
             self.log_info("正向数据不足, 进入学习期模式")
             if not os.path.exists(self.mtime_file):
                 self.generate_mtime_file("学习期数据不足")
-            self.save_next_check_time(int(time.time()) + 3600)
+            if not self.dev_mode:
+                self.save_next_check_time(int(time.time()) + 3600)
             if is_manual_run:
                 config['is_manual_run'] = False
-                save_config(config)
+                if not self.dev_mode:
+                    save_config(config)
             return
 
         def calculate_interval_stats(timestamps):
@@ -1104,7 +1182,8 @@ class VideoMonitor:
         config['last_neg_variance'] = neg_current_variance
         config['last_update'] = current_timestamp
         config['next_check_time'] = next_check_timestamp
-        save_config(config)
+        if not self.dev_mode:
+            save_config(config)
 
         # 格式化日志
         polling_days = final_frequency_sec // 86400
@@ -1285,6 +1364,15 @@ class VideoMonitor:
         except Exception as e:
             self.log_critical_error(f"清理临时文件失败: {e}", "cleanup 方法", send_notification=False)
 
+        if self.dev_mode:
+            try:
+                temp_dirs = ["temp_info_json"]
+                for temp_dir in temp_dirs:
+                    if os.path.exists(temp_dir):
+                        shutil.rmtree(temp_dir)
+            except Exception as e:
+                pass
+
     def cleanup_and_wait(self) -> None:
         """清理资源并等待下次检查"""
         self.cleanup()
@@ -1296,38 +1384,42 @@ class VideoMonitor:
                 current_timestamp = int(time.time())
                 wait_seconds = next_check_timestamp - current_timestamp
 
-                if wait_seconds <= 0:
-                    frequency_sec = 24000  # 400 分钟 = 24000 秒
-                    next_check_timestamp = current_timestamp + frequency_sec
-                    wait_seconds = frequency_sec
-                    self.log_info("等待时间出现负数, 使用默认 400 分钟间隔")
-                    self.save_next_check_time(next_check_timestamp)
-
+                # 计算并显示下次检查时间（无论是否等待）
                 next_dt = datetime.fromtimestamp(next_check_timestamp)
                 weekday_name = ['周一', '周二', '周三', '周四', '周五', '周六', '周日'][next_dt.weekday()]
                 next_check_time = f"{next_dt.strftime('%Y年%m月%d日')} {weekday_name} {next_dt.strftime('%H:%M:%S')}"
+
+                if wait_seconds <= 0:
+                    # 等待时间为负，立即开始检查
+                    self.log_info(f"上次检查时间已过 {abs(wait_seconds)} 秒，立即开始检查")
+                    self.log_info(f"下次检查: {next_check_time}")
+                    return  # 立即返回，不等待
+
+                # Dev模式不实际等待，只显示信息
+                if self.dev_mode:
+                    self.log_info(f"下次检查: {next_check_time}")
+                    return  # 立即返回，不等待
+
+                # 正常模式实际等待
                 self.log_info(f"下次检查: {next_check_time}")
                 time.sleep(wait_seconds)
             else:
-                frequency_sec = 24000  # 400 分钟 = 24000 秒
-                next_check_timestamp = int(time.time()) + frequency_sec
-                next_dt = datetime.fromtimestamp(next_check_timestamp)
-                weekday_name = ['周一', '周二', '周三', '周四', '周五', '周六', '周日'][next_dt.weekday()]
-                next_check_time = f"{next_dt.strftime('%Y年%m月%d日')} {weekday_name} {next_dt.strftime('%H:%M:%S')}"
-                self.save_next_check_time(next_check_timestamp)
-                self.log_info(f"下次检查: {next_check_time}")
-                time.sleep(frequency_sec)
+                # 首次运行或配置丢失，立即开始
+                self.log_info("未找到保存的检查时间，立即开始首次检查")
+                return  # 立即返回，不等待
 
         except (FileNotFoundError, ValueError) as e:
-            # 默认 400 分钟 (24000 秒) 后检查
-            frequency_sec = 24000  # 400 分钟 = 24000 秒
-            next_check_timestamp = int(time.time()) + frequency_sec
-            next_dt = datetime.fromtimestamp(next_check_timestamp)
-            weekday_name = ['周一', '周二', '周三', '周四', '周五', '周六', '周日'][next_dt.weekday()]
-            next_check_time = f"{next_dt.strftime('%Y年%m月%d日')} {weekday_name} {next_dt.strftime('%H:%M:%S')}"
-            self.save_next_check_time(next_check_timestamp)
-            self.log_info(f"下次检查: {next_check_time}")
-            time.sleep(frequency_sec)
+            # 配置文件异常，立即开始
+            self.log_info(f"配置文件异常 ({e})，立即开始检查")
+            return
+        except Exception as e:
+            # 其他异常，记录日志但继续使用默认等待
+            self.log_warning(f"等待逻辑异常: {e}，使用默认等待")
+            if not self.dev_mode:
+                frequency_sec = 24000
+                time.sleep(frequency_sec)
+            else:
+                self.log_info("Dev模式下跳过异常等待")
 
     def run_monitor(self) -> None:
         """主监控流程
@@ -1415,8 +1507,11 @@ class VideoMonitor:
                 self.known_urls.update(gist_missing_urls)
                 self.save_known_urls()
 
-                if not self.notify_new_videos(len(gist_missing_urls), has_new_parts=found_new_parts):
-                    self.log_critical_error("通知发送失败 - 无法向用户推送新视频通知", "notify_new_videos", send_notification=False)
+                if self.dev_mode:
+                    self.dev_new_videos += len(gist_missing_urls)
+                else:
+                    if not self.notify_new_videos(len(gist_missing_urls), has_new_parts=found_new_parts):
+                        self.log_critical_error("通知发送失败 - 无法向用户推送新视频通知", "notify_new_videos", send_notification=False)
                 
                 # 步骤9: 频率调整
                 if truly_new_urls:
@@ -1446,30 +1541,53 @@ def main() -> None:
     """程序入口点
 
     创建监控实例并启动主循环
+    支持Dev模式：-d/--dev 参数运行单次检查后退出
     """
-    monitor = VideoMonitor()
+    args = parse_arguments()  # 解析参数
 
-    # 标记为手动运行 (避免首次运行惩罚)
-    try:
-        if os.path.exists(monitor.wgmm_config_file):
-            with open(monitor.wgmm_config_file, 'r', encoding='utf-8') as f:
-                config = json.load(f)
-            config['is_manual_run'] = True
-            with open(monitor.wgmm_config_file, 'w', encoding='utf-8') as f:
-                json.dump(config, f, indent=2, ensure_ascii=False)
-    except Exception as e:
-        monitor.log_warning(f"设置手动运行标志失败: {e}")
+    monitor = VideoMonitor(dev_mode=args.dev)
 
-    try:
-        while True:
+    if args.dev:
+        try:
             monitor.run_monitor()
-    except KeyboardInterrupt:
-        monitor.log_info("程序被用户中断")
-        monitor.cleanup()
-        sys.exit(0)
-    except Exception as e:
-        monitor.log_critical_error(f"主循环出现严重错误: {e}", "main", send_notification=True)
-        sys.exit(1)
+            sys.exit(0)
+        except KeyboardInterrupt:
+            monitor.log_info("程序被用户中断")
+            monitor.cleanup()
+            sys.exit(0)
+        except Exception as e:
+            monitor.log_critical_error(f"运行出错: {e}", "main(dev)", send_notification=False)
+            sys.exit(1)
+
+    else:
+        try:
+            if os.path.exists(monitor.wgmm_config_file):
+                try:
+                    with open(monitor.wgmm_config_file, 'r', encoding='utf-8') as f:
+                        config = json.load(f)
+                    if 'is_manual_run' not in config:
+                        config['is_manual_run'] = True
+                        with open(monitor.wgmm_config_file, 'w', encoding='utf-8') as f:
+                            json.dump(config, f, indent=2, ensure_ascii=False)
+                        monitor.log_info("首次运行，已设置 is_manual_run = True")
+                except Exception as e:
+                    monitor.log_warning(f"初始化运行标志失败: {e}")
+            else:
+                # 配置文件不存在，首次运行
+                monitor.log_info("首次运行，将自动初始化配置")
+        except Exception as e:
+            monitor.log_warning(f"初始化检查失败: {e}")
+
+        try:
+            while True:
+                monitor.run_monitor()
+        except KeyboardInterrupt:
+            monitor.log_info("程序被用户中断")
+            monitor.cleanup()
+            sys.exit(0)
+        except Exception as e:
+            monitor.log_critical_error(f"主循环出现严重错误: {e}", "main", send_notification=True)
+            sys.exit(1)
 
 if __name__ == "__main__":
     main()
