@@ -1373,10 +1373,8 @@ class VideoMonitor:
             except Exception as e:
                 pass
 
-    def cleanup_and_wait(self) -> None:
-        """清理资源并等待下次检查"""
-        self.cleanup()
-
+    def wait_for_next_check(self) -> None:
+        """检查并等待下次检查时间"""
         try:
             next_check_timestamp = self.get_next_check_time()
 
@@ -1384,7 +1382,7 @@ class VideoMonitor:
                 current_timestamp = int(time.time())
                 wait_seconds = next_check_timestamp - current_timestamp
 
-                # 计算并显示下次检查时间（无论是否等待）
+                # 计算并显示下次检查时间
                 next_dt = datetime.fromtimestamp(next_check_timestamp)
                 weekday_name = ['周一', '周二', '周三', '周四', '周五', '周六', '周日'][next_dt.weekday()]
                 next_check_time = f"{next_dt.strftime('%Y年%m月%d日')} {weekday_name} {next_dt.strftime('%H:%M:%S')}"
@@ -1392,12 +1390,11 @@ class VideoMonitor:
                 if wait_seconds <= 0:
                     # 等待时间为负，立即开始检查
                     self.log_info(f"上次检查时间已过 {abs(wait_seconds)} 秒，立即开始检查")
-                    self.log_info(f"下次检查: {next_check_time}")
                     return  # 立即返回，不等待
 
                 # Dev模式不实际等待，只显示信息
                 if self.dev_mode:
-                    self.log_info(f"下次检查: {next_check_time}")
+                    self.log_info(f"下次检查: {next_check_time} (等待 {wait_seconds} 秒，Dev模式跳过)")
                     return  # 立即返回，不等待
 
                 # 正常模式实际等待
@@ -1439,7 +1436,7 @@ class VideoMonitor:
 
             if not sync_success and not self.memory_urls:
                 self.log_warning("无法获取基准数据 (Gist 失败且内存 urls 为空), 跳过本次检查")
-                self.cleanup_and_wait()
+                self.cleanup()
                 return
 
             # 步骤2: 两层预检查
@@ -1452,7 +1449,7 @@ class VideoMonitor:
             # 步骤3: 条件性完整检查
             if not (found_new_parts or found_new_videos):
                 self.adjust_check_frequency(found_new_content=False)
-                self.cleanup_and_wait()
+                self.cleanup()
                 return
 
             # 步骤4: 完整检查
@@ -1466,7 +1463,7 @@ class VideoMonitor:
             if not success or not stdout:
                 self.log_critical_error("无法获取视频列表", "完整检查阶段", send_notification=True)
                 self.adjust_check_frequency(found_new_content=False)
-                self.cleanup_and_wait()
+                self.cleanup()
                 return
 
             video_urls = [line.strip() for line in stdout.split('\n') if line.strip()]
@@ -1474,7 +1471,7 @@ class VideoMonitor:
             if not video_urls:
                 self.log_critical_error("未获取到任何内容", "完整检查阶段", send_notification=True)
                 self.adjust_check_frequency(found_new_content=False)
-                self.cleanup_and_wait()
+                self.cleanup()
                 return
 
             # 步骤5: 并行获取分片
@@ -1526,8 +1523,8 @@ class VideoMonitor:
                     self.log_info("完整检查未发现新内容 - 快速检查结果已确认, 无更新")
                     self.adjust_check_frequency(found_new_content=False)
 
-            # 步骤10: 清理并等待
-            self.cleanup_and_wait()
+            # 步骤10: 清理并保存下次检查时间
+            self.cleanup()
 
         except KeyboardInterrupt:
             self.log_info("收到中断信号, 正在退出...")
@@ -1535,7 +1532,7 @@ class VideoMonitor:
             sys.exit(0)
         except Exception as e:
             self.log_critical_error(f"监控脚本运行时出现意外错误: {e}", "run_monitor", send_notification=True)
-            self.cleanup_and_wait()
+            self.cleanup()
 
 def main() -> None:
     """程序入口点
@@ -1580,6 +1577,9 @@ def main() -> None:
 
         try:
             while True:
+                # 主循环开始前检查是否需要等待
+                monitor.wait_for_next_check()
+                # 执行监控检查
                 monitor.run_monitor()
         except KeyboardInterrupt:
             monitor.log_info("程序被用户中断")
