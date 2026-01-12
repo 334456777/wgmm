@@ -913,19 +913,14 @@ class VideoMonitor:
         positive_events = prune_old_data(positive_events, last_lambda, WEIGHT_THRESHOLD)
         negative_events = prune_old_data(negative_events, last_lambda, WEIGHT_THRESHOLD)
 
-        def check_history_sufficient(events, name):
-            if not events:
-                return False
-            if len(events) < MIN_HISTORY_COUNT:
-                self.log_info(f"{name}正向数据不足({len(events)}条)")
-                return False
-            return True
+        # 正向数据检查
+        def check_positive_sufficient(events):
+            return len(events) >= MIN_HISTORY_COUNT
 
-        pos_sufficient = check_history_sufficient(positive_events, "正向")
-        neg_sufficient = check_history_sufficient(negative_events, "负向")
+        pos_sufficient = check_positive_sufficient(positive_events)
 
         if not pos_sufficient:
-            self.log_info("正向数据不足, 进入学习期模式")
+            self.log_info(f"正向数据不足({len(positive_events)}条), 进入学习期模式")
             if not os.path.exists(self.mtime_file):
                 self.generate_mtime_file("学习期数据不足")
             if not self.dev_mode:
@@ -946,10 +941,13 @@ class VideoMonitor:
             return int(mean_interval), variance
 
         BASE_INTERVAL, pos_interval_variance = calculate_interval_stats(positive_events)
-        neg_interval_variance = calculate_interval_stats(negative_events)[1] if neg_sufficient else 0.0
+        # 负向数据直接使用，即使只有1条数据也计算方差（0.0）
+        neg_interval_variance = calculate_interval_stats(negative_events)[1]
 
         def _calculate_adaptive_lambda(timestamps, last_variance) -> tuple[float, float]:
+            # 负向数据直接使用，即使只有1条或0条数据也返回有意义的值
             if len(timestamps) < 2:
+                # 0条或1条数据时，方差为0，使用基础lambda
                 return LAMBDA_BASE, 0.0
             sorted_ts = sorted(timestamps)
             intervals = [sorted_ts[i+1] - sorted_ts[i] for i in range(len(sorted_ts)-1)]
@@ -965,7 +963,8 @@ class VideoMonitor:
         last_pos_variance = config.get('last_pos_variance', 0.0)
         pos_lambda, pos_current_variance = _calculate_adaptive_lambda(positive_events, last_pos_variance)
         last_neg_variance = config.get('last_neg_variance', 0.0)
-        neg_lambda, neg_current_variance = _calculate_adaptive_lambda(negative_events, last_neg_variance) if neg_sufficient else (pos_lambda, 0.0)
+        # 负向数据直接参与lambda计算，不使用正向lambda替代
+        neg_lambda, neg_current_variance = _calculate_adaptive_lambda(negative_events, last_neg_variance)
 
         def get_week_of_month(dt):
             month_calendar = calendar.monthcalendar(dt.year, dt.month)
@@ -1389,7 +1388,7 @@ class VideoMonitor:
 
                 if wait_seconds <= 0:
                     # 等待时间为负，立即开始检查
-                    self.log_info(f"上次检查时间已过 {abs(wait_seconds)} 秒，立即开始检查")
+                    self.log_info(f"距离上次检查时间已过 {abs(wait_seconds)} 秒，立即开始检查")
                     return  # 立即返回，不等待
 
                 # Dev模式不实际等待，只显示信息
