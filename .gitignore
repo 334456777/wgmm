@@ -16,3 +16,4 @@
 /.env
 /.vscode
 /miss_history.txt
+/.claude

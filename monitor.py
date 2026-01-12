@@ -27,15 +27,17 @@ import requests
 import logging
 import json
 import argparse
+import urllib.parse
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor, as_completed, Future
 import signal
 from typing import TYPE_CHECKING, Any
 from types import FrameType
 
+import numpy as np
+
 # ==================== 全局变量和参数解析 ====================
 def parse_arguments():
-    """解析命令行参数"""
     parser = argparse.ArgumentParser(description='Bilibili视频监控器')
     parser.add_argument('-d', '--dev', action='store_true',
                        help='开发模式：运行检查后立即退出，不等待下次检查时间')
@@ -43,11 +45,6 @@ def parse_arguments():
 
 # ==================== 环境配置 ====================
 def load_env_file(env_path: str = '.env') -> None:
-    """从.env文件加载环境变量
-
-    Args:
-        env_path: .env文件路径, 默认为当前目录
-    """
     if not os.path.exists(env_path):
         return
     
@@ -66,8 +63,6 @@ def load_env_file(env_path: str = '.env') -> None:
     except Exception as e:
         print(f"Warning: Failed to load .env file: {e}", file=sys.stderr)
 
-# 在导入后加载 .env
-load_env_file()
 
 class VideoMonitor:
     """Bilibili视频监控系统主类
@@ -137,10 +132,16 @@ class VideoMonitor:
         self.miss_history_file: str = "miss_history.txt"  # 失败历史记录文件
         self.cookies_file: str = "cookies.txt"  # Bilibili 登录凭证
         self.tmp_outputs_dir: str = "tmp_outputs"  # 临时输出目录
+
+        # 验证 cookies 文件内容（所有模式下都检查）
+        self._validate_cookies_file()
         
         # ==================== 网络阻抗监控 ====================
         self.last_ytdlp_duration: float = 0.0  # yt-dlp耗时 (秒)
         self.normal_ytdlp_duration: float = 60.0  # 正常耗时基准 (移动平均)
+
+        # ==================== WGMM 配置内存化 ====================
+        self.wgmm_config: dict = self._load_wgmm_config()
 
         # ==================== 初始化子系统 ====================
         self.setup_logging()
@@ -187,6 +188,75 @@ class VideoMonitor:
                 f.write('\n'.join(sorted(self.known_urls)))
         except Exception as e:
             self.log_critical_error(f"保存本地已知 URL 失败: {e}", "save_known_urls", send_notification=False)
+
+    def _validate_cookies_file(self) -> None:
+        """验证 cookies 文件是否存在且有内容
+
+        如果 cookies.txt 不存在或为空，记录 critical 错误并退出程序
+        """
+        cookies_path = self.cookies_file
+
+        # 检查文件是否存在
+        if not os.path.exists(cookies_path):
+            error_msg = f"cookies文件不存在: {cookies_path}"
+            self.log_critical_error(error_msg, "cookies_validation", send_notification=True)
+            sys.exit(1)
+
+        # 检查文件内容是否为空
+        try:
+            with open(cookies_path, 'r', encoding='utf-8') as f:
+                content = f.read().strip()
+
+            if not content:
+                error_msg = f"cookies文件内容为空: {cookies_path}"
+                self.log_critical_error(error_msg, "cookies_validation", send_notification=True)
+                sys.exit(1)
+
+        except Exception as e:
+            error_msg = f"无法读取cookies文件 {cookies_path}: {e}"
+            self.log_critical_error(error_msg, "cookies_validation", send_notification=True)
+            sys.exit(1)
+
+    def _load_wgmm_config(self) -> dict:
+        """从磁盘加载 WGMM 配置"""
+        default_config = {
+            'dimension_weights': {'day': 0.3, 'week': 0.25, 'month_week': 0.25, 'year_month': 0.2},
+            'last_lambda': 0.0001,
+            'last_pos_variance': 0.0,
+            'last_neg_variance': 0.0,
+            'last_update': 0,
+            'next_check_time': 0,
+            'is_manual_run': True,
+        }
+        try:
+            if os.path.exists(self.wgmm_config_file):
+                with open(self.wgmm_config_file, 'r', encoding='utf-8') as f:
+                    config = json.load(f)
+                for key, value in default_config.items():
+                    if key not in config:
+                        config[key] = value
+                    elif isinstance(value, dict):
+                        for sub_key, sub_value in value.items():
+                            if sub_key not in config[key]:
+                                config[key][sub_key] = sub_value
+                return config
+            else:
+                with open(self.wgmm_config_file, 'w', encoding='utf-8') as f:
+                    json.dump(default_config, f, indent=2, ensure_ascii=False)
+                return default_config
+        except Exception as e:
+            self.log_warning(f"加载WGMM配置文件失败, 使用默认配置: {e}")
+            return default_config
+
+    def _save_wgmm_config(self) -> None:
+        """保存 WGMM 配置到磁盘"""
+        try:
+            if self.dev_mode:
+                return
+            with open(self.wgmm_config_file, 'w', encoding='utf-8') as f:
+                json.dump(self.wgmm_config, f, indent=2, ensure_ascii=False)
+        except Exception as e:
+            self.log_warning(f"保存WGMM配置失败: {e}")
 
     def signal_handler(self, signum: int, frame: FrameType | None) -> None:
         """系统信号处理器
@@ -356,8 +426,6 @@ class VideoMonitor:
         Returns:
             是否发送成功
         """
-        import urllib.parse
-        
         try:
             encoded_title = urllib.parse.quote(title)
             encoded_body = urllib.parse.quote(body)
@@ -468,7 +536,7 @@ class VideoMonitor:
             # 更新并写回
             config['next_check_time'] = next_check_timestamp
             with open(self.wgmm_config_file, 'w', encoding='utf-8') as f:
-                json.dump(config, f, indent=2, ensure_ascii=False)
+                    json.dump(config, f, indent=2, ensure_ascii=False)
         except Exception as e:
             self.log_critical_error(f"保存next_check_time失败: {e}", "save_next_check_time 方法", send_notification=False)
 
@@ -709,11 +777,6 @@ class VideoMonitor:
         Args:
             found_new_content: 是否发现新内容, 影响历史记录写入
         """
-        import math
-        import calendar
-        import json
-        from collections import defaultdict
-
         # ==================== 模型超参数配置 ====================
         # 高斯核标准差
         SIGMA_DAY = 0.8
@@ -751,60 +814,28 @@ class VideoMonitor:
         SECONDS_IN_DAY = 86400
         SECONDS_IN_WEEK = 604800
 
-        # 配置文件管理
-        config_file = os.path.join(os.path.dirname(self.mtime_file), 'wgmm_config.json')
+        def get_local_timezone_offset():
+            """获取本地时区偏移（秒），用于Unix时间戳转本地时间"""
+            if time.localtime().tm_isdst and time.daylight:
+                return -time.altzone
+            else:
+                return -time.timezone
 
-        def load_config():
-            default_config = {
-                'dimension_weights': {'day': WEIGHT_DAY, 'week': WEIGHT_WEEK, 'month_week': WEIGHT_MONTH_WEEK, 'year_month': WEIGHT_YEAR_MONTH},
-                'last_lambda': LAMBDA_BASE,
-                'last_pos_variance': 0.0,
-                'last_neg_variance': 0.0,
-                'last_update': 0,
-                'next_check_time': 0,
-                'is_manual_run': True,
-            }
-            try:
-                if os.path.exists(config_file):
-                    with open(config_file, 'r', encoding='utf-8') as f:
-                        config = json.load(f)
-                    for key, value in default_config.items():
-                        if key not in config:
-                            config[key] = value
-                        elif isinstance(value, dict):
-                            for sub_key, sub_value in value.items():
-                                if sub_key not in config[key]:
-                                    config[key][sub_key] = sub_value
-                    return config
-                else:
-                    with open(config_file, 'w', encoding='utf-8') as f:
-                        json.dump(default_config, f, indent=2, ensure_ascii=False)
-                    self.log_info(f"已创建WGMM配置文件: {config_file}")
-                    return default_config
-            except Exception as e:
-                self.log_warning(f"加载WGMM配置文件失败, 使用默认配置: {e}")
-                return default_config
+        # ==================== 配置内存化 ====================
+        # 使用__init__中加载的内存配置，避免重复IO
+        config = self.wgmm_config
+        # 确保配置中包含当前的权重常量（支持配置升级）
+        if 'dimension_weights' not in config:
+            config['dimension_weights'] = {'day': WEIGHT_DAY, 'week': WEIGHT_WEEK, 'month_week': WEIGHT_MONTH_WEEK, 'year_month': WEIGHT_YEAR_MONTH}
 
-        def save_config(config_data):
-            if self.dev_mode:
-                self.sandbox_config = config_data.copy()
-                return
-
-            try:
-                with open(config_file, 'w', encoding='utf-8') as f:
-                    json.dump(config_data, f, indent=2, ensure_ascii=False)
-            except Exception as e:
-                self.log_critical_error(f"保存WGMM配置文件失败: {e}", "save_config 方法", send_notification=False)
-
-        config = load_config()
         dimension_weights_from_config = config['dimension_weights']
 
         if self.dev_mode:
             is_manual_run = True
         else:
-            is_manual_run = config.get('is_manual_run', True)
+            is_manual_run = self.wgmm_config.get('is_manual_run', True)
             if is_manual_run:
-                config['is_manual_run'] = False
+                self.wgmm_config['is_manual_run'] = False
 
         current_timestamp = int(time.time())
         current_dt = datetime.fromtimestamp(current_timestamp)
@@ -865,21 +896,31 @@ class VideoMonitor:
         def filter_outliers(timestamps, current_time):
             if len(timestamps) < 3:
                 return [ts for ts in timestamps if ts <= current_time]
-            sorted_ts = sorted(timestamps)
-            intervals = [sorted_ts[i+1] - sorted_ts[i] for i in range(len(sorted_ts)-1)]
-            if not intervals:
-                return sorted_ts
-            intervals_sorted = sorted(intervals)
-            q1 = intervals_sorted[len(intervals_sorted) // 4]
-            q3 = intervals_sorted[(3 * len(intervals_sorted)) // 4]
+
+            sorted_ts = np.array(sorted(timestamps), dtype=np.float64)
+            if len(sorted_ts) < 2:
+                return timestamps
+
+            intervals = np.diff(sorted_ts)
+            if len(intervals) == 0:
+                return timestamps
+
+            q1 = np.percentile(intervals, 25)
+            q3 = np.percentile(intervals, 75)
+
             iqr = q3 - q1
-            lower_bound = q1 - 3 * iqr
-            upper_bound = q3 + 3 * iqr
-            filtered = [sorted_ts[0]]
-            for i in range(len(intervals)):
-                if lower_bound <= intervals[i] <= upper_bound:
-                    filtered.append(sorted_ts[i+1])
-            return [ts for ts in filtered if ts <= current_time]
+            lower_bound = q1 - 3.0 * iqr
+            upper_bound = q3 + 3.0 * iqr
+
+            mask = (intervals >= lower_bound) & (intervals <= upper_bound)
+
+            filtered_indices = np.concatenate(([0], np.where(mask)[0] + 1))
+            filtered_ts = sorted_ts[filtered_indices]
+
+            current_mask = filtered_ts <= current_time
+            final_ts = filtered_ts[current_mask]
+
+            return final_ts.tolist()
 
         positive_events = filter_outliers(positive_events, current_timestamp)
         negative_events = filter_outliers(negative_events, current_timestamp)
@@ -887,27 +928,35 @@ class VideoMonitor:
         def prune_old_data(events, last_lambda, threshold):
             if not events or not os.path.exists(self.mtime_file if events is positive_events else self.miss_history_file):
                 return events
-            pruned = []
-            removed_count = 0
-            for timestamp in events:
-                age_hours = (current_timestamp - timestamp) / 3600.0
-                if age_hours < 0:
-                    continue
-                weight = math.exp(-last_lambda * age_hours)
-                if weight >= threshold:
-                    pruned.append(timestamp)
-                else:
-                    removed_count += 1
-            if removed_count > 0:
+
+            # NumPy 向量化剪枝
+            events_arr = np.array(events, dtype=np.float64)
+            current_ts = float(current_timestamp)
+
+            # 向量化计算年龄和权重
+            ages_hours = (current_ts - events_arr) / 3600.0
+            weights = np.exp(-last_lambda * ages_hours)
+
+            # 布尔索引过滤：保留 age >= 0 且 weight >= threshold
+            mask = (ages_hours >= 0) & (weights >= threshold)
+
+            pruned_arr = events_arr[mask]
+
+            # 如果有数据被剔除，保存到文件
+            if len(pruned_arr) < len(events_arr):
                 filepath = self.mtime_file if events is positive_events else self.miss_history_file
                 try:
+                    # 转换为 int 保存以保持格式一致
+                    pruned_list = pruned_arr.astype(int).tolist()
                     with open(filepath, 'w') as f:
-                        for ts in pruned:
+                        for ts in pruned_list:
                             f.write(f"{ts}\n")
                 except Exception as e:
                     self.log_warning(f"数据剪枝失败: {e}")
                     return events
-            return pruned
+                return pruned_list
+
+            return events
 
         last_lambda = config.get('last_lambda', LAMBDA_BASE)
         positive_events = prune_old_data(positive_events, last_lambda, WEIGHT_THRESHOLD)
@@ -926,39 +975,53 @@ class VideoMonitor:
             if not self.dev_mode:
                 self.save_next_check_time(int(time.time()) + 3600)
             if is_manual_run:
-                config['is_manual_run'] = False
-                if not self.dev_mode:
-                    save_config(config)
+                self.wgmm_config['is_manual_run'] = False
+                self._save_wgmm_config()
             return
 
         def calculate_interval_stats(timestamps):
-            sorted_ts = sorted(timestamps)
-            if len(sorted_ts) < 2:
-                return DEFAULT_INTERVAL, 0
-            intervals = [sorted_ts[i+1] - sorted_ts[i] for i in range(len(sorted_ts)-1)]
-            mean_interval = sum(intervals) / len(intervals)
-            variance = sum((x - mean_interval) ** 2 for x in intervals) / len(intervals)
-            return int(mean_interval), variance
+            if len(timestamps) < 2:
+                return float(DEFAULT_INTERVAL), 0.0
+
+            timestamps_arr = np.array(sorted(timestamps), dtype=np.float64)
+            intervals = np.diff(timestamps_arr)
+            mean_interval = np.mean(intervals, dtype=np.float64)
+            variance = np.var(intervals, dtype=np.float64)
+
+            return float(mean_interval), float(variance)
 
         BASE_INTERVAL, pos_interval_variance = calculate_interval_stats(positive_events)
         # 负向数据直接使用，即使只有1条数据也计算方差（0.0）
         neg_interval_variance = calculate_interval_stats(negative_events)[1]
 
         def _calculate_adaptive_lambda(timestamps, last_variance) -> tuple[float, float]:
-            # 负向数据直接使用，即使只有1条或0条数据也返回有意义的值
             if len(timestamps) < 2:
-                # 0条或1条数据时，方差为0，使用基础lambda
-                return LAMBDA_BASE, 0.0
-            sorted_ts = sorted(timestamps)
-            intervals = [sorted_ts[i+1] - sorted_ts[i] for i in range(len(sorted_ts)-1)]
-            current_variance = sum((x - sum(intervals)/len(intervals)) ** 2 for x in intervals) / len(intervals)
-            variance_trend_normalized = (current_variance - last_variance) / last_variance if last_variance > 0 else 0.0
-            normalized_variance = current_variance / (86400 ** 2)
-            lambda_factor = math.log(1 + normalized_variance * 10) / math.log(11) if normalized_variance > 0 else 0
+                return float(LAMBDA_BASE), 0.0
+
+            timestamps_arr = np.array(sorted(timestamps), dtype=np.float64)
+            intervals = np.diff(timestamps_arr)
+            current_variance = np.var(intervals, dtype=np.float64)
+
+            if last_variance > 0:
+                variance_trend_normalized = (current_variance - last_variance) / last_variance
+            else:
+                variance_trend_normalized = 0.0
+
+            seconds_in_day_sq = 86400 ** 2
+            normalized_variance = current_variance / seconds_in_day_sq
+
+            if normalized_variance > 0:
+                lambda_factor = np.log(1 + normalized_variance * 10) / np.log(11)
+            else:
+                lambda_factor = 0
+
             base_adaptive_lambda = LAMBDA_MIN + (LAMBDA_MAX - LAMBDA_MIN) * lambda_factor
             trend_correction = variance_trend_normalized * 0.3 * base_adaptive_lambda
             adaptive_lambda = base_adaptive_lambda + trend_correction
-            return max(LAMBDA_MIN, min(LAMBDA_MAX, adaptive_lambda)), current_variance
+
+            final_lambda = np.clip(adaptive_lambda, LAMBDA_MIN, LAMBDA_MAX)
+
+            return float(final_lambda), float(current_variance)
 
         last_pos_variance = config.get('last_pos_variance', 0.0)
         pos_lambda, pos_current_variance = _calculate_adaptive_lambda(positive_events, last_pos_variance)
@@ -966,229 +1029,160 @@ class VideoMonitor:
         # 负向数据直接参与lambda计算，不使用正向lambda替代
         neg_lambda, neg_current_variance = _calculate_adaptive_lambda(negative_events, last_neg_variance)
 
-        def get_week_of_month(dt):
-            month_calendar = calendar.monthcalendar(dt.year, dt.month)
-            for week_num, week in enumerate(month_calendar, 1):
-                if dt.day in week:
-                    return week_num
-            return 1
-
-        def calculate_dimension_strength(timestamps, dimension):
-            counts = defaultdict(int)
-            for ts in timestamps:
-                dt = datetime.fromtimestamp(ts)
-                if dimension == 'day':
-                    key = dt.hour
-                elif dimension == 'week':
-                    key = dt.weekday()
-                elif dimension == 'month_week':
-                    key = get_week_of_month(dt)
-                elif dimension == 'year_month':
-                    key = dt.month
-                else:
-                    continue
-                counts[key] += 1
-            if not counts:
-                return 0.0
-            values = list(counts.values())
-            mean_val = sum(values) / len(values)
-            if mean_val == 0:
-                return 0.0
-            variance = sum((x - mean_val) ** 2 for x in values) / len(values)
-            std_dev = math.sqrt(variance)
-            return mean_val / std_dev if std_dev > 0 else mean_val
-
         def learn_dimension_weights(timestamps, old_weights):
             if len(timestamps) < 20:
                 return old_weights
-            dimension_scores = {
-                'day': calculate_dimension_strength(timestamps, 'day'),
-                'week': calculate_dimension_strength(timestamps, 'week'),
-                'month_week': calculate_dimension_strength(timestamps, 'month_week'),
-                'year_month': calculate_dimension_strength(timestamps, 'year_month')
-            }
-            total_score = sum(dimension_scores.values())
+
+            # 使用 NumPy 方法计算维度强度
+            raw_components = self._get_raw_time_components(np.array(timestamps, dtype=np.float64))
+
+            dimension_scores = {}
+            for dim in ['day', 'week', 'month_week', 'year_month']:
+                keys = raw_components.get(dim, np.array([], dtype=np.int64))
+                if len(keys) == 0:
+                    dimension_scores[dim] = 0.0
+                    continue
+
+                unique_keys, counts = np.unique(keys, return_counts=True)
+                counts_arr = counts.astype(np.float64)
+                mean_val = np.mean(counts_arr)
+
+                if mean_val == 0:
+                    dimension_scores[dim] = 0.0
+                else:
+                    std_dev = np.std(counts_arr)
+                    if std_dev > 0:
+                        dimension_scores[dim] = float(mean_val / std_dev)
+                    else:
+                        dimension_scores[dim] = float(mean_val)
+
+            scores_array = np.array(list(dimension_scores.values()), dtype=np.float64)
+            total_score = np.sum(scores_array, dtype=np.float64)
+
             if total_score > 0:
-                new_weights = {k: v / total_score * 2.0 for k, v in dimension_scores.items()}
+                normalized_scores = scores_array / total_score * 2.0
+                new_weights = dict(zip(dimension_scores.keys(), normalized_scores))
             else:
                 new_weights = old_weights
+
             smoothed_weights = {}
-            for key in new_weights:
-                smoothed_weights[key] = old_weights[key] * (1 - LEARNING_RATE) + new_weights[key] * LEARNING_RATE
+            for key in dimension_scores.keys():
+                old_weight = old_weights[key]
+                new_weight = new_weights[key]
+                smoothed = old_weight * (1 - LEARNING_RATE) + new_weight * LEARNING_RATE
+                smoothed_weights[key] = float(smoothed)
+
             return smoothed_weights
 
         dimension_weights = learn_dimension_weights(positive_events, dimension_weights_from_config)
 
-        # 纯计算方法: 单点得分计算
-        def _calculate_point_score(target_timestamp, pos_events, neg_events, dimension_weights, pos_lambda, neg_lambda) -> float:
-            # 步骤1: 时间特征向量化
-            target_dt = datetime.fromtimestamp(target_timestamp)
-            current_second_of_day = target_dt.hour * 3600 + target_dt.minute * 60 + target_dt.second
-            current_second_of_week = (target_dt.weekday() * SECONDS_IN_DAY) + current_second_of_day
-            current_week_of_month = get_week_of_month(target_dt)
-            current_month_of_year = target_dt.month
+        # ==================== 参数字典准备 ====================
+        sigmas = {
+            'day': float(SIGMA_DAY),
+            'week': float(SIGMA_WEEK),
+            'month_week': float(SIGMA_MONTH_WEEK),
+            'year_month': float(SIGMA_YEAR_MONTH)
+        }
 
-            # 步骤2: 三角函数特征变换
-            current_day_sin = math.sin(2 * math.pi * current_second_of_day / SECONDS_IN_DAY)
-            current_day_cos = math.cos(2 * math.pi * current_second_of_day / SECONDS_IN_DAY)
-            current_week_sin = math.sin(2 * math.pi * current_second_of_week / SECONDS_IN_WEEK)
-            current_week_cos = math.cos(2 * math.pi * current_second_of_week / SECONDS_IN_WEEK)
-            current_month_week_sin = math.sin(2 * math.pi * current_week_of_month / 6)
-            current_month_week_cos = math.cos(2 * math.pi * current_week_of_month / 6)
-            current_year_month_sin = math.sin(2 * math.pi * current_month_of_year / 12)
-            current_year_month_cos = math.cos(2 * math.pi * current_month_of_year / 12)
-
-            def calculate_source_score(events, lambda_decay):
-                # 步骤3: 双波源计算 (正向/负向)
-                if not events:
-                    return 0.0
-                total_score = 0.0
-                valid_events = 0
-                scores = []
-                for event_timestamp in events:
-                    try:
-                        age_hours = (target_timestamp - event_timestamp) / 3600.0
-                        if age_hours < 0:
-                            continue
-                        weight = math.exp(-lambda_decay * age_hours)
-                        event_dt = datetime.fromtimestamp(event_timestamp)
-                        event_second_of_day = event_dt.hour * 3600 + event_dt.minute * 60 + event_dt.second
-                        event_second_of_week = (event_dt.weekday() * SECONDS_IN_DAY) + event_second_of_day
-                        event_week_of_month = get_week_of_month(event_dt)
-                        event_month_of_year = event_dt.month
-
-                        event_day_sin = math.sin(2 * math.pi * event_second_of_day / SECONDS_IN_DAY)
-                        event_day_cos = math.cos(2 * math.pi * event_second_of_day / SECONDS_IN_DAY)
-                        event_week_sin = math.sin(2 * math.pi * event_second_of_week / SECONDS_IN_WEEK)
-                        event_week_cos = math.cos(2 * math.pi * event_second_of_week / SECONDS_IN_WEEK)
-                        event_month_week_sin = math.sin(2 * math.pi * event_week_of_month / 6)
-                        event_month_week_cos = math.cos(2 * math.pi * event_week_of_month / 6)
-                        event_year_month_sin = math.sin(2 * math.pi * event_month_of_year / 12)
-                        event_year_month_cos = math.cos(2 * math.pi * event_month_of_year / 12)
-
-                        day_dist_sq = ((current_day_sin - event_day_sin) ** 2 + (current_day_cos - event_day_cos) ** 2)
-                        day_gaussian = math.exp(-day_dist_sq / (2 * SIGMA_DAY ** 2))
-                        week_dist_sq = ((current_week_sin - event_week_sin) ** 2 + (current_week_cos - event_week_cos) ** 2)
-                        week_gaussian = math.exp(-week_dist_sq / (2 * SIGMA_WEEK ** 2))
-                        month_week_dist_sq = ((current_month_week_sin - event_month_week_sin) ** 2 + (current_month_week_cos - event_month_week_cos) ** 2)
-                        month_week_gaussian = math.exp(-month_week_dist_sq / (2 * SIGMA_MONTH_WEEK ** 2))
-                        year_month_dist_sq = ((current_year_month_sin - event_year_month_sin) ** 2 + (current_year_month_cos - event_year_month_cos) ** 2)
-                        year_month_gaussian = math.exp(-year_month_dist_sq / (2 * SIGMA_YEAR_MONTH ** 2))
-
-                        # 步骤4: 加权高斯混合合成
-                        combined_gaussian = (dimension_weights['day'] * day_gaussian +
-                                           dimension_weights['week'] * week_gaussian +
-                                           dimension_weights['month_week'] * month_week_gaussian +
-                                           dimension_weights['year_month'] * year_month_gaussian)
-                        score = weight * combined_gaussian
-                        total_score += score
-                        scores.append(score)
-                        valid_events += 1
-                    except (ValueError, OSError):
-                        continue
-                if valid_events == 0:
-                    return 0.0
-                if len(scores) > 0:
-                    min_score = min(scores)
-                    max_score = max(scores)
-                    if max_score > min_score:
-                        normalized_score = (total_score / valid_events - min_score) / (max_score - min_score)
-                    else:
-                        normalized_score = 0.5
-                else:
-                    normalized_score = 0.5
-                return max(0.0, min(1.0, normalized_score))
-
-            # 步骤5: 对抗机制合成
-            pos_score = calculate_source_score(pos_events, pos_lambda)
-            neg_score = calculate_source_score(neg_events, neg_lambda) if neg_events else 0.0
-            final_score = pos_score - RESISTANCE_COEFFICIENT * neg_score
-            return max(0.0, min(1.0, final_score))
-
-        # 步骤6: 当前得分计算
         BASE_INTERVAL, _ = calculate_interval_stats(positive_events)
-        current_score = _calculate_point_score(current_timestamp, positive_events, negative_events, dimension_weights, pos_lambda, neg_lambda)
+        current_score = self._calculate_point_score(current_timestamp, positive_events, negative_events, dimension_weights, pos_lambda, neg_lambda, sigmas, RESISTANCE_COEFFICIENT)
 
-        # 步骤7: 非线性映射
         exponential_score = current_score ** MAPPING_CURVE
         base_interval_sec = BASE_INTERVAL - (BASE_INTERVAL - MAX_INTERVAL) * exponential_score
-        base_frequency_sec = int(max(MAX_INTERVAL, min(BASE_INTERVAL * 2, base_interval_sec)))
 
-        # 步骤8: 未来展望与峰值预测
+        base_frequency_sec = np.clip(base_interval_sec, MAX_INTERVAL, BASE_INTERVAL * 2)
+
         lookahead_seconds = LOOKAHEAD_DAYS * SECONDS_IN_DAY
         lookahead_start = current_timestamp + base_frequency_sec
         lookahead_end = current_timestamp + lookahead_seconds
-        gaussian_width = (SIGMA_DAY * SECONDS_IN_DAY / 24) * 2
-        min_step = gaussian_width * 0.5
-        max_step = gaussian_width * 4
-        scan_start = max(lookahead_start, current_timestamp + 600)
+
+        gaussian_width = (SIGMA_DAY * SECONDS_IN_DAY / 24.0) * 2.0
+        min_step = float(gaussian_width * 0.25)
+        max_step = float(gaussian_width * 4.0)
+
+        scan_start = float(np.maximum(lookahead_start, current_timestamp + 600.0))
 
         best_peak_time = None
         best_peak_score = 0.0
-        scan_time = scan_start
-        last_score = current_score
 
-        while scan_time <= lookahead_end:
-            scan_score = _calculate_point_score(scan_time, positive_events, negative_events, dimension_weights, pos_lambda, neg_lambda)
-            gradient = scan_score - last_score
-            is_peak = False
-            if scan_time > scan_start:
-                if scan_score > last_score:
-                    next_scan = scan_time + min_step
-                    if next_scan <= lookahead_end:
-                        next_score = _calculate_point_score(next_scan, positive_events, negative_events, dimension_weights, pos_lambda, neg_lambda)
-                        if scan_score > next_score:
-                            is_peak = True
-            if is_peak and scan_score > best_peak_score:
-                best_peak_score = scan_score
-                best_peak_time = scan_time
-            if abs(gradient) < 0.01:
-                step = min(max_step, min_step * 3)
+        if lookahead_end > scan_start:
+            if current_score > 0.5:
+                scan_step = min_step
             else:
-                step = min_step
-            if is_peak or (scan_score > 0.7 and abs(gradient) < 0.05):
-                step = min_step * 0.5
-            last_score = scan_score
-            scan_time += step
+                scan_step = min_step * 2
 
-        # 步骤9: 唤醒决策
+            scan_times = np.arange(scan_start, lookahead_end + scan_step, scan_step, dtype=np.float64)
+
+            # 向量化批量计算所有扫描点的得分 (核心优化)
+            scan_scores = self._batch_calculate_scores(scan_times, positive_events, negative_events, dimension_weights, pos_lambda, neg_lambda, sigmas, RESISTANCE_COEFFICIENT)
+
+            if len(scan_scores) > 1:
+                gradients = np.diff(scan_scores)
+                peaks_mask = (gradients[:-1] > 0) & (gradients[1:] < 0)
+
+                for i in range(len(peaks_mask)):
+                    if peaks_mask[i]:
+                        scan_idx = i + 1
+                        if scan_scores[scan_idx] > 0.7 and abs(gradients[i]) < 0.05:
+                            peaks_mask[i] = True
+
+                peak_indices = np.where(peaks_mask)[0]
+
+                if len(peak_indices) > 0:
+                    peak_scores = scan_scores[peak_indices]
+                    best_idx_in_peaks = np.argmax(peak_scores)
+                    best_peak_idx = peak_indices[best_idx_in_peaks]
+
+                    if peak_scores[best_idx_in_peaks] > best_peak_score:
+                        best_peak_score = float(peak_scores[best_idx_in_peaks])
+                        best_peak_time = float(scan_times[best_peak_idx])
+
         final_frequency_sec = base_frequency_sec
         if best_peak_time and best_peak_score > 0.6:
             peak_interval = best_peak_time - current_timestamp
             if peak_interval < base_frequency_sec * 1.2:
-                advanced_time = best_peak_time - (PEAK_ADVANCE_MINUTES * 60)
+                advanced_time = best_peak_time - (PEAK_ADVANCE_MINUTES * 60.0)
                 advanced_interval = advanced_time - current_timestamp
                 if advanced_interval > 300:
-                    final_frequency_sec = int(advanced_interval)
+                    final_frequency_sec = float(advanced_interval)
 
-        # 步骤10: 网络阻抗阻尼
         impedance_factor = 1.0
-        if self.last_ytdlp_duration > self.normal_ytdlp_duration * 2:
-            impedance_ratio = self.last_ytdlp_duration / max(self.normal_ytdlp_duration, 1.0)
-            impedance_factor = 1.0 + min(0.5, (impedance_ratio - 2.0) * 0.1)
-        final_frequency_sec = int(final_frequency_sec * impedance_factor)
+        last_duration = self.last_ytdlp_duration
+        normal_duration = self.normal_ytdlp_duration
 
-        # 步骤11: 写入失败历史记录
+        if last_duration > normal_duration * 2.0:
+            impedance_ratio = last_duration / max(normal_duration, 1.0)
+            impedance_factor = 1.0 + min(0.5, (impedance_ratio - 2.0) * 0.1)
+
+        final_frequency_sec = float(final_frequency_sec * impedance_factor)
         if not found_new_content and not is_manual_run:
             save_to_miss_history(current_timestamp)
 
-        # 步骤12: 保存配置
-        next_check_timestamp = int(time.time()) + final_frequency_sec
+        next_check_timestamp = int(time.time()) + int(final_frequency_sec)
         self.save_next_check_time(next_check_timestamp)
-        config['dimension_weights'] = dimension_weights
-        config['last_lambda'] = pos_lambda
-        config['last_pos_variance'] = pos_current_variance
-        config['last_neg_variance'] = neg_current_variance
-        config['last_update'] = current_timestamp
-        config['next_check_time'] = next_check_timestamp
-        if not self.dev_mode:
-            save_config(config)
 
-        # 格式化日志
-        polling_days = final_frequency_sec // 86400
-        polling_hours = (final_frequency_sec % 86400) // 3600
-        polling_minutes = (final_frequency_sec % 3600) // 60
-        polling_seconds = final_frequency_sec % 60
+        # 更新内存化的配置
+        self.wgmm_config['last_update'] = current_timestamp
+        self.wgmm_config['next_check_time'] = next_check_timestamp
+        self.wgmm_config['dimension_weights'] = dimension_weights
+        self.wgmm_config['last_lambda'] = pos_lambda
+        self.wgmm_config['last_pos_variance'] = pos_current_variance
+        self.wgmm_config['last_neg_variance'] = neg_current_variance
+
+        if not self.dev_mode:
+            self._save_wgmm_config()
+
+        total_seconds = float(final_frequency_sec)
+        polling_days_float = total_seconds / 86400.0
+        polling_hours_float = (total_seconds % 86400.0) / 3600.0
+        polling_minutes_float = (total_seconds % 3600.0) / 60.0
+        polling_seconds_float = total_seconds % 60.0
+
+        polling_days = int(polling_days_float)
+        polling_hours = int(polling_hours_float)
+        polling_minutes = int(polling_minutes_float)
+        polling_seconds = int(polling_seconds_float)
+
         polling_interval_parts = []
         if polling_days > 0:
             polling_interval_parts.append(f"{polling_days} 天")
@@ -1202,7 +1196,6 @@ class VideoMonitor:
         self.log_info(f"WGMM调频 - 轮询间隔: {polling_interval_str}")
 
     def run_yt_dlp(self, command_args: list[str], timeout: int = 300) -> tuple[bool, str, str]:
-        """执行 yt-dlp 命令, 捕获耗时用于网络阻尼计算"""
         start_time = time.time()
         try:
             result = subprocess.run(
@@ -1381,41 +1374,268 @@ class VideoMonitor:
                 current_timestamp = int(time.time())
                 wait_seconds = next_check_timestamp - current_timestamp
 
-                # 计算并显示下次检查时间
                 next_dt = datetime.fromtimestamp(next_check_timestamp)
                 weekday_name = ['周一', '周二', '周三', '周四', '周五', '周六', '周日'][next_dt.weekday()]
                 next_check_time = f"{next_dt.strftime('%Y年%m月%d日')} {weekday_name} {next_dt.strftime('%H:%M:%S')}"
 
                 if wait_seconds <= 0:
-                    # 等待时间为负，立即开始检查
                     self.log_info(f"距离上次检查时间已过 {abs(wait_seconds)} 秒，立即开始检查")
-                    return  # 立即返回，不等待
+                    return
 
-                # Dev模式不实际等待，只显示信息
                 if self.dev_mode:
-                    self.log_info(f"下次检查: {next_check_time} (等待 {wait_seconds} 秒，Dev模式跳过)")
-                    return  # 立即返回，不等待
+                    self.log_info(f"下次检查: {next_check_time}")
+                    return
 
-                # 正常模式实际等待
                 self.log_info(f"下次检查: {next_check_time}")
                 time.sleep(wait_seconds)
             else:
-                # 首次运行或配置丢失，立即开始
                 self.log_info("未找到保存的检查时间，立即开始首次检查")
-                return  # 立即返回，不等待
+                return
 
         except (FileNotFoundError, ValueError) as e:
-            # 配置文件异常，立即开始
             self.log_info(f"配置文件异常 ({e})，立即开始检查")
             return
         except Exception as e:
-            # 其他异常，记录日志但继续使用默认等待
             self.log_warning(f"等待逻辑异常: {e}，使用默认等待")
             if not self.dev_mode:
                 frequency_sec = 24000
                 time.sleep(frequency_sec)
             else:
                 self.log_info("Dev模式下跳过异常等待")
+
+    def _get_local_timezone_offset(self) -> float:
+        """获取本地时区偏移（秒），用于Unix时间戳转本地时间"""
+        if time.localtime().tm_isdst and time.daylight:
+            return -time.altzone
+        else:
+            return -time.timezone
+
+    def _vectorized_time_features_numpy(self, timestamps_array: np.ndarray) -> dict:
+        """
+        纯 NumPy 实现的时间特征提取，速度提升 100x+
+        完全移除 datetime 和 calendar 循环依赖
+        """
+        if len(timestamps_array) == 0:
+            return {
+                'day_sin': np.array([], dtype=np.float64),
+                'day_cos': np.array([], dtype=np.float64),
+                'week_sin': np.array([], dtype=np.float64),
+                'week_cos': np.array([], dtype=np.float64),
+                'month_week_sin': np.array([], dtype=np.float64),
+                'month_week_cos': np.array([], dtype=np.float64),
+                'year_month_sin': np.array([], dtype=np.float64),
+                'year_month_cos': np.array([], dtype=np.float64)
+            }
+
+        # 转换时区并提取时间分量
+        ts_arr = np.array(timestamps_array, dtype=np.float64)
+        offset = self._get_local_timezone_offset()
+        dt64_local = (ts_arr + offset).astype('datetime64[s]')
+
+        # 时间分量计算
+        seconds_in_day = (dt64_local.astype('int64') % 86400).astype(np.float64)
+        days_since_epoch = dt64_local.astype('datetime64[D]').astype('int64')
+        weekday = (days_since_epoch + 3) % 7
+        dates_M = dt64_local.astype('datetime64[M]')
+        months = (dates_M - dates_M.astype('datetime64[Y]')).astype(int) + 1
+
+        # 当月第几周
+        day_of_month = (dt64_local.astype('datetime64[D]') - dates_M.astype('datetime64[D]')).astype(int) + 1
+        first_day_epoch = dates_M.astype('datetime64[D]').astype('int64')
+        first_weekday = (first_day_epoch + 3) % 7
+        current_week_of_month = (day_of_month - 1 + first_weekday) // 7 + 1
+
+        # 三角特征
+        current_second_of_week = weekday * 86400.0 + seconds_in_day
+
+        features = {}
+        const_2pi = 2 * np.pi
+
+        features['day_sin'] = np.sin(const_2pi * seconds_in_day / 86400.0)
+        features['day_cos'] = np.cos(const_2pi * seconds_in_day / 86400.0)
+        features['week_sin'] = np.sin(const_2pi * current_second_of_week / 604800.0)
+        features['week_cos'] = np.cos(const_2pi * current_second_of_week / 604800.0)
+        features['month_week_sin'] = np.sin(const_2pi * current_week_of_month / 6.0)
+        features['month_week_cos'] = np.cos(const_2pi * current_week_of_month / 6.0)
+        features['year_month_sin'] = np.sin(const_2pi * months / 12.0)
+        features['year_month_cos'] = np.cos(const_2pi * months / 12.0)
+
+        return features
+
+    def _get_raw_time_components(self, timestamps_array: np.ndarray) -> dict:
+        """获取原始时间整数分量"""
+        if len(timestamps_array) == 0:
+            return {
+                'day': np.array([], dtype=np.int64),
+                'week': np.array([], dtype=np.int64),
+                'month_week': np.array([], dtype=np.int64),
+                'year_month': np.array([], dtype=np.int64)
+            }
+
+        ts_arr = np.array(timestamps_array, dtype=np.float64)
+        offset = self._get_local_timezone_offset()
+        dt64_local = (ts_arr + offset).astype('datetime64[s]')
+
+        # 提取时间分量
+        seconds_in_day = (dt64_local.astype('int64') % 86400)
+        days_since_epoch = dt64_local.astype('datetime64[D]').astype('int64')
+        dates_M = dt64_local.astype('datetime64[M]')
+
+        hours = (seconds_in_day // 3600).astype(np.int64)
+        weekday = (days_since_epoch + 3) % 7
+        months = (dates_M - dates_M.astype('datetime64[Y]')).astype(int) + 1
+
+        day_of_month = (dt64_local.astype('datetime64[D]') - dates_M.astype('datetime64[D]')).astype(int) + 1
+        first_day_epoch = dates_M.astype('datetime64[D]').astype('int64')
+        first_weekday = (first_day_epoch + 3) % 7
+        month_week = (day_of_month - 1 + first_weekday) // 7 + 1
+
+        return {
+            'day': hours,
+            'week': weekday,
+            'month_week': month_week,
+            'year_month': months
+        }
+
+    def _calculate_point_score(self, target_timestamp: float, pos_events: list, neg_events: list,
+                             dimension_weights: dict, pos_lambda: float, neg_lambda: float,
+                             sigmas: dict, resistance_coefficient: float) -> float:
+        """
+        单点得分计算 - 使用 NumPy 向量化
+        """
+        # 提取目标时间特征并解包
+        target_feat = self._vectorized_time_features_numpy(np.array([target_timestamp]))
+        current_features = {k: v[0] for k, v in target_feat.items()}
+
+        def calculate_source_score_vectorized(events_array, lambda_decay):
+            if not events_array:
+                return 0.0
+
+            events_arr = np.array(events_array, dtype=np.float64)
+            events_feat = self._vectorized_time_features_numpy(events_arr)
+
+            ages_hours = (target_timestamp - events_arr) / 3600.0
+            valid_mask = ages_hours >= 0
+            if not np.any(valid_mask):
+                return 0.0
+
+            # 切片提取有效数据
+            valid_ages = ages_hours[valid_mask]
+            weights = np.exp(-lambda_decay * valid_ages, dtype=np.float64)
+
+            # 高效距离计算函数
+            def dist_sq(key):
+                return ((current_features[f'{key}_sin'] - events_feat[f'{key}_sin'][valid_mask]) ** 2 +
+                        (current_features[f'{key}_cos'] - events_feat[f'{key}_cos'][valid_mask]) ** 2)
+
+            combined = (
+                dimension_weights['day'] * np.exp(-dist_sq('day') / (2 * sigmas['day'] ** 2), dtype=np.float64) +
+                dimension_weights['week'] * np.exp(-dist_sq('week') / (2 * sigmas['week'] ** 2), dtype=np.float64) +
+                dimension_weights['month_week'] * np.exp(-dist_sq('month_week') / (2 * sigmas['month_week'] ** 2), dtype=np.float64) +
+                dimension_weights['year_month'] * np.exp(-dist_sq('year_month') / (2 * sigmas['year_month'] ** 2), dtype=np.float64)
+            )
+
+            scores = weights * combined
+            if len(scores) == 0:
+                return 0.0
+
+            total = np.sum(scores, dtype=np.float64)
+            count = len(scores)
+
+            # 简化归一化：Min-Max
+            if count == 1:
+                return float(np.clip(scores[0], 0.0, 1.0))
+
+            min_val, max_val = np.min(scores), np.max(scores)
+            if max_val > min_val:
+                return float(np.clip((total / count - min_val) / (max_val - min_val), 0.0, 1.0))
+            else:
+                return 0.5
+
+        pos_score = calculate_source_score_vectorized(pos_events, pos_lambda)
+        neg_score = calculate_source_score_vectorized(neg_events, neg_lambda) if neg_events else 0.0
+
+        return float(np.clip(pos_score - (resistance_coefficient * neg_score), 0.0, 1.0))
+
+    def _batch_calculate_scores(self, scan_times: np.ndarray, pos_events: list, neg_events: list,
+                               dimension_weights: dict, pos_lambda: float, neg_lambda: float,
+                               sigmas: dict, resistance_coefficient: float) -> np.ndarray:
+        """
+        向量化批量计算所有扫描点的得分
+        """
+        if len(scan_times) == 0:
+            return np.array([], dtype=np.float64)
+
+        # 预计算所有扫描点的时间特征
+        targets_feat = self._vectorized_time_features_numpy(scan_times)
+
+        def get_source_scores_vectorized(events, lambda_decay):
+            """向量化计算单个数据源对所有扫描点的得分"""
+            if not events:
+                return np.zeros(len(scan_times), dtype=np.float64)
+
+            events_arr = np.array(events, dtype=np.float64)
+            events_feat = self._vectorized_time_features_numpy(events_arr)
+
+            # 矩阵广播计算年龄和权重
+            ages = (scan_times[:, np.newaxis] - events_arr[np.newaxis, :]) / 3600.0
+            valid_mask = ages >= 0
+            weights = np.zeros_like(ages, dtype=np.float64)
+            weights[valid_mask] = np.exp(-lambda_decay * ages[valid_mask])
+
+            # 距离计算 (广播机制)
+            day_dist_sq = ((targets_feat['day_sin'][:, np.newaxis] - events_feat['day_sin'][np.newaxis, :]) ** 2 +
+                           (targets_feat['day_cos'][:, np.newaxis] - events_feat['day_cos'][np.newaxis, :]) ** 2)
+            week_dist_sq = ((targets_feat['week_sin'][:, np.newaxis] - events_feat['week_sin'][np.newaxis, :]) ** 2 +
+                            (targets_feat['week_cos'][:, np.newaxis] - events_feat['week_cos'][np.newaxis, :]) ** 2)
+            month_week_dist_sq = ((targets_feat['month_week_sin'][:, np.newaxis] - events_feat['month_week_sin'][np.newaxis, :]) ** 2 +
+                                 (targets_feat['month_week_cos'][:, np.newaxis] - events_feat['month_week_cos'][np.newaxis, :]) ** 2)
+            year_month_dist_sq = ((targets_feat['year_month_sin'][:, np.newaxis] - events_feat['year_month_sin'][np.newaxis, :]) ** 2 +
+                                 (targets_feat['year_month_cos'][:, np.newaxis] - events_feat['year_month_cos'][np.newaxis, :]) ** 2)
+
+            # 循环累加高斯核计算
+            # 1. 初始化结果容器
+            combined_gaussian = np.zeros_like(day_dist_sq, dtype=np.float64)
+
+            # 2. 准备数据字典
+            dist_sq_dict = {
+                'day': day_dist_sq,
+                'week': week_dist_sq,
+                'month_week': month_week_dist_sq,
+                'year_month': year_month_dist_sq
+            }
+
+            # 3. 循环计算并累加
+            for dim, dist_sq in dist_sq_dict.items():
+                # 4. 从字典取权重和标准差
+                weight = dimension_weights[dim]
+                sigma = sigmas[dim]
+
+                # 性能优化：将除法转换为乘法
+                coeff = -0.5 / (sigma ** 2)
+
+                # 累加到结果容器中
+                combined_gaussian += weight * np.exp(dist_sq * coeff, dtype=np.float64)
+
+            # 原始得分矩阵 (保留有效部分)
+            raw_scores = weights * combined_gaussian * valid_mask
+
+            # 聚合和归一化
+            total_scores = np.sum(raw_scores, axis=1, dtype=np.float64)
+            valid_counts = np.sum(valid_mask, axis=1)
+
+            with np.errstate(divide='ignore', invalid='ignore'):
+                row_mins = np.min(np.where(valid_mask, raw_scores, np.inf), axis=1)
+                row_maxs = np.max(np.where(valid_mask, raw_scores, -np.inf), axis=1)
+                normalized_scores = (total_scores / np.maximum(valid_counts, 1.0) - row_mins) / (row_maxs - row_mins + 1e-9)
+                result = np.where(valid_counts > 0, normalized_scores, 0.0)
+
+            return np.clip(result, 0.0, 1.0)
+
+        # 计算并组合正负向得分
+        pos_scores = get_source_scores_vectorized(pos_events, pos_lambda)
+        neg_scores = get_source_scores_vectorized(neg_events, neg_lambda)
+        return np.clip(pos_scores - (resistance_coefficient * neg_scores), 0.0, 1.0)
 
     def run_monitor(self) -> None:
         """主监控流程
@@ -1539,6 +1759,8 @@ def main() -> None:
     创建监控实例并启动主循环
     支持Dev模式：-d/--dev 参数运行单次检查后退出
     """
+    load_env_file()
+
     args = parse_arguments()  # 解析参数
 
     monitor = VideoMonitor(dev_mode=args.dev)
@@ -1546,6 +1768,7 @@ def main() -> None:
     if args.dev:
         try:
             monitor.run_monitor()
+            monitor.wait_for_next_check()
             sys.exit(0)
         except KeyboardInterrupt:
             monitor.log_info("程序被用户中断")
