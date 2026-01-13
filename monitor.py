@@ -1,23 +1,22 @@
 #!/usr/bin/env python3
-# -*- coding: utf-8 -*-
 
-import os
-import sys
-import subprocess
-import time
-import shutil
-import requests
-import logging
-import json
 import argparse
-import urllib.parse
-from datetime import datetime
-from concurrent.futures import ThreadPoolExecutor, as_completed
+import json
+import logging
+import os
+import shutil
 import signal
-from typing import Any
+import subprocess
+import sys
+import time
+import urllib.parse
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import datetime
 from types import FrameType
+from typing import Any
 
 import numpy as np
+import requests
 
 
 def parse_arguments():
@@ -36,7 +35,7 @@ def load_env_file(env_path: str = ".env") -> None:
         return
 
     try:
-        with open(env_path, "r", encoding="utf-8") as f:
+        with open(env_path, encoding="utf-8") as f:
             for line in f:
                 line = line.strip()
                 if not line or line.startswith("#"):
@@ -61,8 +60,8 @@ class VideoMonitor:
 
         Args:
             dev_mode: 是否为开发模式（沙盒运行）
-        """
 
+        """
         self.dev_mode: bool = dev_mode
 
         self.GIST_ID: str = os.getenv("GIST_ID", "")
@@ -75,7 +74,7 @@ class VideoMonitor:
         self.bark_app_title: str = "菠萝视频备份"
 
         if not all(
-            [self.GIST_ID, self.GITHUB_TOKEN, self.BILIBILI_UID, self.bark_device_key]
+            [self.GIST_ID, self.GITHUB_TOKEN, self.BILIBILI_UID, self.bark_device_key],
         ):
             print("缺少必要的环境变量1", file=sys.stderr)
             sys.exit(1)
@@ -123,7 +122,7 @@ class VideoMonitor:
     def load_known_urls(self) -> None:
         try:
             if os.path.exists(self.local_known_file):
-                with open(self.local_known_file, "r", encoding="utf-8") as f:
+                with open(self.local_known_file, encoding="utf-8") as f:
                     self.known_urls = set(line.strip() for line in f if line.strip())
             else:
                 self.known_urls = set()
@@ -154,25 +153,25 @@ class VideoMonitor:
         if not os.path.exists(cookies_path):
             error_msg = f"cookies文件不存在: {cookies_path}"
             self.log_critical_error(
-                error_msg, "cookies_validation", send_notification=True
+                error_msg, "cookies_validation", send_notification=True,
             )
             sys.exit(1)
 
         try:
-            with open(cookies_path, "r", encoding="utf-8") as f:
+            with open(cookies_path, encoding="utf-8") as f:
                 content = f.read().strip()
 
             if not content:
                 error_msg = f"cookies文件内容为空: {cookies_path}"
                 self.log_critical_error(
-                    error_msg, "cookies_validation", send_notification=True
+                    error_msg, "cookies_validation", send_notification=True,
                 )
                 sys.exit(1)
 
         except Exception as e:
             error_msg = f"无法读取cookies文件 {cookies_path}: {e}"
             self.log_critical_error(
-                error_msg, "cookies_validation", send_notification=True
+                error_msg, "cookies_validation", send_notification=True,
             )
             sys.exit(1)
 
@@ -193,7 +192,7 @@ class VideoMonitor:
         }
         try:
             if os.path.exists(self.wgmm_config_file):
-                with open(self.wgmm_config_file, "r", encoding="utf-8") as f:
+                with open(self.wgmm_config_file, encoding="utf-8") as f:
                     config = json.load(f)
                 for key, value in default_config.items():
                     if key not in config:
@@ -203,10 +202,9 @@ class VideoMonitor:
                             if sub_key not in config[key]:
                                 config[key][sub_key] = sub_value
                 return config
-            else:
-                with open(self.wgmm_config_file, "w", encoding="utf-8") as f:
-                    json.dump(default_config, f, indent=2, ensure_ascii=False)
-                return default_config
+            with open(self.wgmm_config_file, "w", encoding="utf-8") as f:
+                json.dump(default_config, f, indent=2, ensure_ascii=False)
+            return default_config
         except Exception as e:
             self.log_warning(f"加载WGMM配置文件失败, 使用默认配置: {e}")
             return default_config
@@ -260,7 +258,7 @@ class VideoMonitor:
                 print(f"{timestamp} - WARNING - 错误通知发送失败")
 
     def log_critical_error(
-        self, message: str, context: str = "", send_notification: bool = True
+        self, message: str, context: str = "", send_notification: bool = True,
     ) -> None:
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         full_message = f"{message}"
@@ -294,7 +292,7 @@ class VideoMonitor:
     def limit_file_lines(self, filepath: str, max_lines: int) -> None:
         try:
             if os.path.exists(filepath):
-                with open(filepath, "r", encoding="utf-8") as f:
+                with open(filepath, encoding="utf-8") as f:
                     lines = f.readlines()
 
                 if len(lines) > max_lines:
@@ -309,7 +307,7 @@ class VideoMonitor:
                         f.writelines(keep_lines)
         except Exception as e:
             self.log_critical_error(
-                f"限制文件行数时出错: {e}", f"文件: {filepath}", send_notification=False
+                f"限制文件行数时出错: {e}", f"文件: {filepath}", send_notification=False,
             )
 
     def send_bark_push(
@@ -403,7 +401,7 @@ class VideoMonitor:
 
         try:
             if os.path.exists(self.wgmm_config_file):
-                with open(self.wgmm_config_file, "r", encoding="utf-8") as f:
+                with open(self.wgmm_config_file, encoding="utf-8") as f:
                     config: dict[str, Any] = json.load(f)
                 return config.get("next_check_time", 0)
             return 0
@@ -419,7 +417,7 @@ class VideoMonitor:
         try:
             config: dict[str, Any] = {}
             if os.path.exists(self.wgmm_config_file):
-                with open(self.wgmm_config_file, "r", encoding="utf-8") as f:
+                with open(self.wgmm_config_file, encoding="utf-8") as f:
                     config = json.load(f)
 
             config["next_check_time"] = next_check_timestamp
@@ -435,13 +433,13 @@ class VideoMonitor:
     def sync_urls_from_gist(self) -> bool:
         if not self.GIST_ID:
             self.log_critical_error(
-                "GIST_ID 未配置", "Gist 同步", send_notification=True
+                "GIST_ID 未配置", "Gist 同步", send_notification=True,
             )
             return False
 
         if not self.GITHUB_TOKEN:
             self.log_critical_error(
-                "GITHUB_TOKEN 未配置", "Gist 同步", send_notification=True
+                "GITHUB_TOKEN 未配置", "Gist 同步", send_notification=True,
             )
             return False
 
@@ -484,7 +482,7 @@ class VideoMonitor:
             return False
         except Exception as e:
             self.log_critical_error(
-                f"从 Gist 获取数据失败: {str(e)}", "Gist 同步", send_notification=True
+                f"从 Gist 获取数据失败: {e!s}", "Gist 同步", send_notification=True,
             )
             return False
 
@@ -566,8 +564,7 @@ class VideoMonitor:
         if timestamps:
             sorted_timestamps = sorted(timestamps)
             with open(self.mtime_file, "a") as f:
-                for ts in sorted_timestamps:
-                    f.write(f"{ts}\n")
+                f.writelines(f"{ts}\n" for ts in sorted_timestamps)
             self.limit_file_lines(self.mtime_file, 100000)
 
     def create_mtime_from_info_json(self) -> bool:
@@ -603,14 +600,14 @@ class VideoMonitor:
 
             for info_file in info_files:
                 try:
-                    with open(info_file, "r", encoding="utf-8") as f:
+                    with open(info_file, encoding="utf-8") as f:
                         info_data = json.load(f)
 
                     upload_timestamp = None
 
-                    if "timestamp" in info_data and info_data["timestamp"]:
+                    if info_data.get("timestamp"):
                         upload_timestamp = int(info_data["timestamp"])
-                    elif "upload_date" in info_data and info_data["upload_date"]:
+                    elif info_data.get("upload_date"):
                         try:
                             dt = datetime.strptime(info_data["upload_date"], "%Y%m%d")
                             upload_timestamp = int(dt.timestamp())
@@ -635,8 +632,7 @@ class VideoMonitor:
 
             sorted_timestamps = sorted(timestamps)
             with open(self.mtime_file, "w") as f:
-                for timestamp in sorted_timestamps:
-                    f.write(f"{timestamp}\n")
+                f.writelines(f"{timestamp}\n" for timestamp in sorted_timestamps)
 
             self.log_info(f"成功创建 mtime.txt, 包含 {len(sorted_timestamps)} 个时间戳")
             return True
@@ -667,7 +663,7 @@ class VideoMonitor:
                 self.log_info(f"mtime.txt 不可用, 第 {attempt} 次尝试生成 [{context}]")
             else:
                 self.log_warning(
-                    f"mtime.txt 仍不可用, 第 {attempt} 次尝试生成 [{context}]"
+                    f"mtime.txt 仍不可用, 第 {attempt} 次尝试生成 [{context}]",
                 )
 
             if self.create_mtime_from_info_json():
@@ -677,10 +673,9 @@ class VideoMonitor:
                 ):
                     self.log_info(f"mtime.txt 第 {attempt} 次生成成功 [{context}]")
                     return True
-                else:
-                    self.log_warning(
-                        f"mtime.txt 第 {attempt} 次生成后仍不可用 [{context}]"
-                    )
+                self.log_warning(
+                    f"mtime.txt 第 {attempt} 次生成后仍不可用 [{context}]",
+                )
             else:
                 self.log_warning(f"mtime.txt 第 {attempt} 次生成失败 [{context}]")
 
@@ -688,7 +683,7 @@ class VideoMonitor:
         if context:
             error_msg += f" [上下文: {context}]"
         self.log_critical_error(
-            error_msg, "generate_mtime_file 方法", send_notification=True
+            error_msg, "generate_mtime_file 方法", send_notification=True,
         )
         return False
 
@@ -724,8 +719,7 @@ class VideoMonitor:
         def get_local_timezone_offset():
             if time.localtime().tm_isdst and time.daylight:
                 return -time.altzone
-            else:
-                return -time.timezone
+            return -time.timezone
 
         config = self.wgmm_config
 
@@ -752,7 +746,7 @@ class VideoMonitor:
             if not os.path.exists(self.miss_history_file):
                 return []
             try:
-                with open(self.miss_history_file, "r") as f:
+                with open(self.miss_history_file) as f:
                     return [int(line.strip()) for line in f if line.strip().isdigit()]
             except Exception as e:
                 self.log_warning(f"读取失败历史记录失败: {e}")
@@ -788,7 +782,7 @@ class VideoMonitor:
                 return []
 
             try:
-                with open(filepath, "r") as f:
+                with open(filepath) as f:
                     raw_data = [line.strip() for line in f if line.strip().isdigit()]
                 seen_timestamps = set()
                 filtered = []
@@ -839,7 +833,7 @@ class VideoMonitor:
 
         def prune_old_data(events, last_lambda, threshold):
             if not events or not os.path.exists(
-                self.mtime_file if events is positive_events else self.miss_history_file
+                self.mtime_file if events is positive_events else self.miss_history_file,
             ):
                 return events
 
@@ -862,8 +856,7 @@ class VideoMonitor:
                 try:
                     pruned_list = pruned_arr.astype(int).tolist()
                     with open(filepath, "w") as f:
-                        for ts in pruned_list:
-                            f.write(f"{ts}\n")
+                        f.writelines(f"{ts}\n" for ts in pruned_list)
                 except Exception as e:
                     self.log_warning(f"数据剪枝失败: {e}")
                     return events
@@ -905,7 +898,7 @@ class VideoMonitor:
         BASE_INTERVAL, pos_interval_variance = calculate_interval_stats(positive_events)
 
         def _calculate_adaptive_lambda(
-            timestamps, last_variance
+            timestamps, last_variance,
         ) -> tuple[float, float]:
             if len(timestamps) < 2:
                 return float(LAMBDA_BASE), 0.0
@@ -941,12 +934,12 @@ class VideoMonitor:
 
         last_pos_variance = config.get("last_pos_variance", 0.0)
         pos_lambda, pos_current_variance = _calculate_adaptive_lambda(
-            positive_events, last_pos_variance
+            positive_events, last_pos_variance,
         )
         last_neg_variance = config.get("last_neg_variance", 0.0)
 
         neg_lambda, neg_current_variance = _calculate_adaptive_lambda(
-            negative_events, last_neg_variance
+            negative_events, last_neg_variance,
         )
 
         def learn_dimension_weights(timestamps, old_weights):
@@ -954,7 +947,7 @@ class VideoMonitor:
                 return old_weights
 
             raw_components = self._get_raw_time_components(
-                np.array(timestamps, dtype=np.float64)
+                np.array(timestamps, dtype=np.float64),
             )
 
             dimension_scores = {}
@@ -987,7 +980,7 @@ class VideoMonitor:
                 new_weights = old_weights
 
             smoothed_weights = {}
-            for key in dimension_scores.keys():
+            for key in dimension_scores:
                 old_weight = old_weights[key]
                 new_weight = new_weights[key]
                 smoothed = old_weight * (1 - LEARNING_RATE) + new_weight * LEARNING_RATE
@@ -996,7 +989,7 @@ class VideoMonitor:
             return smoothed_weights
 
         dimension_weights = learn_dimension_weights(
-            positive_events, dimension_weights_from_config
+            positive_events, dimension_weights_from_config,
         )
 
         sigmas = {
@@ -1044,7 +1037,7 @@ class VideoMonitor:
                 scan_step = min_step * 2
 
             scan_times = np.arange(
-                scan_start, lookahead_end + scan_step, scan_step, dtype=np.float64
+                scan_start, lookahead_end + scan_step, scan_step, dtype=np.float64,
             )
 
             scan_scores = self._batch_calculate_scores(
@@ -1137,7 +1130,7 @@ class VideoMonitor:
         self.log_info(f"WGMM调频 - 轮询间隔: {polling_interval_str}")
 
     def run_yt_dlp(
-        self, command_args: list[str], timeout: int = 300
+        self, command_args: list[str], timeout: int = 300,
     ) -> tuple[bool, str, str]:
         start_time = time.time()
         try:
@@ -1183,7 +1176,7 @@ class VideoMonitor:
                 "--playlist-end",
                 "1",
                 f"https://space.bilibili.com/{self.BILIBILI_UID}/video",
-            ]
+            ],
         )
 
         if not success or not stdout:
@@ -1221,7 +1214,7 @@ class VideoMonitor:
                     next_url = f"{base_url}?p={next_part}"
 
                     success, _, _ = self.run_yt_dlp(
-                        ["--cookies", self.cookies_file, "--simulate", next_url]
+                        ["--cookies", self.cookies_file, "--simulate", next_url],
                     )
 
                     if success:
@@ -1236,7 +1229,7 @@ class VideoMonitor:
                                     self.cookies_file,
                                     "--simulate",
                                     check_url,
-                                ]
+                                ],
                             )
                             if success:
                                 check_part += 1
@@ -1258,14 +1251,13 @@ class VideoMonitor:
                 "--print",
                 "%(webpage_url)s",
                 video_url,
-            ]
+            ],
         )
 
         if success and stdout:
             return [line.strip() for line in stdout.split("\n") if line.strip()]
-        else:
-            self.log_warning(f"获取分片失败: {stderr[:50]}...")
-            return []
+        self.log_warning(f"获取分片失败: {stderr[:50]}...")
+        return []
 
     def get_all_videos_parallel(self, video_urls: list[str]) -> list[str]:
         all_parts = []
@@ -1301,7 +1293,7 @@ class VideoMonitor:
                 shutil.rmtree(self.tmp_outputs_dir)
         except Exception as e:
             self.log_critical_error(
-                f"清理临时文件失败: {e}", "cleanup 方法", send_notification=False
+                f"清理临时文件失败: {e}", "cleanup 方法", send_notification=False,
             )
 
         if self.dev_mode:
@@ -1329,7 +1321,7 @@ class VideoMonitor:
 
                 if wait_seconds <= 0:
                     self.log_info(
-                        f"距离上次检查时间已过 {abs(wait_seconds)} 秒，立即开始检查"
+                        f"距离上次检查时间已过 {abs(wait_seconds)} 秒，立即开始检查",
                     )
                     return
 
@@ -1357,8 +1349,7 @@ class VideoMonitor:
     def _get_local_timezone_offset(self) -> float:
         if time.localtime().tm_isdst and time.daylight:
             return -time.altzone
-        else:
-            return -time.timezone
+        return -time.timezone
 
     def _vectorized_time_features_numpy(self, timestamps_array: np.ndarray) -> dict:
         if len(timestamps_array) == 0:
@@ -1452,10 +1443,8 @@ class VideoMonitor:
         sigmas: dict,
         resistance_coefficient: float,
     ) -> float:
+        """单点得分计算 - 使用 NumPy 向量化
         """
-        单点得分计算 - 使用 NumPy 向量化
-        """
-
         target_feat = self._vectorized_time_features_numpy(np.array([target_timestamp]))
         current_features = {k: v[0] for k, v in target_feat.items()}
 
@@ -1513,10 +1502,9 @@ class VideoMonitor:
             min_val, max_val = np.min(scores), np.max(scores)
             if max_val > min_val:
                 return float(
-                    np.clip((total / count - min_val) / (max_val - min_val), 0.0, 1.0)
+                    np.clip((total / count - min_val) / (max_val - min_val), 0.0, 1.0),
                 )
-            else:
-                return 0.5
+            return 0.5
 
         pos_score = calculate_source_score_vectorized(pos_events, pos_lambda)
         neg_score = (
@@ -1526,7 +1514,7 @@ class VideoMonitor:
         )
 
         return float(
-            np.clip(pos_score - (resistance_coefficient * neg_score), 0.0, 1.0)
+            np.clip(pos_score - (resistance_coefficient * neg_score), 0.0, 1.0),
         )
 
     def _batch_calculate_scores(
@@ -1540,8 +1528,7 @@ class VideoMonitor:
         sigmas: dict,
         resistance_coefficient: float,
     ) -> np.ndarray:
-        """
-        向量化批量计算所有扫描点的得分
+        """向量化批量计算所有扫描点的得分
         """
         if len(scan_times) == 0:
             return np.array([], dtype=np.float64)
@@ -1632,7 +1619,7 @@ class VideoMonitor:
 
             if not sync_success and not self.memory_urls:
                 self.log_warning(
-                    "无法获取基准数据 (Gist 失败且内存 urls 为空), 跳过本次检查"
+                    "无法获取基准数据 (Gist 失败且内存 urls 为空), 跳过本次检查",
                 )
                 self.cleanup()
                 return
@@ -1642,7 +1629,7 @@ class VideoMonitor:
 
             self.log_info(
                 f"预检查完成 - 预测检查: {'发现新内容' if found_new_parts else '无新内容'} "
-                f"快速检查: {'发现新内容' if found_new_videos else '无新内容'}"
+                f"快速检查: {'发现新内容' if found_new_videos else '无新内容'}",
             )
 
             if not (found_new_parts or found_new_videos):
@@ -1658,12 +1645,12 @@ class VideoMonitor:
                     "--print",
                     "%(webpage_url)s",
                     f"https://space.bilibili.com/{self.BILIBILI_UID}/video",
-                ]
+                ],
             )
 
             if not success or not stdout:
                 self.log_critical_error(
-                    "无法获取视频列表", "完整检查阶段", send_notification=True
+                    "无法获取视频列表", "完整检查阶段", send_notification=True,
                 )
                 self.adjust_check_frequency(found_new_content=False)
                 self.cleanup()
@@ -1673,7 +1660,7 @@ class VideoMonitor:
 
             if not video_urls:
                 self.log_critical_error(
-                    "未获取到任何内容", "完整检查阶段", send_notification=True
+                    "未获取到任何内容", "完整检查阶段", send_notification=True,
                 )
                 self.adjust_check_frequency(found_new_content=False)
                 self.cleanup()
@@ -1706,27 +1693,25 @@ class VideoMonitor:
 
                 if self.dev_mode:
                     self.dev_new_videos += len(gist_missing_urls)
-                else:
-                    if not self.notify_new_videos(
-                        len(gist_missing_urls), has_new_parts=found_new_parts
-                    ):
-                        self.log_critical_error(
-                            "通知发送失败 - 无法向用户推送新视频通知",
-                            "notify_new_videos",
-                            send_notification=False,
-                        )
+                elif not self.notify_new_videos(
+                    len(gist_missing_urls), has_new_parts=found_new_parts,
+                ):
+                    self.log_critical_error(
+                        "通知发送失败 - 无法向用户推送新视频通知",
+                        "notify_new_videos",
+                        send_notification=False,
+                    )
 
                 if truly_new_urls:
                     self.adjust_check_frequency(found_new_content=True)
                 else:
                     self.adjust_check_frequency(found_new_content=False)
+            elif found_new_parts:
+                self.log_info("完整检查未发现新视频 - 但发现新分片, 已处理")
+                self.adjust_check_frequency(found_new_content=True)
             else:
-                if found_new_parts:
-                    self.log_info("完整检查未发现新视频 - 但发现新分片, 已处理")
-                    self.adjust_check_frequency(found_new_content=True)
-                else:
-                    self.log_info("完整检查未发现新内容 - 快速检查结果已确认, 无更新")
-                    self.adjust_check_frequency(found_new_content=False)
+                self.log_info("完整检查未发现新内容 - 快速检查结果已确认, 无更新")
+                self.adjust_check_frequency(found_new_content=False)
 
             self.cleanup()
 
@@ -1759,7 +1744,7 @@ def main() -> None:
             sys.exit(0)
         except Exception as e:
             monitor.log_critical_error(
-                f"运行出错: {e}", "main(dev)", send_notification=False
+                f"运行出错: {e}", "main(dev)", send_notification=False,
             )
             sys.exit(1)
 
@@ -1767,7 +1752,7 @@ def main() -> None:
         try:
             if os.path.exists(monitor.wgmm_config_file):
                 try:
-                    with open(monitor.wgmm_config_file, "r", encoding="utf-8") as f:
+                    with open(monitor.wgmm_config_file, encoding="utf-8") as f:
                         config = json.load(f)
                     if "is_manual_run" not in config:
                         config["is_manual_run"] = True
@@ -1792,7 +1777,7 @@ def main() -> None:
             sys.exit(0)
         except Exception as e:
             monitor.log_critical_error(
-                f"主循环出现严重错误: {e}", "main", send_notification=True
+                f"主循环出现严重错误: {e}", "main", send_notification=True,
             )
             sys.exit(1)
 
