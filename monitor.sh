@@ -7,7 +7,7 @@ MONITOR_SCRIPT="$SCRIPT_DIR/monitor.py"
 PID_FILE="$SCRIPT_DIR/monitor.pid"
 
 # 自动检测Python解释器路径
-PYTHON_CMD="python3"
+PYTHON_CMD="python"
 
 # 静默检测和设置虚拟环境
 init_python_cmd() {
