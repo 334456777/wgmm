@@ -11,7 +11,10 @@ import sys
 import time
 import urllib.parse
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import datetime
+from contextlib import suppress
+from datetime import UTC
+from datetime import datetime as dt
+from pathlib import Path
 from types import FrameType
 from typing import Any
 
@@ -25,19 +28,20 @@ def parse_arguments():
 		"-d",
 		"--dev",
 		action="store_true",
-		help="开发模式：运行检查后立即退出，不等待下次检查时间",
+		help="开发模式: 运行检查后立即退出, 不等待下次检查时间",
 	)
 	return parser.parse_args()
 
 
 def load_env_file(env_path: str = ".env") -> None:
-	if not os.path.exists(env_path):
+	env_file = Path(env_path)
+	if not env_file.exists():
 		return
 
 	try:
-		with open(env_path, encoding="utf-8") as f:
-			for line in f:
-				line = line.strip()
+		with env_file.open(encoding="utf-8") as f:
+			for raw_line in f:
+				line = raw_line.strip()
 				if not line or line.startswith("#"):
 					continue
 				if "=" in line:
@@ -46,7 +50,7 @@ def load_env_file(env_path: str = ".env") -> None:
 					value = value.strip()
 					if key and not os.getenv(key):
 						os.environ[key] = value
-	except Exception as e:
+	except OSError as e:
 		print(f"无法加载 .env 文件: {e}", file=sys.stderr)
 
 
@@ -56,10 +60,10 @@ class VideoMonitor:
 	MAX_RETRY_ATTEMPTS: int = 3
 
 	def __init__(self, dev_mode: bool = False) -> None:
-		"""初始化监控系统
+		"""初始化监控系统.
 
 		Args:
-		    dev_mode: 是否为开发模式（沙盒运行）
+			dev_mode: 是否为开发模式(沙盒运行)
 
 		"""
 		self.dev_mode: bool = dev_mode
@@ -120,15 +124,16 @@ class VideoMonitor:
 		self.logger: logging.Logger = logging.getLogger(__name__)
 
 	def load_known_urls(self) -> None:
+		known_file = Path(self.local_known_file)
 		try:
-			if os.path.exists(self.local_known_file):
-				with open(self.local_known_file, encoding="utf-8") as f:
-					self.known_urls = set(line.strip() for line in f if line.strip())
+			if known_file.exists():
+				with known_file.open(encoding="utf-8") as f:
+					self.known_urls = {line.strip() for line in f if line.strip()}
 			else:
 				self.known_urls = set()
 				if not self.dev_mode:
 					self.save_known_urls()
-		except Exception as e:
+		except OSError as e:
 			self.log_warning(f"加载本地已知 URL 失败: {e}, 将使用空集合")
 			self.known_urls = set()
 
@@ -138,9 +143,10 @@ class VideoMonitor:
 			return
 
 		try:
-			with open(self.local_known_file, "w", encoding="utf-8") as f:
+			known_file = Path(self.local_known_file)
+			with known_file.open("w", encoding="utf-8") as f:
 				f.write("\n".join(sorted(self.known_urls)))
-		except Exception as e:
+		except OSError as e:
 			self.log_critical_error(
 				f"保存本地已知 URL 失败: {e}",
 				"save_known_urls",
@@ -148,9 +154,9 @@ class VideoMonitor:
 			)
 
 	def _validate_cookies_file(self) -> None:
-		cookies_path = self.cookies_file
+		cookies_path = Path(self.cookies_file)
 
-		if not os.path.exists(cookies_path):
+		if not cookies_path.exists():
 			error_msg = f"cookies文件不存在: {cookies_path}"
 			self.log_critical_error(
 				error_msg,
@@ -160,8 +166,7 @@ class VideoMonitor:
 			sys.exit(1)
 
 		try:
-			with open(cookies_path, encoding="utf-8") as f:
-				content = f.read().strip()
+			content = cookies_path.read_text(encoding="utf-8").strip()
 
 			if not content:
 				error_msg = f"cookies文件内容为空: {cookies_path}"
@@ -172,7 +177,7 @@ class VideoMonitor:
 				)
 				sys.exit(1)
 
-		except Exception as e:
+		except OSError as e:
 			error_msg = f"无法读取cookies文件 {cookies_path}: {e}"
 			self.log_critical_error(
 				error_msg,
@@ -196,10 +201,10 @@ class VideoMonitor:
 			"next_check_time": 0,
 			"is_manual_run": True,
 		}
+		config_file = Path(self.wgmm_config_file)
 		try:
-			if os.path.exists(self.wgmm_config_file):
-				with open(self.wgmm_config_file, encoding="utf-8") as f:
-					config = json.load(f)
+			if config_file.exists():
+				config = json.loads(config_file.read_text(encoding="utf-8"))
 				for key, value in default_config.items():
 					if key not in config:
 						config[key] = value
@@ -208,44 +213,50 @@ class VideoMonitor:
 							if sub_key not in config[key]:
 								config[key][sub_key] = sub_value
 				return config
-			with open(self.wgmm_config_file, "w", encoding="utf-8") as f:
-				json.dump(default_config, f, indent=2, ensure_ascii=False)
-			return default_config
-		except Exception as e:
+			else:
+				config_file.write_text(
+					json.dumps(default_config, indent=2, ensure_ascii=False),
+					encoding="utf-8",
+				)
+				return default_config
+		except (OSError, json.JSONDecodeError) as e:
 			self.log_warning(f"加载WGMM配置文件失败, 使用默认配置: {e}")
 			return default_config
 
 	def _save_wgmm_config(self) -> None:
+		if self.dev_mode:
+			return
+		config_file = Path(self.wgmm_config_file)
 		try:
-			if self.dev_mode:
-				return
-			with open(self.wgmm_config_file, "w", encoding="utf-8") as f:
-				json.dump(self.wgmm_config, f, indent=2, ensure_ascii=False)
-		except Exception as e:
+			config_file.write_text(
+				json.dumps(self.wgmm_config, indent=2, ensure_ascii=False),
+				encoding="utf-8",
+			)
+		except OSError as e:
 			self.log_warning(f"保存WGMM配置失败: {e}")
 
 	def signal_handler(self, signum: int, frame: FrameType | None) -> None:
 		self.log_message(f"收到信号 {signum}, 正在清理并退出...")
 		try:
 			self.save_known_urls()
-		except Exception as e:
+		except OSError as e:
 			self.log_message(f"保存 URL 状态失败: {e}")
-		self.cleanup()
+		with suppress(Exception):
+			self.cleanup()
 		sys.exit(0)
-
 	def log_message(self, message: str, level: str = "INFO") -> None:
-		timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+		timestamp = dt.now(UTC).strftime("%Y-%m-%d %H:%M:%S")
 		log_entry = f"{timestamp} - {level} - {message}\n"
 
 		if self.dev_mode:
 			pass
 		else:
-			with open(self.log_file, "a", encoding="utf-8") as f:
+			log_file_path = Path(self.log_file)
+			with log_file_path.open("a", encoding="utf-8") as f:
 				f.write(log_entry)
 			self.limit_file_lines(self.log_file, 100000)
 
 		print(f"{timestamp} - {level} - {message}")
-
 	def log_info(self, message: str) -> None:
 		self.log_message(message, "INFO")
 
@@ -257,10 +268,10 @@ class VideoMonitor:
 
 		if send_bark_notification:
 			if self.notify_error(message):
-				timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+				timestamp = dt.now(UTC).strftime("%Y-%m-%d %H:%M:%S")
 				print(f"{timestamp} - INFO - 错误通知已发送")
 			else:
-				timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+				timestamp = dt.now(UTC).strftime("%Y-%m-%d %H:%M:%S")
 				print(f"{timestamp} - WARNING - 错误通知发送失败")
 
 	def log_critical_error(
@@ -269,7 +280,7 @@ class VideoMonitor:
 		context: str = "",
 		send_notification: bool = True,
 	) -> None:
-		timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+		timestamp = dt.now(UTC).strftime("%Y-%m-%d %H:%M:%S")
 		full_message = f"{message}"
 		if context:
 			full_message += f" [上下文: {context}]"
@@ -277,10 +288,11 @@ class VideoMonitor:
 		if not self.dev_mode:
 			try:
 				critical_log_entry = f"{timestamp} - CRITICAL - {full_message}\n"
-				with open(self.critical_log_file, "a", encoding="utf-8") as f:
+				critical_log_path = Path(self.critical_log_file)
+				with critical_log_path.open("a", encoding="utf-8") as f:
 					f.write(critical_log_entry)
 				self._limit_critical_log_lines()
-			except Exception as e:
+			except OSError as e:
 				print(f"{timestamp} - CRITICAL - 无法写入重大错误日志: {e}")
 				print(f"{timestamp} - CRITICAL - 原始错误: {full_message}")
 
@@ -293,16 +305,14 @@ class VideoMonitor:
 				print(f"{timestamp} - WARNING - 重大错误通知发送失败")
 
 	def _limit_critical_log_lines(self, max_lines: int = 20000) -> None:
-		try:
+		with suppress(Exception):
 			self.limit_file_lines(self.critical_log_file, max_lines)
-		except Exception:
-			pass
 
 	def limit_file_lines(self, filepath: str, max_lines: int) -> None:
+		file_path = Path(filepath)
 		try:
-			if os.path.exists(filepath):
-				with open(filepath, encoding="utf-8") as f:
-					lines = f.readlines()
+			if file_path.exists():
+				lines = file_path.read_text(encoding="utf-8").splitlines(keepends=True)
 
 				if len(lines) > max_lines:
 					if filepath == self.log_file:
@@ -312,9 +322,8 @@ class VideoMonitor:
 					else:
 						keep_lines = lines[-max_lines:]
 
-					with open(filepath, "w", encoding="utf-8") as f:
-						f.writelines(keep_lines)
-		except Exception as e:
+					file_path.write_text("".join(keep_lines), encoding="utf-8")
+		except OSError as e:
 			self.log_critical_error(
 				f"限制文件行数时出错: {e}",
 				f"文件: {filepath}",
@@ -334,10 +343,15 @@ class VideoMonitor:
 		call: bool = False,
 		volume: int | None = None,
 	) -> bool:
+		http_ok = 200
+		success = False
 		try:
 			encoded_title = urllib.parse.quote(title)
 			encoded_body = urllib.parse.quote(body)
-			base_url = f"{self.bark_base_url}/{self.bark_device_key}/{encoded_title}/{encoded_body}"
+			base_url = (
+				f"{self.bark_base_url}/{self.bark_device_key}/"
+				f"{encoded_title}/{encoded_body}"
+			)
 
 			params = []
 			if level and level != "active":
@@ -359,12 +373,13 @@ class VideoMonitor:
 
 			full_url = f"{base_url}?{'&'.join(params)}" if params else base_url
 			response = requests.get(full_url, timeout=30)
-			return response.status_code == 200
-
-		except Exception as e:
-			timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+			success = response.status_code == http_ok
+		except requests.RequestException as e:
+			timestamp = dt.now(UTC).strftime("%Y-%m-%d %H:%M:%S")
 			print(f"{timestamp} - WARNING - Bark推送失败: {e}")
-			return False
+			success = False
+
+		return success
 
 	def notify_new_videos(self, count: int, has_new_parts: bool = False) -> bool:
 		body = f"发现 {count} 个新视频{'(含新分片)' if has_new_parts else ''}等待备份"
@@ -410,13 +425,15 @@ class VideoMonitor:
 		if self.dev_mode:
 			return self.sandbox_next_check_time
 
+		config_file = Path(self.wgmm_config_file)
 		try:
-			if os.path.exists(self.wgmm_config_file):
-				with open(self.wgmm_config_file, encoding="utf-8") as f:
-					config: dict[str, Any] = json.load(f)
+			if config_file.exists():
+				file_content = config_file.read_text(encoding="utf-8")
+				config: dict[str, Any] = json.loads(file_content)
 				return config.get("next_check_time", 0)
-			return 0
-		except Exception as e:
+			else:
+				return 0
+		except (OSError, json.JSONDecodeError) as e:
 			self.log_warning(f"读取next_check_time失败: {e}")
 			return 0
 
@@ -425,16 +442,18 @@ class VideoMonitor:
 			self.sandbox_next_check_time = next_check_timestamp
 			return
 
+		config_file = Path(self.wgmm_config_file)
 		try:
 			config: dict[str, Any] = {}
-			if os.path.exists(self.wgmm_config_file):
-				with open(self.wgmm_config_file, encoding="utf-8") as f:
-					config = json.load(f)
+			if config_file.exists():
+				config = json.loads(config_file.read_text(encoding="utf-8"))
 
 			config["next_check_time"] = next_check_timestamp
-			with open(self.wgmm_config_file, "w", encoding="utf-8") as f:
-				json.dump(config, f, indent=2, ensure_ascii=False)
-		except Exception as e:
+			config_file.write_text(
+				json.dumps(config, indent=2, ensure_ascii=False),
+				encoding="utf-8",
+			)
+		except (OSError, json.JSONDecodeError) as e:
 			self.log_critical_error(
 				f"保存next_check_time失败: {e}",
 				"save_next_check_time 方法",
@@ -442,21 +461,16 @@ class VideoMonitor:
 			)
 
 	def sync_urls_from_gist(self) -> bool:
-		if not self.GIST_ID:
-			self.log_critical_error(
-				"GIST_ID 未配置",
-				"Gist 同步",
-				send_notification=True,
-			)
-			return False
+		success = False
 
-		if not self.GITHUB_TOKEN:
+		if not self.GIST_ID or not self.GITHUB_TOKEN:
+			error_msg = "GIST_ID 未配置" if not self.GIST_ID else "GITHUB_TOKEN 未配置"
 			self.log_critical_error(
-				"GITHUB_TOKEN 未配置",
+				error_msg,
 				"Gist 同步",
 				send_notification=True,
 			)
-			return False
+			return success
 
 		headers = {
 			"Authorization": f"Bearer {self.GITHUB_TOKEN}",
@@ -476,7 +490,7 @@ class VideoMonitor:
 					"Gist 同步验证",
 					send_notification=True,
 				)
-				return False
+				return success
 
 			content = next(iter(files.values())).get("content", "")
 			self.memory_urls = [
@@ -486,7 +500,7 @@ class VideoMonitor:
 
 			if not self.dev_mode:
 				self.save_known_urls()
-			return True
+			success = True
 
 		except requests.exceptions.HTTPError as e:
 			self.log_critical_error(
@@ -494,18 +508,18 @@ class VideoMonitor:
 				"Gist 同步",
 				send_notification=True,
 			)
-			return False
-		except Exception as e:
+		except (requests.RequestException, json.JSONDecodeError) as e:
 			self.log_critical_error(
 				f"从 Gist 获取数据失败: {e!s}",
 				"Gist 同步",
 				send_notification=True,
 			)
-			return False
+
+		return success
 
 	def get_video_upload_time(self, video_url: str) -> int | None:
 		try:
-			success, stdout, stderr = self.run_yt_dlp(
+			success, stdout, _stderr = self.run_yt_dlp(
 				[
 					"--cookies",
 					self.cookies_file,
@@ -522,25 +536,26 @@ class VideoMonitor:
 				return None
 
 			parts = stdout.strip().split("|")
+			min_parts_for_date = 2
 
 			if len(parts) >= 1 and parts[0] and parts[0] != "NA":
 				try:
 					return int(parts[0])
 				except ValueError:
 					pass
-
-			if len(parts) >= 2 and parts[1] and parts[1] != "NA":
+			if len(parts) >= min_parts_for_date and parts[1] and parts[1] != "NA":
 				try:
-					dt = datetime.strptime(parts[1], "%Y%m%d")
-					return int(dt.timestamp())
+					parsed_dt = dt.strptime(
+						parts[1], "%Y%m%d"
+					).replace(tzinfo=UTC)
+					return int(parsed_dt.timestamp())
 				except ValueError:
 					pass
 
 			self.log_warning(f"无法解析视频上传时间: {stdout[:50]}")
-			return None
-
-		except Exception as e:
+		except (ValueError, subprocess.SubprocessError) as e:
 			self.log_warning(f"获取视频上传时间异常: {e}")
+		else:
 			return None
 
 	def save_real_upload_timestamps(self, new_urls: set[str]) -> None:
@@ -563,9 +578,11 @@ class VideoMonitor:
 
 			return
 
-		if not os.path.exists(self.mtime_file):
-			if not self.generate_mtime_file("save_real_upload_timestamps"):
-				self.log_warning("无法创建 mtime.txt, 仍然保存时间戳")
+		mtime_file_path = Path(self.mtime_file)
+		if not mtime_file_path.exists() and not self.generate_mtime_file(
+			"save_real_upload_timestamps"
+		):
+			self.log_warning("无法创建 mtime.txt, 仍然保存时间戳")
 
 		timestamps = []
 		current_time = int(time.time())
@@ -580,16 +597,16 @@ class VideoMonitor:
 
 		if timestamps:
 			sorted_timestamps = sorted(timestamps)
-			with open(self.mtime_file, "a") as f:
+			with mtime_file_path.open("a") as f:
 				f.writelines(f"{ts}\n" for ts in sorted_timestamps)
 			self.limit_file_lines(self.mtime_file, 100000)
 
 	def create_mtime_from_info_json(self) -> bool:
-		temp_info_dir = "temp_info_json"
-		os.makedirs(temp_info_dir, exist_ok=True)
+		temp_info_dir = Path("temp_info_json")
+		temp_info_dir.mkdir(exist_ok=True)
 
 		try:
-			success, stdout, stderr = self.run_yt_dlp(
+			success, _stdout, stderr = self.run_yt_dlp(
 				[
 					"--cookies",
 					self.cookies_file,
@@ -608,17 +625,10 @@ class VideoMonitor:
 				return False
 
 			timestamps = []
-			info_files = []
 
-			for root, dirs, files in os.walk(temp_info_dir):
-				for file in files:
-					if file.endswith(".info.json"):
-						info_files.append(os.path.join(root, file))
-
-			for info_file in info_files:
+			for info_file in temp_info_dir.glob("*.info.json"):
 				try:
-					with open(info_file, encoding="utf-8") as f:
-						info_data = json.load(f)
+					info_data = json.loads(info_file.read_text(encoding="utf-8"))
 
 					upload_timestamp = None
 
@@ -626,21 +636,23 @@ class VideoMonitor:
 						upload_timestamp = int(info_data["timestamp"])
 					elif info_data.get("upload_date"):
 						try:
-							dt = datetime.strptime(info_data["upload_date"], "%Y%m%d")
-							upload_timestamp = int(dt.timestamp())
+							parsed_dt = dt.strptime(
+								info_data["upload_date"], "%Y%m%d"
+							).replace(tzinfo=UTC)
+							upload_timestamp = int(parsed_dt.timestamp())
 						except ValueError:
 							pass
 
 					if upload_timestamp and upload_timestamp > 0:
 						timestamps.append(upload_timestamp)
 
-				except Exception as e:
+				except (OSError, json.JSONDecodeError) as e:
 					self.log_warning(f"解析 info.json 文件失败: {info_file} - {e}")
 					continue
 
 			try:
 				shutil.rmtree(temp_info_dir)
-			except Exception as e:
+			except OSError as e:
 				self.log_warning(f"清理临时目录失败: {e}")
 
 			if not timestamps:
@@ -648,23 +660,25 @@ class VideoMonitor:
 				return False
 
 			sorted_timestamps = sorted(timestamps)
-			with open(self.mtime_file, "w") as f:
-				f.writelines(f"{timestamp}\n" for timestamp in sorted_timestamps)
+			mtime_file_path = Path(self.mtime_file)
+			mtime_file_path.write_text(
+				"".join(f"{timestamp}\n" for timestamp in sorted_timestamps),
+				encoding="utf-8",
+			)
 
 			self.log_info(f"成功创建 mtime.txt, 包含 {len(sorted_timestamps)} 个时间戳")
+		except (OSError, json.JSONDecodeError) as e:
+			self.log_warning(f"创建 mtime.txt 时出错: {e}")
+			with suppress(OSError):
+				shutil.rmtree(temp_info_dir)
+			return False
+		else:
 			return True
 
-		except Exception as e:
-			self.log_warning(f"创建 mtime.txt 时出错: {e}")
-			try:
-				shutil.rmtree(temp_info_dir)
-			except Exception:
-				pass
-			return False
-
 	def generate_mtime_file(self, context: str = "") -> bool:
+		mtime_file_path = Path(self.mtime_file)
 		if self.dev_mode and not (
-			os.path.exists(self.mtime_file) and os.path.getsize(self.mtime_file) > 0
+			mtime_file_path.exists() and mtime_file_path.stat().st_size > 0
 		):
 			return True
 
@@ -672,7 +686,7 @@ class VideoMonitor:
 		attempt = 0
 
 		while attempt < max_attempts:
-			if os.path.exists(self.mtime_file) and os.path.getsize(self.mtime_file) > 0:
+			if mtime_file_path.exists() and mtime_file_path.stat().st_size > 0:
 				return True
 
 			attempt += 1
@@ -684,10 +698,7 @@ class VideoMonitor:
 				)
 
 			if self.create_mtime_from_info_json():
-				if (
-					os.path.exists(self.mtime_file)
-					and os.path.getsize(self.mtime_file) > 0
-				):
+				if mtime_file_path.exists() and mtime_file_path.stat().st_size > 0:
 					self.log_info(f"mtime.txt 第 {attempt} 次生成成功 [{context}]")
 					return True
 				self.log_warning(
@@ -707,33 +718,33 @@ class VideoMonitor:
 		return False
 
 	def adjust_check_frequency(self, found_new_content: bool = False) -> None:
-		SIGMA_DAY = 0.8
-		SIGMA_WEEK = 1.0
-		SIGMA_MONTH_WEEK = 1.5
-		SIGMA_YEAR_MONTH = 2.0
+		sigma_day = 0.8
+		sigma_week = 1.0
+		sigma_month_week = 1.5
+		sigma_year_month = 2.0
 
-		WEIGHT_DAY = 0.5
-		WEIGHT_WEEK = 1.0
-		WEIGHT_MONTH_WEEK = 0.3
-		WEIGHT_YEAR_MONTH = 0.2
+		weight_day = 0.5
+		weight_week = 1.0
+		weight_month_week = 0.3
+		weight_year_month = 0.2
 
-		LAMBDA_MIN = 0.00005
-		LAMBDA_BASE = 0.0001
-		LAMBDA_MAX = 0.0005
+		lambda_min = 0.00005
+		lambda_base = 0.0001
+		lambda_max = 0.0005
 
-		DEFAULT_INTERVAL = 3600
-		MAX_INTERVAL = 300
+		default_interval = 3600
+		max_interval = 300
 
-		MAPPING_CURVE = 2.0
-		LEARNING_RATE = 0.1
-		MIN_HISTORY_COUNT = 10
+		mapping_curve = 2.0
+		learning_rate = 0.1
+		min_history_count = 10
 
-		RESISTANCE_COEFFICIENT = 0.8
-		WEIGHT_THRESHOLD = 0.001
-		LOOKAHEAD_DAYS = 15
-		PEAK_ADVANCE_MINUTES = 5
+		resistance_coefficient = 0.8
+		weight_threshold = 0.001
+		lookahead_days = 15
+		peak_advance_minutes = 5
 
-		SECONDS_IN_DAY = 86400
+		seconds_in_day = 86400
 
 		def get_local_timezone_offset():
 			if time.localtime().tm_isdst and time.daylight:
@@ -744,10 +755,10 @@ class VideoMonitor:
 
 		if "dimension_weights" not in config:
 			config["dimension_weights"] = {
-				"day": WEIGHT_DAY,
-				"week": WEIGHT_WEEK,
-				"month_week": WEIGHT_MONTH_WEEK,
-				"year_month": WEIGHT_YEAR_MONTH,
+				"day": weight_day,
+				"week": weight_week,
+				"month_week": weight_month_week,
+				"year_month": weight_year_month,
 			}
 
 		dimension_weights_from_config = config["dimension_weights"]
@@ -762,12 +773,13 @@ class VideoMonitor:
 		current_timestamp = int(time.time())
 
 		def load_miss_history():
-			if not os.path.exists(self.miss_history_file):
+			miss_history_path = Path(self.miss_history_file)
+			if not miss_history_path.exists():
 				return []
 			try:
-				with open(self.miss_history_file) as f:
+				with miss_history_path.open() as f:
 					return [int(line.strip()) for line in f if line.strip().isdigit()]
-			except Exception as e:
+			except OSError as e:
 				self.log_warning(f"读取失败历史记录失败: {e}")
 				return []
 
@@ -777,32 +789,33 @@ class VideoMonitor:
 			if self.dev_mode:
 				self.sandbox_miss_history.append(timestamp)
 				return
+			miss_history_path = Path(self.miss_history_file)
 			try:
-				with open(self.miss_history_file, "a") as f:
+				with miss_history_path.open("a") as f:
 					f.write(f"{timestamp}\n")
 				self.limit_file_lines(self.miss_history_file, 100000)
-			except Exception as e:
+			except OSError as e:
 				self.log_warning(f"写入失败历史记录失败: {e}")
 
-		if not os.path.exists(self.mtime_file):
-			if not self.generate_mtime_file("adjust_check_frequency"):
-				if not self.dev_mode:
-					self.save_next_check_time(int(time.time()) + 7200)
-				else:
-					pass
-				return
+		mtime_file_path = Path(self.mtime_file)
+		if not mtime_file_path.exists() and not self.generate_mtime_file(
+			"adjust_check_frequency"
+		):
+			if not self.dev_mode:
+				self.save_next_check_time(int(time.time()) + 7200)
+			return
 
 		def load_history_file(filepath):
-			if (
-				self.dev_mode
-				and filepath == self.mtime_file
-				and not os.path.exists(filepath)
-			):
+			file_path = Path(filepath)
+			if self.dev_mode and filepath == self.mtime_file and not file_path.exists():
 				return []
 
 			try:
-				with open(filepath) as f:
-					raw_data = [line.strip() for line in f if line.strip().isdigit()]
+				raw_data = [
+					line.strip()
+					for line in file_path.read_text(encoding="utf-8").splitlines()
+					if line.strip().isdigit()
+				]
 				seen_timestamps = set()
 				filtered = []
 				for timestamp_str in raw_data:
@@ -810,20 +823,24 @@ class VideoMonitor:
 					if timestamp > 0 and timestamp not in seen_timestamps:
 						filtered.append(timestamp)
 						seen_timestamps.add(timestamp)
-				return filtered
-			except Exception as e:
+			except OSError as e:
 				self.log_warning(f"读取历史文件失败 {filepath}: {e}")
 				return []
+			else:
+				return filtered
 
 		positive_events = load_history_file(self.mtime_file)
 		negative_events = load_miss_history()
 
 		def filter_outliers(timestamps, current_time):
-			if len(timestamps) < 3:
+			min_count_for_filter = 3
+			min_count_for_variance = 2
+
+			if len(timestamps) < min_count_for_filter:
 				return [ts for ts in timestamps if ts <= current_time]
 
 			sorted_ts = np.array(sorted(timestamps), dtype=np.float64)
-			if len(sorted_ts) < 2:
+			if len(sorted_ts) < min_count_for_variance:
 				return timestamps
 
 			intervals = np.diff(sorted_ts)
@@ -851,11 +868,10 @@ class VideoMonitor:
 		negative_events = filter_outliers(negative_events, current_timestamp)
 
 		def prune_old_data(events, last_lambda, threshold):
-			if not events or not os.path.exists(
-				self.mtime_file
-				if events is positive_events
-				else self.miss_history_file,
-			):
+			target_file = (
+				self.mtime_file if events is positive_events else self.miss_history_file
+			)
+			if not events or not Path(target_file).exists():
 				return events
 
 			events_arr = np.array(events, dtype=np.float64)
@@ -869,34 +885,33 @@ class VideoMonitor:
 			pruned_arr = events_arr[mask]
 
 			if len(pruned_arr) < len(events_arr):
-				filepath = (
-					self.mtime_file
-					if events is positive_events
-					else self.miss_history_file
-				)
+				filepath = Path(target_file)
 				try:
 					pruned_list = pruned_arr.astype(int).tolist()
-					with open(filepath, "w") as f:
-						f.writelines(f"{ts}\n" for ts in pruned_list)
-				except Exception as e:
+					filepath.write_text(
+						"".join(f"{ts}\n" for ts in pruned_list),
+						encoding="utf-8",
+					)
+				except OSError as e:
 					self.log_warning(f"数据剪枝失败: {e}")
 					return events
 				return pruned_list
 
 			return events
 
-		last_lambda = config.get("last_lambda", LAMBDA_BASE)
-		positive_events = prune_old_data(positive_events, last_lambda, WEIGHT_THRESHOLD)
-		negative_events = prune_old_data(negative_events, last_lambda, WEIGHT_THRESHOLD)
+		last_lambda = config.get("last_lambda", lambda_base)
+		positive_events = prune_old_data(positive_events, last_lambda, weight_threshold)
+		negative_events = prune_old_data(negative_events, last_lambda, weight_threshold)
 
 		def check_positive_sufficient(events):
-			return len(events) >= MIN_HISTORY_COUNT
+			return len(events) >= min_history_count
 
 		pos_sufficient = check_positive_sufficient(positive_events)
 
 		if not pos_sufficient:
 			self.log_info(f"正向数据不足({len(positive_events)}条), 进入学习期模式")
-			if not os.path.exists(self.mtime_file):
+			mtime_file_path = Path(self.mtime_file)
+			if not mtime_file_path.exists():
 				self.generate_mtime_file("学习期数据不足")
 			if not self.dev_mode:
 				self.save_next_check_time(int(time.time()) + 3600)
@@ -906,8 +921,9 @@ class VideoMonitor:
 			return
 
 		def calculate_interval_stats(timestamps):
-			if len(timestamps) < 2:
-				return float(DEFAULT_INTERVAL), 0.0
+			min_count_for_stats = 2
+			if len(timestamps) < min_count_for_stats:
+				return float(default_interval), 0.0
 
 			timestamps_arr = np.array(sorted(timestamps), dtype=np.float64)
 			intervals = np.diff(timestamps_arr)
@@ -916,14 +932,18 @@ class VideoMonitor:
 
 			return float(mean_interval), float(variance)
 
-		BASE_INTERVAL, pos_interval_variance = calculate_interval_stats(positive_events)
+		base_interval, _ = calculate_interval_stats(positive_events)
 
 		def _calculate_adaptive_lambda(
 			timestamps,
 			last_variance,
+			lambda_min,
+			lambda_max,
+			lambda_base,
 		) -> tuple[float, float]:
-			if len(timestamps) < 2:
-				return float(LAMBDA_BASE), 0.0
+			min_count_for_lambda = 2
+			if len(timestamps) < min_count_for_lambda:
+				return float(lambda_base), 0.0
 
 			timestamps_arr = np.array(sorted(timestamps), dtype=np.float64)
 			intervals = np.diff(timestamps_arr)
@@ -945,12 +965,12 @@ class VideoMonitor:
 				lambda_factor = 0
 
 			base_adaptive_lambda = (
-				LAMBDA_MIN + (LAMBDA_MAX - LAMBDA_MIN) * lambda_factor
+				lambda_min + (lambda_max - lambda_min) * lambda_factor
 			)
 			trend_correction = variance_trend_normalized * 0.3 * base_adaptive_lambda
 			adaptive_lambda = base_adaptive_lambda + trend_correction
 
-			final_lambda = np.clip(adaptive_lambda, LAMBDA_MIN, LAMBDA_MAX)
+			final_lambda = np.clip(adaptive_lambda, lambda_min, lambda_max)
 
 			return float(final_lambda), float(current_variance)
 
@@ -958,16 +978,23 @@ class VideoMonitor:
 		pos_lambda, pos_current_variance = _calculate_adaptive_lambda(
 			positive_events,
 			last_pos_variance,
+			lambda_min,
+			lambda_max,
+			lambda_base,
 		)
 		last_neg_variance = config.get("last_neg_variance", 0.0)
 
 		neg_lambda, neg_current_variance = _calculate_adaptive_lambda(
 			negative_events,
 			last_neg_variance,
+			lambda_min,
+			lambda_max,
+			lambda_base,
 		)
 
 		def learn_dimension_weights(timestamps, old_weights):
-			if len(timestamps) < 20:
+			min_count_for_learning = 20
+			if len(timestamps) < min_count_for_learning:
 				return old_weights
 
 			raw_components = self._get_raw_time_components(
@@ -981,7 +1008,7 @@ class VideoMonitor:
 					dimension_scores[dim] = 0.0
 					continue
 
-				unique_keys, counts = np.unique(keys, return_counts=True)
+				_, counts = np.unique(keys, return_counts=True)
 				counts_arr = counts.astype(np.float64)
 				mean_val = np.mean(counts_arr)
 
@@ -999,7 +1026,9 @@ class VideoMonitor:
 
 			if total_score > 0:
 				normalized_scores = scores_array / total_score * 2.0
-				new_weights = dict(zip(dimension_scores.keys(), normalized_scores))
+				new_weights = dict(
+					zip(dimension_scores.keys(), normalized_scores, strict=True)
+				)
 			else:
 				new_weights = old_weights
 
@@ -1007,7 +1036,7 @@ class VideoMonitor:
 			for key in dimension_scores:
 				old_weight = old_weights[key]
 				new_weight = new_weights[key]
-				smoothed = old_weight * (1 - LEARNING_RATE) + new_weight * LEARNING_RATE
+				smoothed = old_weight * (1 - learning_rate) + new_weight * learning_rate
 				smoothed_weights[key] = float(smoothed)
 
 			return smoothed_weights
@@ -1018,13 +1047,13 @@ class VideoMonitor:
 		)
 
 		sigmas = {
-			"day": float(SIGMA_DAY),
-			"week": float(SIGMA_WEEK),
-			"month_week": float(SIGMA_MONTH_WEEK),
-			"year_month": float(SIGMA_YEAR_MONTH),
+			"day": float(sigma_day),
+			"week": float(sigma_week),
+			"month_week": float(sigma_month_week),
+			"year_month": float(sigma_year_month),
 		}
 
-		BASE_INTERVAL, _ = calculate_interval_stats(positive_events)
+		base_interval, _ = calculate_interval_stats(positive_events)
 		current_score = self._calculate_point_score(
 			current_timestamp,
 			positive_events,
@@ -1033,21 +1062,21 @@ class VideoMonitor:
 			pos_lambda,
 			neg_lambda,
 			sigmas,
-			RESISTANCE_COEFFICIENT,
+			resistance_coefficient,
 		)
 
-		exponential_score = current_score**MAPPING_CURVE
+		exponential_score = current_score**mapping_curve
 		base_interval_sec = (
-			BASE_INTERVAL - (BASE_INTERVAL - MAX_INTERVAL) * exponential_score
+			base_interval - (base_interval - max_interval) * exponential_score
 		)
 
-		base_frequency_sec = np.clip(base_interval_sec, MAX_INTERVAL, BASE_INTERVAL * 2)
+		base_frequency_sec = np.clip(base_interval_sec, max_interval, base_interval * 2)
 
-		lookahead_seconds = LOOKAHEAD_DAYS * SECONDS_IN_DAY
+		lookahead_seconds = lookahead_days * seconds_in_day
 		lookahead_start = current_timestamp + base_frequency_sec
 		lookahead_end = current_timestamp + lookahead_seconds
 
-		gaussian_width = (SIGMA_DAY * SECONDS_IN_DAY / 24.0) * 2.0
+		gaussian_width = (sigma_day * seconds_in_day / 24.0) * 2.0
 		min_step = float(gaussian_width * 0.25)
 
 		scan_start = float(np.maximum(lookahead_start, current_timestamp + 600.0))
@@ -1055,11 +1084,9 @@ class VideoMonitor:
 		best_peak_time = None
 		best_peak_score = 0.0
 
+		score_threshold = 0.5
 		if lookahead_end > scan_start:
-			if current_score > 0.5:
-				scan_step = min_step
-			else:
-				scan_step = min_step * 2
+			scan_step = min_step if current_score > score_threshold else min_step * 2
 
 			scan_times = np.arange(
 				scan_start,
@@ -1076,17 +1103,21 @@ class VideoMonitor:
 				pos_lambda,
 				neg_lambda,
 				sigmas,
-				RESISTANCE_COEFFICIENT,
+				resistance_coefficient,
 			)
 
 			if len(scan_scores) > 1:
 				gradients = np.diff(scan_scores)
 				peaks_mask = (gradients[:-1] > 0) & (gradients[1:] < 0)
 
+				peak_score_threshold = 0.7
+				gradient_threshold = 0.05
 				for i in range(len(peaks_mask)):
 					if peaks_mask[i]:
 						scan_idx = i + 1
-						if scan_scores[scan_idx] > 0.7 and abs(gradients[i]) < 0.05:
+						score_condition = scan_scores[scan_idx] > peak_score_threshold
+						gradient_condition = abs(gradients[i]) < gradient_threshold
+						if score_condition and gradient_condition:
 							peaks_mask[i] = True
 
 				peak_indices = np.where(peaks_mask)[0]
@@ -1101,12 +1132,14 @@ class VideoMonitor:
 						best_peak_time = float(scan_times[best_peak_idx])
 
 		final_frequency_sec = base_frequency_sec
-		if best_peak_time and best_peak_score > 0.6:
+		best_peak_threshold = 0.6
+		if best_peak_time and best_peak_score > best_peak_threshold:
 			peak_interval = best_peak_time - current_timestamp
 			if peak_interval < base_frequency_sec * 1.2:
-				advanced_time = best_peak_time - (PEAK_ADVANCE_MINUTES * 60.0)
+				advanced_time = best_peak_time - (peak_advance_minutes * 60.0)
 				advanced_interval = advanced_time - current_timestamp
-				if advanced_interval > 300:
+				min_advanced_interval = 300
+				if advanced_interval > min_advanced_interval:
 					final_frequency_sec = float(advanced_interval)
 
 		impedance_factor = 1.0
@@ -1162,14 +1195,20 @@ class VideoMonitor:
 		command_args: list[str],
 		timeout: int = 300,
 	) -> tuple[bool, str, str]:
+		yt_dlp_path = shutil.which("yt-dlp")
+		if not yt_dlp_path:
+			self.log_error("未找到 yt-dlp 可执行文件, 请检查是否安装。")
+			return False, "", "没有找到 yt-dlp 可执行文件"
+
 		start_time = time.time()
 		try:
 			result = subprocess.run(
-				["yt-dlp"] + command_args,
+				[yt_dlp_path, *command_args],
 				capture_output=True,
 				text=True,
 				timeout=timeout,
 				encoding="utf-8",
+				check=False,
 			)
 			elapsed = time.time() - start_time
 			self.last_ytdlp_duration = elapsed
@@ -1185,7 +1224,7 @@ class VideoMonitor:
 			self.last_ytdlp_duration = elapsed
 			self.log_warning(f"yt-dlp 命令超时: {' '.join(command_args[:3])}...")
 			return False, "", "命令超时"
-		except Exception as e:
+		except (OSError, ValueError) as e:
 			elapsed = time.time() - start_time
 			self.last_ytdlp_duration = elapsed
 			self.log_error(f"执行 yt-dlp 命令失败: {e}", send_bark_notification=False)
@@ -1196,7 +1235,7 @@ class VideoMonitor:
 			self.log_info("memory_urls 为空, 触发完整检查")
 			return True
 
-		success, stdout, stderr = self.run_yt_dlp(
+		success, stdout, _stderr = self.run_yt_dlp(
 			[
 				"--cookies",
 				self.cookies_file,
@@ -1266,14 +1305,14 @@ class VideoMonitor:
 							else:
 								break
 
-		except Exception as e:
+		except (ValueError, OSError) as e:
 			self.log_warning(f"预测检查出错: {e}")
 			return False
 
 		return has_new_parts
 
 	def get_video_parts(self, video_url: str) -> list[str]:
-		success, stdout, stderr = self.run_yt_dlp(
+		success, stdout, _stderr = self.run_yt_dlp(
 			[
 				"--cookies",
 				self.cookies_file,
@@ -1286,12 +1325,22 @@ class VideoMonitor:
 
 		if success and stdout:
 			return [line.strip() for line in stdout.split("\n") if line.strip()]
+		_success, _stdout, stderr = self.run_yt_dlp(
+			[
+				"--cookies",
+				self.cookies_file,
+				"--flat-playlist",
+				"--print",
+				"%(webpage_url)s",
+				video_url,
+			],
+		)
 		self.log_warning(f"获取分片失败: {stderr[:50]}...")
 		return []
 
 	def get_all_videos_parallel(self, video_urls: list[str]) -> list[str]:
 		all_parts = []
-		os.makedirs(self.tmp_outputs_dir, exist_ok=True)
+		Path(self.tmp_outputs_dir).mkdir(exist_ok=True)
 
 		try:
 			with ThreadPoolExecutor(max_workers=5) as executor:
@@ -1305,10 +1354,10 @@ class VideoMonitor:
 					try:
 						parts = future.result()
 						all_parts.extend(parts)
-					except Exception as e:
+					except (ValueError, OSError) as e:
 						self.log_warning(f"处理分片出错: {str(url)[:50]}... {e}")
 
-		except Exception as e:
+		except (ValueError, OSError) as e:
 			self.log_critical_error(
 				f"并行处理时出错: {e}",
 				"get_all_videos_parallel 方法",
@@ -1318,10 +1367,11 @@ class VideoMonitor:
 		return all_parts
 
 	def cleanup(self) -> None:
+		tmp_outputs_path = Path(self.tmp_outputs_dir)
 		try:
-			if os.path.exists(self.tmp_outputs_dir):
-				shutil.rmtree(self.tmp_outputs_dir)
-		except Exception as e:
+			if tmp_outputs_path.exists():
+				shutil.rmtree(tmp_outputs_path)
+		except OSError as e:
 			self.log_critical_error(
 				f"清理临时文件失败: {e}",
 				"cleanup 方法",
@@ -1332,11 +1382,11 @@ class VideoMonitor:
 			try:
 				temp_dirs = ["temp_info_json"]
 				for temp_dir in temp_dirs:
-					if os.path.exists(temp_dir):
-						shutil.rmtree(temp_dir)
-			except Exception:
+					temp_path = Path(temp_dir)
+					if temp_path.exists():
+						shutil.rmtree(temp_path)
+			except OSError:
 				pass
-
 	def wait_for_next_check(self) -> None:
 		try:
 			next_check_timestamp = self.get_next_check_time()
@@ -1345,15 +1395,17 @@ class VideoMonitor:
 				current_timestamp = int(time.time())
 				wait_seconds = next_check_timestamp - current_timestamp
 
-				next_dt = datetime.fromtimestamp(next_check_timestamp)
+				next_dt = dt.fromtimestamp(next_check_timestamp, tz=UTC)
 				weekday_name = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"][
 					next_dt.weekday()
 				]
-				next_check_time = f"{next_dt.strftime('%Y年%m月%d日')} {weekday_name} {next_dt.strftime('%H:%M:%S')}"
+				date_str = next_dt.strftime('%Y年%m月%d日')
+				time_str = next_dt.strftime('%H:%M:%S')
+				next_check_time = f"{date_str} {weekday_name} {time_str}"
 
 				if wait_seconds <= 0:
 					self.log_info(
-						f"距离上次检查时间已过 {abs(wait_seconds)} 秒，立即开始检查",
+						f"距离上次检查时间已过 {abs(wait_seconds)} 秒, 立即开始检查",
 					)
 					return
 
@@ -1364,14 +1416,14 @@ class VideoMonitor:
 				self.log_info(f"下次检查: {next_check_time}")
 				time.sleep(wait_seconds)
 			else:
-				self.log_info("未找到保存的检查时间，立即开始首次检查")
+				self.log_info("未找到保存的检查时间, 立即开始首次检查")
 				return
 
 		except (FileNotFoundError, ValueError) as e:
-			self.log_info(f"配置文件异常 ({e})，立即开始检查")
+			self.log_info(f"配置文件异常 ({e}), 立即开始检查")
 			return
-		except Exception as e:
-			self.log_warning(f"等待逻辑异常: {e}，使用默认等待")
+		except OSError as e:
+			self.log_warning(f"等待逻辑异常: {e}, 使用默认等待")
 			if not self.dev_mode:
 				frequency_sec = 24000
 				time.sleep(frequency_sec)
@@ -1403,13 +1455,13 @@ class VideoMonitor:
 		seconds_in_day = (dt64_local.astype("int64") % 86400).astype(np.float64)
 		days_since_epoch = dt64_local.astype("datetime64[D]").astype("int64")
 		weekday = (days_since_epoch + 3) % 7
-		dates_M = dt64_local.astype("datetime64[M]")
-		months = (dates_M - dates_M.astype("datetime64[Y]")).astype(int) + 1
+		dates_m = dt64_local.astype("datetime64[M]")
+		months = (dates_m - dates_m.astype("datetime64[Y]")).astype(int) + 1
 
 		day_of_month = (
-			dt64_local.astype("datetime64[D]") - dates_M.astype("datetime64[D]")
+			dt64_local.astype("datetime64[D]") - dates_m.astype("datetime64[D]")
 		).astype(int) + 1
-		first_day_epoch = dates_M.astype("datetime64[D]").astype("int64")
+		first_day_epoch = dates_m.astype("datetime64[D]").astype("int64")
 		first_weekday = (first_day_epoch + 3) % 7
 		current_week_of_month = (day_of_month - 1 + first_weekday) // 7 + 1
 
@@ -1444,16 +1496,16 @@ class VideoMonitor:
 
 		seconds_in_day = dt64_local.astype("int64") % 86400
 		days_since_epoch = dt64_local.astype("datetime64[D]").astype("int64")
-		dates_M = dt64_local.astype("datetime64[M]")
+		dates_m = dt64_local.astype("datetime64[M]")
 
 		hours = (seconds_in_day // 3600).astype(np.int64)
 		weekday = (days_since_epoch + 3) % 7
-		months = (dates_M - dates_M.astype("datetime64[Y]")).astype(int) + 1
+		months = (dates_m - dates_m.astype("datetime64[Y]")).astype(int) + 1
 
 		day_of_month = (
-			dt64_local.astype("datetime64[D]") - dates_M.astype("datetime64[D]")
+			dt64_local.astype("datetime64[D]") - dates_m.astype("datetime64[D]")
 		).astype(int) + 1
-		first_day_epoch = dates_M.astype("datetime64[D]").astype("int64")
+		first_day_epoch = dates_m.astype("datetime64[D]").astype("int64")
 		first_weekday = (first_day_epoch + 3) % 7
 		month_week = (day_of_month - 1 + first_weekday) // 7 + 1
 
@@ -1475,7 +1527,7 @@ class VideoMonitor:
 		sigmas: dict,
 		resistance_coefficient: float,
 	) -> float:
-		"""单点得分计算 - 使用 NumPy 向量化"""
+		"""单点得分计算 - 使用 NumPy 向量化."""
 		target_feat = self._vectorized_time_features_numpy(np.array([target_timestamp]))
 		current_features = {k: v[0] for k, v in target_feat.items()}
 
@@ -1657,9 +1709,11 @@ class VideoMonitor:
 			found_new_parts = self.check_potential_new_parts()
 			found_new_videos = self.quick_precheck()
 
+			parts_result = "发现新内容" if found_new_parts else "无新内容"
+			videos_result = "发现新内容" if found_new_videos else "无新内容"
 			self.log_info(
-				f"预检查完成 - 预测检查: {'发现新内容' if found_new_parts else '无新内容'} "
-				f"快速检查: {'发现新内容' if found_new_videos else '无新内容'}",
+				f"预检查完成 - 预测检查: {parts_result} "
+				f"快速检查: {videos_result}",
 			)
 
 			if not (found_new_parts or found_new_videos):
@@ -1667,7 +1721,7 @@ class VideoMonitor:
 				self.cleanup()
 				return
 
-			success, stdout, stderr = self.run_yt_dlp(
+			success, stdout, _stderr = self.run_yt_dlp(
 				[
 					"--cookies",
 					self.cookies_file,
@@ -1716,7 +1770,8 @@ class VideoMonitor:
 				old_count = len(gist_missing_urls) - len(truly_new_urls)
 				new_count = len(truly_new_urls)
 
-				display = f"{'*' * old_count}{' ' if old_count > 0 and new_count > 0 else ''}{'*' * new_count}"
+				separator = ' ' if old_count > 0 and new_count > 0 else ''
+				display = f"{'*' * old_count}{separator}{'*' * new_count}"
 				self.log_info(display)
 
 				if truly_new_urls:
@@ -1754,7 +1809,7 @@ class VideoMonitor:
 			self.log_info("收到中断信号, 正在退出...")
 			self.cleanup()
 			sys.exit(0)
-		except Exception as e:
+		except (OSError, json.JSONDecodeError, subprocess.SubprocessError) as e:
 			self.log_critical_error(
 				f"监控脚本运行时出现意外错误: {e}",
 				"run_monitor",
@@ -1777,7 +1832,7 @@ def main() -> None:
 			monitor.log_info("程序被用户中断")
 			monitor.cleanup()
 			sys.exit(0)
-		except Exception as e:
+		except (OSError, json.JSONDecodeError, subprocess.SubprocessError) as e:
 			monitor.log_critical_error(
 				f"运行出错: {e}",
 				"main(dev)",
@@ -1787,20 +1842,22 @@ def main() -> None:
 
 	else:
 		try:
-			if os.path.exists(monitor.wgmm_config_file):
+			config_file = Path(monitor.wgmm_config_file)
+			if config_file.exists():
 				try:
-					with open(monitor.wgmm_config_file, encoding="utf-8") as f:
-						config = json.load(f)
+					config = json.loads(config_file.read_text(encoding="utf-8"))
 					if "is_manual_run" not in config:
 						config["is_manual_run"] = True
-						with open(monitor.wgmm_config_file, "w", encoding="utf-8") as f:
-							json.dump(config, f, indent=2, ensure_ascii=False)
-						monitor.log_info("首次运行，已设置 is_manual_run = True")
-				except Exception as e:
+						config_file.write_text(
+							json.dumps(config, indent=2, ensure_ascii=False),
+							encoding="utf-8",
+						)
+						monitor.log_info("首次运行, 已设置 is_manual_run = True")
+				except (OSError, json.JSONDecodeError) as e:
 					monitor.log_warning(f"初始化运行标志失败: {e}")
 			else:
-				monitor.log_info("首次运行，将自动初始化配置")
-		except Exception as e:
+				monitor.log_info("首次运行, 将自动初始化配置")
+		except OSError as e:
 			monitor.log_warning(f"初始化检查失败: {e}")
 
 		try:
@@ -1812,7 +1869,7 @@ def main() -> None:
 			monitor.log_info("程序被用户中断")
 			monitor.cleanup()
 			sys.exit(0)
-		except Exception as e:
+		except (OSError, json.JSONDecodeError, subprocess.SubprocessError) as e:
 			monitor.log_critical_error(
 				f"主循环出现严重错误: {e}",
 				"main",
