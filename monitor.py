@@ -15,7 +15,7 @@ Bilibili视频监控系统
 - wgmm_config.json: 算法状态持久化
 - local_known.txt: 本地已知URL记录
 
-依赖: yt-dlp, requests
+依赖: requests numpy
 """
 
 import os
