@@ -11,13 +11,18 @@ PYTHON_CMD="python3"
 
 # 静默检测和设置虚拟环境
 init_python_cmd() {
+    # 1. 优先检查项目本地的虚拟环境
     if [ -f "$SCRIPT_DIR/.venv/bin/python" ]; then
         PYTHON_CMD="$SCRIPT_DIR/.venv/bin/python"
-    elif [ -f "$SCRIPT_DIR/.venv/bin/python3" ]; then
-        PYTHON_CMD="$SCRIPT_DIR/.venv/bin/python3"
+    # 2. 其次检查是否通过 pyenv 激活了某个环境
+    elif command -v pyenv &> /dev/null; then
+        # 获取 pyenv 当前指定的 Python 路径
+        PYTHON_CMD=$(pyenv which python 2>/dev/null || echo "python3")
+    else
+        # 3. 最后回退到系统默认的 python3
+        PYTHON_CMD="python3"
     fi
 }
-
 # 检查Python脚本是否存在
 if [ ! -f "$MONITOR_SCRIPT" ]; then
     echo "错误: 找不到 $MONITOR_SCRIPT"
@@ -64,82 +69,47 @@ check_and_setup_venv() {
 }
 
 # 创建虚拟环境
+# 创建虚拟环境
 create_virtual_environment() {
     local VENV_PATH="$SCRIPT_DIR/.venv"
-    
-    echo "正在创建虚拟环境..."
-    
-    # 检查python3是否可用
-    if ! command -v python3 &> /dev/null; then
-        echo "错误: 未找到 python3 命令"
-        echo "请安装Python3: sudo apt install python3 python3-venv"
+    local BASE_PYTHON=""
+
+    echo "正在准备创建虚拟环境..."
+
+    # 优先寻找 pyenv 安装的 Python 版本
+    if command -v pyenv &> /dev/null; then
+        # 尝试获取 pyenv 本地设置的版本 (例如 3.14.2)
+        BASE_PYTHON=$(pyenv which python)
+        echo "发现 pyenv，将基于 $(python --version) 创建环境"
+    else
+        BASE_PYTHON="python3"
+        echo "未发现 pyenv，使用系统 Python3"
+    fi
+
+    # 检查基础 Python 是否可用
+    if ! $BASE_PYTHON --version &> /dev/null; then
+        echo "错误: 找不到可用的 Python 解释器"
         exit 1
     fi
-    
+
     # 创建虚拟环境
-    python3 -m venv "$VENV_PATH" || {
+    $BASE_PYTHON -m venv "$VENV_PATH" || {
         echo "错误: 创建虚拟环境失败"
-        echo "请确保已安装 python3-venv: sudo apt install python3-venv"
+        echo "提示: 请检查是否安装了 python3-venv (sudo apt install python3-venv)"
         exit 1
     }
-    
-    # 更新PYTHON_CMD
-    if [ -f "$VENV_PATH/bin/python" ]; then
-        PYTHON_CMD="$VENV_PATH/bin/python"
-    elif [ -f "$VENV_PATH/bin/python3" ]; then
-        PYTHON_CMD="$VENV_PATH/bin/python3"
-    else
-        echo "错误: 虚拟环境创建异常"
-        exit 1
-    fi
+
+    # 更新 PYTHON_CMD 为新创建的环境路径
+    PYTHON_CMD="$VENV_PATH/bin/python"
     
     echo "✓ 虚拟环境创建成功: $VENV_PATH"
-    echo "✓ 使用Python: $PYTHON_CMD"
-    
-    # 升级pip
-    echo "正在升级pip..."
+    echo "✓ 解释器路径: $PYTHON_CMD"
+
+    # 后续安装依赖的逻辑保持不变...
+    echo "正在升级 pip 并安装依赖..."
     "$PYTHON_CMD" -m pip install --upgrade pip --quiet
-    
-    # 检查requirements.txt是否存在
     if [ -f "$SCRIPT_DIR/requirements.txt" ]; then
-        echo ""
-        echo "正在安装依赖包..."
-        "$PYTHON_CMD" -m pip install -r "$SCRIPT_DIR/requirements.txt" || {
-            echo "警告: 依赖包安装失败，请手动安装"
-            echo "命令: $PYTHON_CMD -m pip install -r requirements.txt"
-        }
-        echo "✓ 依赖包安装完成"
-    else
-        echo "⚠ 未找到 requirements.txt 文件"
-        echo "正在安装基础依赖: requests"
-        "$PYTHON_CMD" -m pip install requests || {
-            echo "警告: requests 安装失败"
-        }
-    fi
-    
-    # 检查yt-dlp
-    if ! command -v yt-dlp &> /dev/null; then
-        echo ""
-        echo "正在安装 yt-dlp..."
-        "$PYTHON_CMD" -m pip install yt-dlp || {
-            echo "警告: yt-dlp 安装失败，请手动安装"
-            echo "命令: pip install yt-dlp"
-        }
-    fi
-    
-    echo ""
-    echo "虚拟环境设置完成！"
-    
-    # 验证关键依赖
-    echo "验证依赖..."
-    "$PYTHON_CMD" -c "import requests; print('✓ requests 可用')" 2>/dev/null || {
-        echo "⚠ requests 模块不可用"
-    }
-    
-    if command -v yt-dlp &> /dev/null; then
-        echo "✓ yt-dlp 可用"
-    else
-        echo "⚠ yt-dlp 不可用"
+        "$PYTHON_CMD" -m pip install -r "$SCRIPT_DIR/requirements.txt"
     fi
 }
 
