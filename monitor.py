@@ -23,7 +23,7 @@ import requests
 
 
 def parse_arguments():
-	parser = argparse.ArgumentParser(description="Bilibili视频监控器")
+	parser = argparse.ArgumentParser(description="视频监控器")
 	parser.add_argument(
 		"-d",
 		"--dev",
