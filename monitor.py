@@ -1,22 +1,5 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""
-Bilibili视频监控系统
-
-核心功能: 
-- 基于加权高斯混合模型的智能频率预测
-- 三层检测策略: 分片预检查 + 快速检查 + 完整检查
-- 双波源对抗机制: 正向得分 - 阻力系数 × 负向得分
-- 分级通知系统: Bark推送集成
-
-数据文件: 
-- mtime.txt: 正向事件 (视频发布时间戳)
-- miss_history.txt: 负向事件 (检测失败时间戳)
-- wgmm_config.json: 算法状态持久化
-- local_known.txt: 本地已知URL记录
-
-依赖: requests numpy
-"""
 
 import os
 import sys
@@ -36,14 +19,14 @@ from types import FrameType
 
 import numpy as np
 
-# ==================== 全局变量和参数解析 ====================
+
 def parse_arguments():
     parser = argparse.ArgumentParser(description='Bilibili视频监控器')
     parser.add_argument('-d', '--dev', action='store_true',
                        help='开发模式：运行检查后立即退出，不等待下次检查时间')
     return parser.parse_args()
 
-# ==================== 环境配置 ====================
+
 def load_env_file(env_path: str = '.env') -> None:
     if not os.path.exists(env_path):
         return
@@ -61,7 +44,7 @@ def load_env_file(env_path: str = '.env') -> None:
                     if key and not os.getenv(key):
                         os.environ[key] = value
     except Exception as e:
-        print(f"Warning: Failed to load .env file: {e}", file=sys.stderr)
+        print(f"无法加载 .env 文件: {e}", file=sys.stderr)
 
 
 class VideoMonitor:
@@ -81,10 +64,10 @@ class VideoMonitor:
     - yt-dlp可用 + cookies.txt有效 + GitHub Token具备Gist权限
     """
     
-    # 类常量定义
-    DEFAULT_CHECK_INTERVAL: int = 24000  # 默认检查间隔 (秒)= 400分钟
-    FALLBACK_INTERVAL: int = 7200  # 降级检查间隔 (秒)= 2小时
-    MAX_RETRY_ATTEMPTS: int = 3  # 最大重试次数
+    
+    DEFAULT_CHECK_INTERVAL: int = 24000
+    FALLBACK_INTERVAL: int = 7200
+    MAX_RETRY_ATTEMPTS: int = 3
 
     def __init__(self, dev_mode: bool = False) -> None:
         """初始化监控系统
@@ -92,30 +75,30 @@ class VideoMonitor:
         Args:
             dev_mode: 是否为开发模式（沙盒运行）
         """
-        # ==================== 开发模式标志 ====================
+        
         self.dev_mode: bool = dev_mode
 
-        # ==================== GitHub Gist 配置 ====================
+        
         self.GIST_ID: str = os.getenv("GIST_ID", "")
         self.GITHUB_TOKEN: str = os.getenv("GITHUB_TOKEN", "")
         self.GIST_BASE_URL: str = "https://api.github.com/gists"
         self.BILIBILI_UID: str = os.getenv("BILIBILI_UID", "")
 
-        # ==================== Bark 推送通知配置 ====================
+        
         self.bark_device_key: str = os.getenv("BARK_DEVICE_KEY", "")
         self.bark_base_url: str = "https://api.day.app"
         self.bark_app_title: str = "菠萝视频备份"
 
-        # 验证必要配置
+        
         if not all([self.GIST_ID, self.GITHUB_TOKEN, self.BILIBILI_UID, self.bark_device_key]):
-            print("Error: Missing required environment variables in .env", file=sys.stderr)
+            print("缺少必要的环境变量1", file=sys.stderr)
             sys.exit(1)
 
-        # ==================== 核心数据结构 ====================
-        self.memory_urls: list[str] = []  # Gist同步的已备份URL
-        self.known_urls: set[str] = set()  # 本地已知URL (防止重复通知)
+        
+        self.memory_urls: list[str] = []  
+        self.known_urls: set[str] = set()  
 
-        # 沙盒状态
+        
         if self.dev_mode:
             self.sandbox_config: dict = {}
             self.sandbox_known_urls: set[str] = set()
@@ -123,31 +106,31 @@ class VideoMonitor:
             self.sandbox_next_check_time: int = 0
             self.dev_new_videos: int = 0
 
-        # ==================== 文件路径配置 ====================
-        self.log_file: str = "urls.log"  # 主日志文件
-        self.critical_log_file: str = "critical_errors.log"  # 重大错误专用日志
-        self.wgmm_config_file: str = "wgmm_config.json"  # WGMM 算法配置文件
-        self.local_known_file: str = "local_known.txt"  # 本地已知 URL 持久化文件
-        self.mtime_file: str = "mtime.txt"  # 视频发布时间戳历史
-        self.miss_history_file: str = "miss_history.txt"  # 失败历史记录文件
-        self.cookies_file: str = "cookies.txt"  # Bilibili 登录凭证
-        self.tmp_outputs_dir: str = "tmp_outputs"  # 临时输出目录
+        
+        self.log_file: str = "urls.log"  
+        self.critical_log_file: str = "critical_errors.log"  
+        self.wgmm_config_file: str = "wgmm_config.json"  
+        self.local_known_file: str = "local_known.txt"  
+        self.mtime_file: str = "mtime.txt"  
+        self.miss_history_file: str = "miss_history.txt"  
+        self.cookies_file: str = "cookies.txt"  
+        self.tmp_outputs_dir: str = "tmp_outputs"  
 
-        # 验证 cookies 文件内容（所有模式下都检查）
+        
         self._validate_cookies_file()
         
-        # ==================== 网络阻抗监控 ====================
-        self.last_ytdlp_duration: float = 0.0  # yt-dlp耗时 (秒)
-        self.normal_ytdlp_duration: float = 60.0  # 正常耗时基准 (移动平均)
+        
+        self.last_ytdlp_duration: float = 0.0  
+        self.normal_ytdlp_duration: float = 60.0  
 
-        # ==================== WGMM 配置内存化 ====================
+        
         self.wgmm_config: dict = self._load_wgmm_config()
 
-        # ==================== 初始化子系统 ====================
+        
         self.setup_logging()
         self.load_known_urls()
 
-        # ==================== 信号处理器 ====================
+        
         signal.signal(signal.SIGTERM, self.signal_handler)
         signal.signal(signal.SIGINT, self.signal_handler)
 
@@ -164,7 +147,7 @@ class VideoMonitor:
         self.logger: logging.Logger = logging.getLogger(__name__)
 
     def load_known_urls(self) -> None:
-        """从本地文件加载已知URL集合"""
+        
         try:
             if os.path.exists(self.local_known_file):
                 with open(self.local_known_file, 'r', encoding='utf-8') as f:
@@ -178,7 +161,7 @@ class VideoMonitor:
             self.known_urls = set()
 
     def save_known_urls(self) -> None:
-        """保存已知URL集合到本地文件"""
+        
         if self.dev_mode:
             self.sandbox_known_urls = self.known_urls.copy()
             return
@@ -196,13 +179,13 @@ class VideoMonitor:
         """
         cookies_path = self.cookies_file
 
-        # 检查文件是否存在
+        
         if not os.path.exists(cookies_path):
             error_msg = f"cookies文件不存在: {cookies_path}"
             self.log_critical_error(error_msg, "cookies_validation", send_notification=True)
             sys.exit(1)
 
-        # 检查文件内容是否为空
+        
         try:
             with open(cookies_path, 'r', encoding='utf-8') as f:
                 content = f.read().strip()
@@ -218,7 +201,7 @@ class VideoMonitor:
             sys.exit(1)
 
     def _load_wgmm_config(self) -> dict:
-        """从磁盘加载 WGMM 配置"""
+        
         default_config = {
             'dimension_weights': {'day': 0.3, 'week': 0.25, 'month_week': 0.25, 'year_month': 0.2},
             'last_lambda': 0.0001,
@@ -249,7 +232,7 @@ class VideoMonitor:
             return default_config
 
     def _save_wgmm_config(self) -> None:
-        """保存 WGMM 配置到磁盘"""
+        
         try:
             if self.dev_mode:
                 return
@@ -285,23 +268,23 @@ class VideoMonitor:
         timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
         log_entry = f"{timestamp} - {level} - {message}\n"
 
-        # Dev模式下只输出到控制台，不写入文件
+        
         if self.dev_mode:
-            pass  # 不写入文件
+            pass  
         else:
             with open(self.log_file, 'a', encoding='utf-8') as f:
                 f.write(log_entry)
             self.limit_file_lines(self.log_file, 100000)
 
-        # 控制台输出
+        
         print(f"{timestamp} - {level} - {message}")
 
     def log_info(self, message: str) -> None:
-        """记录信息级别日志"""
+        
         self.log_message(message, 'INFO')
 
     def log_warning(self, message: str) -> None:
-        """记录警告级别日志"""
+        
         self.log_message(message, 'WARNING')
 
     def log_error(self, message: str, send_bark_notification: bool = True) -> None:
@@ -339,7 +322,7 @@ class VideoMonitor:
         if context:
             full_message += f" [上下文: {context}]"
 
-        # Dev模式下只输出到控制台，不写入文件
+        
         if not self.dev_mode:
             try:
                 critical_log_entry = f"{timestamp} - CRITICAL - {full_message}\n"
@@ -350,10 +333,10 @@ class VideoMonitor:
                 print(f"{timestamp} - CRITICAL - 无法写入重大错误日志: {e}")
                 print(f"{timestamp} - CRITICAL - 原始错误: {full_message}")
 
-        # 控制台输出
+        
         print(f"{timestamp} - CRITICAL - {full_message}")
 
-        # Dev模式下不发送通知
+        
         if send_notification and not self.dev_mode:
             if self.notify_critical_error(message, context):
                 print(f"{timestamp} - INFO - 重大错误通知已发送")
@@ -369,7 +352,7 @@ class VideoMonitor:
         try:
             self.limit_file_lines(self.critical_log_file, max_lines)
         except Exception:
-            # 静默忽略, 避免无限递归
+            
             pass
 
     def limit_file_lines(self, filepath: str, max_lines: int) -> None:
@@ -474,7 +457,7 @@ class VideoMonitor:
         )
 
     def notify_error(self, message: str) -> bool:
-        """发送普通错误通知, active级别"""
+        
         return self.send_bark_push(
             title=f"{self.bark_app_title} - 错误",
             body=message,
@@ -483,7 +466,7 @@ class VideoMonitor:
         )
 
     def notify_critical_error(self, message: str, context: str = "") -> bool:
-        """发送严重错误通知, critical级别, 忽略静音和持续响铃"""
+        
         body = message + (f" ({context})" if context else "")
 
         return self.send_bark_push(
@@ -497,7 +480,7 @@ class VideoMonitor:
         )
 
     def notify_service_issue(self, message: str) -> bool:
-        """发送服务异常通知, timeSensitive级别"""
+        
         return self.send_bark_push(
             title=f"{self.bark_app_title} - 服务异常",
             body=message,
@@ -506,7 +489,7 @@ class VideoMonitor:
         )
 
     def get_next_check_time(self) -> int:
-        """从 WGMM 配置文件读取下次检查时间戳"""
+        
         if self.dev_mode:
             return self.sandbox_next_check_time
 
@@ -521,19 +504,19 @@ class VideoMonitor:
             return 0
 
     def save_next_check_time(self, next_check_timestamp: int) -> None:
-        """保存下次检查时间到配置文件"""
+        
         if self.dev_mode:
             self.sandbox_next_check_time = next_check_timestamp
             return
 
         try:
-            # 读取现有配置, 保留其他字段
+            
             config: dict[str, Any] = {}
             if os.path.exists(self.wgmm_config_file):
                 with open(self.wgmm_config_file, 'r', encoding='utf-8') as f:
                     config = json.load(f)
 
-            # 更新并写回
+            
             config['next_check_time'] = next_check_timestamp
             with open(self.wgmm_config_file, 'w', encoding='utf-8') as f:
                     json.dump(config, f, indent=2, ensure_ascii=False)
@@ -541,7 +524,7 @@ class VideoMonitor:
             self.log_critical_error(f"保存next_check_time失败: {e}", "save_next_check_time 方法", send_notification=False)
 
     def sync_urls_from_gist(self) -> bool:
-        """从 GitHub Gist 同步 URL 列表到内存和已知列表"""
+        
         if not self.GIST_ID:
             self.log_critical_error("GIST_ID 未配置", "Gist 同步", send_notification=True)
             return False
@@ -579,7 +562,7 @@ class VideoMonitor:
             return False
 
     def get_video_upload_time(self, video_url: str) -> int | None:
-        """获取视频的真实上传时间戳"""
+        
         try:
             success, stdout, stderr = self.run_yt_dlp([
                 '--cookies', self.cookies_file,
@@ -594,14 +577,14 @@ class VideoMonitor:
 
             parts = stdout.strip().split('|')
 
-            # 优先使用 timestamp
+            
             if len(parts) >= 1 and parts[0] and parts[0] != 'NA':
                 try:
                     return int(parts[0])
                 except ValueError:
                     pass
 
-            # 其次使用 upload_date
+            
             if len(parts) >= 2 and parts[1] and parts[1] != 'NA':
                 try:
                     dt = datetime.strptime(parts[1], '%Y%m%d')
@@ -617,7 +600,7 @@ class VideoMonitor:
             return None
 
     def save_real_upload_timestamps(self, new_urls: set[str]) -> None:
-        """保存新视频的真实上传时间戳"""
+        
         if not new_urls:
             return
 
@@ -637,7 +620,7 @@ class VideoMonitor:
 
             return
 
-        # 确保 mtime.txt 存在
+        
         if not os.path.exists(self.mtime_file):
             if not self.generate_mtime_file("save_real_upload_timestamps"):
                 self.log_warning("无法创建 mtime.txt, 仍然保存时间戳")
@@ -661,7 +644,7 @@ class VideoMonitor:
             self.limit_file_lines(self.mtime_file, 100000)
 
     def create_mtime_from_info_json(self) -> bool:
-        """使用 yt-dlp 获取视频元信息创建 mtime.txt"""
+        
         temp_info_dir = "temp_info_json"
         os.makedirs(temp_info_dir, exist_ok=True)
 
@@ -736,7 +719,7 @@ class VideoMonitor:
             return False
 
     def generate_mtime_file(self, context: str = "") -> bool:
-        """生成 mtime.txt 文件的通用函数, 支持多次重试"""
+        
         if self.dev_mode and not (os.path.exists(self.mtime_file) and os.path.getsize(self.mtime_file) > 0):
             return True
 
@@ -777,54 +760,54 @@ class VideoMonitor:
         Args:
             found_new_content: 是否发现新内容, 影响历史记录写入
         """
-        # ==================== 模型超参数配置 ====================
-        # 高斯核标准差
+        
+        
         SIGMA_DAY = 0.8
         SIGMA_WEEK = 1.0
         SIGMA_MONTH_WEEK = 1.5
         SIGMA_YEAR_MONTH = 2.0
 
-        # 维度权重
+        
         WEIGHT_DAY = 0.5
         WEIGHT_WEEK = 1.0
         WEIGHT_MONTH_WEEK = 0.3
         WEIGHT_YEAR_MONTH = 0.2
 
-        # 时间衰减
+        
         LAMBDA_MIN = 0.00005
         LAMBDA_BASE = 0.0001
         LAMBDA_MAX = 0.0005
 
-        # 轮询间隔
+        
         DEFAULT_INTERVAL = 3600
         MAX_INTERVAL = 300
 
-        # 映射参数
+        
         MAPPING_CURVE = 2.0
         LEARNING_RATE = 0.1
         MIN_HISTORY_COUNT = 10
 
-        # 双波源对抗
+        
         RESISTANCE_COEFFICIENT = 0.8
         WEIGHT_THRESHOLD = 0.001
         LOOKAHEAD_DAYS = 15
         PEAK_ADVANCE_MINUTES = 5
 
-        # 时间常量
+        
         SECONDS_IN_DAY = 86400
         SECONDS_IN_WEEK = 604800
 
         def get_local_timezone_offset():
-            """获取本地时区偏移（秒），用于Unix时间戳转本地时间"""
+            
             if time.localtime().tm_isdst and time.daylight:
                 return -time.altzone
             else:
                 return -time.timezone
 
-        # ==================== 配置内存化 ====================
-        # 使用__init__中加载的内存配置，避免重复IO
+        
+        
         config = self.wgmm_config
-        # 确保配置中包含当前的权重常量（支持配置升级）
+        
         if 'dimension_weights' not in config:
             config['dimension_weights'] = {'day': WEIGHT_DAY, 'week': WEIGHT_WEEK, 'month_week': WEIGHT_MONTH_WEEK, 'year_month': WEIGHT_YEAR_MONTH}
 
@@ -929,24 +912,24 @@ class VideoMonitor:
             if not events or not os.path.exists(self.mtime_file if events is positive_events else self.miss_history_file):
                 return events
 
-            # NumPy 向量化剪枝
+            
             events_arr = np.array(events, dtype=np.float64)
             current_ts = float(current_timestamp)
 
-            # 向量化计算年龄和权重
+            
             ages_hours = (current_ts - events_arr) / 3600.0
             weights = np.exp(-last_lambda * ages_hours)
 
-            # 布尔索引过滤：保留 age >= 0 且 weight >= threshold
+            
             mask = (ages_hours >= 0) & (weights >= threshold)
 
             pruned_arr = events_arr[mask]
 
-            # 如果有数据被剔除，保存到文件
+            
             if len(pruned_arr) < len(events_arr):
                 filepath = self.mtime_file if events is positive_events else self.miss_history_file
                 try:
-                    # 转换为 int 保存以保持格式一致
+                    
                     pruned_list = pruned_arr.astype(int).tolist()
                     with open(filepath, 'w') as f:
                         for ts in pruned_list:
@@ -962,7 +945,7 @@ class VideoMonitor:
         positive_events = prune_old_data(positive_events, last_lambda, WEIGHT_THRESHOLD)
         negative_events = prune_old_data(negative_events, last_lambda, WEIGHT_THRESHOLD)
 
-        # 正向数据检查
+        
         def check_positive_sufficient(events):
             return len(events) >= MIN_HISTORY_COUNT
 
@@ -991,7 +974,6 @@ class VideoMonitor:
             return float(mean_interval), float(variance)
 
         BASE_INTERVAL, pos_interval_variance = calculate_interval_stats(positive_events)
-        # 负向数据直接使用，即使只有1条数据也计算方差（0.0）
         neg_interval_variance = calculate_interval_stats(negative_events)[1]
 
         def _calculate_adaptive_lambda(timestamps, last_variance) -> tuple[float, float]:
@@ -1026,14 +1008,14 @@ class VideoMonitor:
         last_pos_variance = config.get('last_pos_variance', 0.0)
         pos_lambda, pos_current_variance = _calculate_adaptive_lambda(positive_events, last_pos_variance)
         last_neg_variance = config.get('last_neg_variance', 0.0)
-        # 负向数据直接参与lambda计算，不使用正向lambda替代
+        
         neg_lambda, neg_current_variance = _calculate_adaptive_lambda(negative_events, last_neg_variance)
 
         def learn_dimension_weights(timestamps, old_weights):
             if len(timestamps) < 20:
                 return old_weights
 
-            # 使用 NumPy 方法计算维度强度
+            
             raw_components = self._get_raw_time_components(np.array(timestamps, dtype=np.float64))
 
             dimension_scores = {}
@@ -1076,7 +1058,7 @@ class VideoMonitor:
 
         dimension_weights = learn_dimension_weights(positive_events, dimension_weights_from_config)
 
-        # ==================== 参数字典准备 ====================
+        
         sigmas = {
             'day': float(SIGMA_DAY),
             'week': float(SIGMA_WEEK),
@@ -1097,7 +1079,7 @@ class VideoMonitor:
         lookahead_end = current_timestamp + lookahead_seconds
 
         gaussian_width = (SIGMA_DAY * SECONDS_IN_DAY / 24.0) * 2.0
-        min_step = float(gaussian_width * 0.25)
+        min_step = float(gaussian_width * 0.001)
         max_step = float(gaussian_width * 4.0)
 
         scan_start = float(np.maximum(lookahead_start, current_timestamp + 600.0))
@@ -1113,7 +1095,7 @@ class VideoMonitor:
 
             scan_times = np.arange(scan_start, lookahead_end + scan_step, scan_step, dtype=np.float64)
 
-            # 向量化批量计算所有扫描点的得分 (核心优化)
+            
             scan_scores = self._batch_calculate_scores(scan_times, positive_events, negative_events, dimension_weights, pos_lambda, neg_lambda, sigmas, RESISTANCE_COEFFICIENT)
 
             if len(scan_scores) > 1:
@@ -1161,7 +1143,7 @@ class VideoMonitor:
         next_check_timestamp = int(time.time()) + int(final_frequency_sec)
         self.save_next_check_time(next_check_timestamp)
 
-        # 更新内存化的配置
+        
         self.wgmm_config['last_update'] = current_timestamp
         self.wgmm_config['next_check_time'] = next_check_timestamp
         self.wgmm_config['dimension_weights'] = dimension_weights
@@ -1208,7 +1190,6 @@ class VideoMonitor:
             elapsed = time.time() - start_time
             self.last_ytdlp_duration = elapsed
 
-            # 更新正常耗时基准 (移动平均, 仅在成功时更新)
             if result.returncode == 0:
                 self.normal_ytdlp_duration = 0.9 * self.normal_ytdlp_duration + 0.1 * elapsed
 
@@ -1225,7 +1206,7 @@ class VideoMonitor:
             return False, "", str(e)
 
     def quick_precheck(self) -> bool:
-        """快速预检查: 通过最新视频ID判断是否需要完整检查"""
+        
         if not self.memory_urls:
             self.log_info("memory_urls 为空, 触发完整检查")
             return True
@@ -1260,7 +1241,7 @@ class VideoMonitor:
         has_new_parts = False
 
         try:
-            # 提取分片视频的基础 URL 和最高分片号
+            
             base_urls = {}
             for url in self.memory_urls:
                 if '?p=' in url:
@@ -1273,9 +1254,9 @@ class VideoMonitor:
                     except ValueError:
                         continue
 
-            # 检查是否有新分片
+            
             for base_url, max_part in base_urls.items():
-                if max_part > 1:  # 只检查多分片视频
+                if max_part > 1:  
                     next_part = max_part + 1
                     next_url = f"{base_url}?p={next_part}"
 
@@ -1288,7 +1269,6 @@ class VideoMonitor:
                     if success:
                         has_new_parts = True
 
-                        # 继续检查更多分片 (最多 5 个)
                         check_part = next_part + 1
                         while check_part <= next_part + 5:
                             check_url = f"{base_url}?p={check_part}"
@@ -1309,7 +1289,7 @@ class VideoMonitor:
         return has_new_parts
 
     def get_video_parts(self, video_url: str) -> list[str]:
-        """获取单个视频的所有分片链接"""
+        
         success, stdout, stderr = self.run_yt_dlp([
             '--cookies', self.cookies_file,
             '--flat-playlist',
@@ -1324,7 +1304,7 @@ class VideoMonitor:
             return []
 
     def get_all_videos_parallel(self, video_urls: list[str]) -> list[str]:
-        """并行获取所有视频的分片信息, 使用5线程提高效率"""
+        
         all_parts = []
         os.makedirs(self.tmp_outputs_dir, exist_ok=True)
 
@@ -1349,7 +1329,7 @@ class VideoMonitor:
         return all_parts
 
     def cleanup(self) -> None:
-        """清理临时文件和资源"""
+        
         try:
             if os.path.exists(self.tmp_outputs_dir):
                 shutil.rmtree(self.tmp_outputs_dir)
@@ -1366,7 +1346,7 @@ class VideoMonitor:
                 pass
 
     def wait_for_next_check(self) -> None:
-        """检查并等待下次检查时间"""
+        
         try:
             next_check_timestamp = self.get_next_check_time()
 
@@ -1404,7 +1384,7 @@ class VideoMonitor:
                 self.log_info("Dev模式下跳过异常等待")
 
     def _get_local_timezone_offset(self) -> float:
-        """获取本地时区偏移（秒），用于Unix时间戳转本地时间"""
+        
         if time.localtime().tm_isdst and time.daylight:
             return -time.altzone
         else:
@@ -1427,25 +1407,25 @@ class VideoMonitor:
                 'year_month_cos': np.array([], dtype=np.float64)
             }
 
-        # 转换时区并提取时间分量
+        
         ts_arr = np.array(timestamps_array, dtype=np.float64)
         offset = self._get_local_timezone_offset()
         dt64_local = (ts_arr + offset).astype('datetime64[s]')
 
-        # 时间分量计算
+        
         seconds_in_day = (dt64_local.astype('int64') % 86400).astype(np.float64)
         days_since_epoch = dt64_local.astype('datetime64[D]').astype('int64')
         weekday = (days_since_epoch + 3) % 7
         dates_M = dt64_local.astype('datetime64[M]')
         months = (dates_M - dates_M.astype('datetime64[Y]')).astype(int) + 1
 
-        # 当月第几周
+        
         day_of_month = (dt64_local.astype('datetime64[D]') - dates_M.astype('datetime64[D]')).astype(int) + 1
         first_day_epoch = dates_M.astype('datetime64[D]').astype('int64')
         first_weekday = (first_day_epoch + 3) % 7
         current_week_of_month = (day_of_month - 1 + first_weekday) // 7 + 1
 
-        # 三角特征
+        
         current_second_of_week = weekday * 86400.0 + seconds_in_day
 
         features = {}
@@ -1463,7 +1443,7 @@ class VideoMonitor:
         return features
 
     def _get_raw_time_components(self, timestamps_array: np.ndarray) -> dict:
-        """获取原始时间整数分量"""
+        
         if len(timestamps_array) == 0:
             return {
                 'day': np.array([], dtype=np.int64),
@@ -1476,7 +1456,7 @@ class VideoMonitor:
         offset = self._get_local_timezone_offset()
         dt64_local = (ts_arr + offset).astype('datetime64[s]')
 
-        # 提取时间分量
+        
         seconds_in_day = (dt64_local.astype('int64') % 86400)
         days_since_epoch = dt64_local.astype('datetime64[D]').astype('int64')
         dates_M = dt64_local.astype('datetime64[M]')
@@ -1503,7 +1483,7 @@ class VideoMonitor:
         """
         单点得分计算 - 使用 NumPy 向量化
         """
-        # 提取目标时间特征并解包
+        
         target_feat = self._vectorized_time_features_numpy(np.array([target_timestamp]))
         current_features = {k: v[0] for k, v in target_feat.items()}
 
@@ -1519,11 +1499,11 @@ class VideoMonitor:
             if not np.any(valid_mask):
                 return 0.0
 
-            # 切片提取有效数据
+            
             valid_ages = ages_hours[valid_mask]
             weights = np.exp(-lambda_decay * valid_ages, dtype=np.float64)
 
-            # 高效距离计算函数
+            
             def dist_sq(key):
                 return ((current_features[f'{key}_sin'] - events_feat[f'{key}_sin'][valid_mask]) ** 2 +
                         (current_features[f'{key}_cos'] - events_feat[f'{key}_cos'][valid_mask]) ** 2)
@@ -1542,7 +1522,7 @@ class VideoMonitor:
             total = np.sum(scores, dtype=np.float64)
             count = len(scores)
 
-            # 简化归一化：Min-Max
+            
             if count == 1:
                 return float(np.clip(scores[0], 0.0, 1.0))
 
@@ -1566,24 +1546,24 @@ class VideoMonitor:
         if len(scan_times) == 0:
             return np.array([], dtype=np.float64)
 
-        # 预计算所有扫描点的时间特征
+        
         targets_feat = self._vectorized_time_features_numpy(scan_times)
 
         def get_source_scores_vectorized(events, lambda_decay):
-            """向量化计算单个数据源对所有扫描点的得分"""
+            
             if not events:
                 return np.zeros(len(scan_times), dtype=np.float64)
 
             events_arr = np.array(events, dtype=np.float64)
             events_feat = self._vectorized_time_features_numpy(events_arr)
 
-            # 矩阵广播计算年龄和权重
+            
             ages = (scan_times[:, np.newaxis] - events_arr[np.newaxis, :]) / 3600.0
             valid_mask = ages >= 0
             weights = np.zeros_like(ages, dtype=np.float64)
             weights[valid_mask] = np.exp(-lambda_decay * ages[valid_mask])
 
-            # 距离计算 (广播机制)
+            
             day_dist_sq = ((targets_feat['day_sin'][:, np.newaxis] - events_feat['day_sin'][np.newaxis, :]) ** 2 +
                            (targets_feat['day_cos'][:, np.newaxis] - events_feat['day_cos'][np.newaxis, :]) ** 2)
             week_dist_sq = ((targets_feat['week_sin'][:, np.newaxis] - events_feat['week_sin'][np.newaxis, :]) ** 2 +
@@ -1593,11 +1573,11 @@ class VideoMonitor:
             year_month_dist_sq = ((targets_feat['year_month_sin'][:, np.newaxis] - events_feat['year_month_sin'][np.newaxis, :]) ** 2 +
                                  (targets_feat['year_month_cos'][:, np.newaxis] - events_feat['year_month_cos'][np.newaxis, :]) ** 2)
 
-            # 循环累加高斯核计算
-            # 1. 初始化结果容器
+            
+            
             combined_gaussian = np.zeros_like(day_dist_sq, dtype=np.float64)
 
-            # 2. 准备数据字典
+            
             dist_sq_dict = {
                 'day': day_dist_sq,
                 'week': week_dist_sq,
@@ -1605,22 +1585,22 @@ class VideoMonitor:
                 'year_month': year_month_dist_sq
             }
 
-            # 3. 循环计算并累加
+            
             for dim, dist_sq in dist_sq_dict.items():
-                # 4. 从字典取权重和标准差
+                
                 weight = dimension_weights[dim]
                 sigma = sigmas[dim]
 
-                # 性能优化：将除法转换为乘法
+                
                 coeff = -0.5 / (sigma ** 2)
 
-                # 累加到结果容器中
+                
                 combined_gaussian += weight * np.exp(dist_sq * coeff, dtype=np.float64)
 
-            # 原始得分矩阵 (保留有效部分)
+            
             raw_scores = weights * combined_gaussian * valid_mask
 
-            # 聚合和归一化
+            
             total_scores = np.sum(raw_scores, axis=1, dtype=np.float64)
             valid_counts = np.sum(valid_mask, axis=1)
 
@@ -1632,7 +1612,7 @@ class VideoMonitor:
 
             return np.clip(result, 0.0, 1.0)
 
-        # 计算并组合正负向得分
+        
         pos_scores = get_source_scores_vectorized(pos_events, pos_lambda)
         neg_scores = get_source_scores_vectorized(neg_events, neg_lambda)
         return np.clip(pos_scores - (resistance_coefficient * neg_scores), 0.0, 1.0)
@@ -1650,7 +1630,7 @@ class VideoMonitor:
         """
         try:
             self.log_message("检查开始                  <--")
-            # 步骤1: Gist数据同步
+            
             sync_success = self.sync_urls_from_gist()
 
             if not sync_success and not self.memory_urls:
@@ -1658,20 +1638,20 @@ class VideoMonitor:
                 self.cleanup()
                 return
 
-            # 步骤2: 两层预检查
+            
             found_new_parts = self.check_potential_new_parts()
             found_new_videos = self.quick_precheck()
 
             self.log_info(f"预检查完成 - 预测检查: {'发现新内容' if found_new_parts else '无新内容'} "
                           f"快速检查: {'发现新内容' if found_new_videos else '无新内容'}")
 
-            # 步骤3: 条件性完整检查
+            
             if not (found_new_parts or found_new_videos):
                 self.adjust_check_frequency(found_new_content=False)
                 self.cleanup()
                 return
 
-            # 步骤4: 完整检查
+            
             success, stdout, stderr = self.run_yt_dlp([
                 '--cookies', self.cookies_file,
                 '--flat-playlist',
@@ -1693,30 +1673,30 @@ class VideoMonitor:
                 self.cleanup()
                 return
 
-            # 步骤5: 并行获取分片
+            
             all_parts = self.get_all_videos_parallel(video_urls)
 
             if not all_parts:
                 self.log_info("处理分片时出错, 错误已处理")
                 all_parts = video_urls
 
-            # 步骤6: URL比对
+            
             existing_urls_set = set(self.memory_urls)
             current_urls_set = set(all_parts)
 
-            # 两层URL集合管理
-            gist_missing_urls = current_urls_set - existing_urls_set  # Gist未同步
-            truly_new_urls = gist_missing_urls - self.known_urls  # 真正的新视频
+            
+            gist_missing_urls = current_urls_set - existing_urls_set  
+            truly_new_urls = gist_missing_urls - self.known_urls  
 
             if gist_missing_urls:
-                # 步骤7: 三层显示逻辑
+                
                 old_count = len(gist_missing_urls) - len(truly_new_urls)
                 new_count = len(truly_new_urls)
 
                 display = f"{'*' * old_count}{' ' if old_count > 0 and new_count > 0 else ''}{'*' * new_count}"
                 self.log_info(display)
 
-                # 步骤8: 时间戳保存与通知
+                
                 if truly_new_urls:
                     self.save_real_upload_timestamps(truly_new_urls)
 
@@ -1729,7 +1709,7 @@ class VideoMonitor:
                     if not self.notify_new_videos(len(gist_missing_urls), has_new_parts=found_new_parts):
                         self.log_critical_error("通知发送失败 - 无法向用户推送新视频通知", "notify_new_videos", send_notification=False)
                 
-                # 步骤9: 频率调整
+                
                 if truly_new_urls:
                     self.adjust_check_frequency(found_new_content=True)
                 else:
@@ -1742,7 +1722,7 @@ class VideoMonitor:
                     self.log_info("完整检查未发现新内容 - 快速检查结果已确认, 无更新")
                     self.adjust_check_frequency(found_new_content=False)
 
-            # 步骤10: 清理并保存下次检查时间
+            
             self.cleanup()
 
         except KeyboardInterrupt:
@@ -1761,7 +1741,7 @@ def main() -> None:
     """
     load_env_file()
 
-    args = parse_arguments()  # 解析参数
+    args = parse_arguments()  
 
     monitor = VideoMonitor(dev_mode=args.dev)
 
@@ -1792,16 +1772,16 @@ def main() -> None:
                 except Exception as e:
                     monitor.log_warning(f"初始化运行标志失败: {e}")
             else:
-                # 配置文件不存在，首次运行
+                
                 monitor.log_info("首次运行，将自动初始化配置")
         except Exception as e:
             monitor.log_warning(f"初始化检查失败: {e}")
 
         try:
             while True:
-                # 主循环开始前检查是否需要等待
+                
                 monitor.wait_for_next_check()
-                # 执行监控检查
+                
                 monitor.run_monitor()
         except KeyboardInterrupt:
             monitor.log_info("程序被用户中断")
