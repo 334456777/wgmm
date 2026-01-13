@@ -591,21 +591,36 @@ test_config() {
         echo "  ✓ Python解释器: $PYTHON_CMD ($PYTHON_VERSION)"
         
         # 检查是否使用虚拟环境
+# 检查Python解释器
+    if command -v "$PYTHON_CMD" &> /dev/null; then
+        PYTHON_VERSION=$("$PYTHON_CMD" -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}")' 2>/dev/null)
+        echo "  ✓ Python解释器: $PYTHON_CMD (版本: $PYTHON_VERSION)"
+        
+        # 1. 检查是否为本地 .venv
         if [[ "$PYTHON_CMD" == *".venv"* ]]; then
-            echo "  ✓ 虚拟环境: 已激活"
+            echo "  ✓ 运行环境: 本地虚拟环境 (.venv)"
+        # 2. 检查是否为 pyenv 环境
+        elif command -v pyenv &> /dev/null && pyenv prefix &> /dev/null; then
+            echo "  ✓ 运行环境: pyenv 托管环境 ($(pyenv version-name))"
         else
-            echo "  ⚠ 虚拟环境: 未使用"
-            echo "    提示: 建议使用虚拟环境隔离依赖"
-            echo "    创建虚拟环境: python3 -m venv .venv"
-            echo "    激活虚拟环境: source .venv/bin/activate"
+            echo "  ⚠ 运行环境: 系统全局 Python"
+            echo "    提示: 建议使用 pyenv 或虚拟环境隔离依赖"
+        fi
+
+        # 3. 针对 3.14.2 的版本专项检查
+        if [ "$PYTHON_VERSION" != "3.14.2" ]; then
+            echo "  ⚠ 版本提醒: 当前运行版本为 $PYTHON_VERSION，而非推荐的 3.14.2"
+            echo "    修复: 运行 'pyenv local 3.14.2' 并重建虚拟环境"
         fi
     else
         echo "  ✗ Python解释器: $PYTHON_CMD (不可用)"
-        echo "    提示: 安装Python3: sudo apt install python3"
+        if command -v pyenv &> /dev/null; then
+            echo "    提示: 发现 pyenv，请尝试安装版本: pyenv install 3.14.2"
+        else
+            echo "    提示: 安装 Python: sudo apt install python3"
+        fi
         all_ok=false
-    fi
-    
-    echo ""
+    fi  
     echo "3. 依赖检查:"
     
     # 检查Python依赖
