@@ -13,11 +13,11 @@ import urllib.parse
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import suppress
 from datetime import UTC
-from zoneinfo import ZoneInfo
 from datetime import datetime as dt
 from pathlib import Path
 from types import FrameType
 from typing import Any
+from zoneinfo import ZoneInfo
 
 import numpy as np
 import requests
@@ -68,7 +68,7 @@ class VideoMonitor:
 
 		"""
 		self.dev_mode: bool = dev_mode
-		
+
 
 		self.GIST_ID: str = os.getenv("GIST_ID", "")
 		self.GITHUB_TOKEN: str = os.getenv("GITHUB_TOKEN", "")
