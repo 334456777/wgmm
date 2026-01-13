@@ -48,23 +48,7 @@ def load_env_file(env_path: str = '.env') -> None:
 
 
 class VideoMonitor:
-    """Bilibili视频监控系统主类
 
-    核心机制: 
-    1. 多层级检测策略: 分片预检查 → 快速检查 → 完整检查
-    2. WGMM智能频率: 基于历史模式的自适应调整
-    3. 分级通知: Bark推送 (critical/timeSensitive/active/passive)
-
-    属性说明: 
-    - memory_urls: Gist同步的已备份URL (内存化替代文件读写)
-    - known_urls: 本地已知URL集合 (双层管理机制)
-    - ytdlp耗时监控: 用于网络阻抗阻尼计算
-
-    运行要求: 
-    - yt-dlp可用 + cookies.txt有效 + GitHub Token具备Gist权限
-    """
-    
-    
     DEFAULT_CHECK_INTERVAL: int = 24000
     FALLBACK_INTERVAL: int = 7200
     MAX_RETRY_ATTEMPTS: int = 3
@@ -116,9 +100,7 @@ class VideoMonitor:
         self.cookies_file: str = "cookies.txt"  
         self.tmp_outputs_dir: str = "tmp_outputs"  
 
-        
         self._validate_cookies_file()
-        
         
         self.last_ytdlp_duration: float = 0.0  
         self.normal_ytdlp_duration: float = 60.0  
@@ -135,10 +117,6 @@ class VideoMonitor:
         signal.signal(signal.SIGINT, self.signal_handler)
 
     def setup_logging(self) -> None:
-        """配置日志系统
-
-        初始化Python logging模块, 统一日志格式和级别
-        """
         logging.basicConfig(
             level=logging.INFO,
             format='%(asctime)s - %(message)s',
@@ -173,10 +151,6 @@ class VideoMonitor:
             self.log_critical_error(f"保存本地已知 URL 失败: {e}", "save_known_urls", send_notification=False)
 
     def _validate_cookies_file(self) -> None:
-        """验证 cookies 文件是否存在且有内容
-
-        如果 cookies.txt 不存在或为空，记录 critical 错误并退出程序
-        """
         cookies_path = self.cookies_file
 
         
@@ -242,14 +216,6 @@ class VideoMonitor:
             self.log_warning(f"保存WGMM配置失败: {e}")
 
     def signal_handler(self, signum: int, frame: FrameType | None) -> None:
-        """系统信号处理器
-
-        处理SIGTERM和SIGINT信号, 确保程序优雅退出
-
-        Args:
-            signum: 信号编号 (SIGTERM=15, SIGINT=2)
-            frame: 栈帧对象 (调试用)
-        """
         self.log_message(f"收到信号 {signum}, 正在清理并退出...")
         try:
             self.save_known_urls()
@@ -259,12 +225,6 @@ class VideoMonitor:
         sys.exit(0)
 
     def log_message(self, message: str, level: str = 'INFO') -> None:
-        """记录日志消息到文件和控制台
-
-        Args:
-            message: 日志消息内容
-            level: 日志级别 (INFO/WARNING/ERROR/CRITICAL)
-        """
         timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
         log_entry = f"{timestamp} - {level} - {message}\n"
 
@@ -288,12 +248,6 @@ class VideoMonitor:
         self.log_message(message, 'WARNING')
 
     def log_error(self, message: str, send_bark_notification: bool = True) -> None:
-        """记录错误日志并可选发送通知
-
-        Args:
-            message: 错误消息
-            send_bark_notification: 是否发送Bark通知
-        """
         self.log_message(message, 'ERROR')
 
         if send_bark_notification:
@@ -310,13 +264,6 @@ class VideoMonitor:
         context: str = "",
         send_notification: bool = True
     ) -> None:
-        """记录严重错误并发送通知
-
-        Args:
-            message: 错误消息
-            context: 错误上下文 (方法名、阶段等)
-            send_notification: 是否发送critical级别通知
-        """
         timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
         full_message = f"{message}"
         if context:
@@ -344,11 +291,6 @@ class VideoMonitor:
                 print(f"{timestamp} - WARNING - 重大错误通知发送失败")
 
     def _limit_critical_log_lines(self, max_lines: int = 20000) -> None:
-        """限制重大错误日志文件行数 (内部方法)
-
-        Args:
-            max_lines: 最大保留行数
-        """
         try:
             self.limit_file_lines(self.critical_log_file, max_lines)
         except Exception:
@@ -356,12 +298,6 @@ class VideoMonitor:
             pass
 
     def limit_file_lines(self, filepath: str, max_lines: int) -> None:
-        """限制指定文件的行数
-
-        Args:
-            filepath: 文件路径
-            max_lines: 最大保留行数
-        """
         try:
             if os.path.exists(filepath):
                 with open(filepath, 'r', encoding='utf-8') as f:
@@ -393,22 +329,6 @@ class VideoMonitor:
         call: bool = False,
         volume: int | None = None
     ) -> bool:
-        """发送Bark推送通知 (统一接口)
-
-        所有通知方法的底层实现, 基于Bark API v2.0规范
-
-        Args:
-            title: 通知标题
-            body: 通知正文
-            level: 通知优先级 (active/timeSensitive/passive/critical)
-            sound: 铃声名称
-            group: 通知分组
-            url: 点击跳转链接
-            call: 是否持续响铃 (30秒)
-
-        Returns:
-            是否发送成功
-        """
         try:
             encoded_title = urllib.parse.quote(title)
             encoded_body = urllib.parse.quote(body)
@@ -442,10 +362,6 @@ class VideoMonitor:
             return False
 
     def notify_new_videos(self, count: int, has_new_parts: bool = False) -> bool:
-        """发送新视频发现通知
-
-        检测到新视频时发送推送, timeSensitive级别可突破专注模式。
-        """
         body = f"发现 {count} 个新视频{'(含新分片)' if has_new_parts else ''}等待备份"
 
         return self.send_bark_push(
@@ -751,16 +667,7 @@ class VideoMonitor:
         self.log_critical_error(error_msg, "generate_mtime_file 方法", send_notification=True)
         return False
 
-    def adjust_check_frequency(self, found_new_content: bool = False) -> None:
-        """WGMM 2.0: 基于双波源对抗的智能频率预测
-
-        算法核心: 正向得分 - 阻力系数 × 负向得分
-        未来展望: 15天窗口搜索峰值, 智能提前唤醒
-
-        Args:
-            found_new_content: 是否发现新内容, 影响历史记录写入
-        """
-        
+    def adjust_check_frequency(self, found_new_content: bool = False) -> None:        
         
         SIGMA_DAY = 0.8
         SIGMA_WEEK = 1.0
@@ -1229,11 +1136,6 @@ class VideoMonitor:
         return not video_exists
 
     def check_potential_new_parts(self) -> bool:
-        """检查现有多分片视频是否有新分片
-
-        分析已有的多分片视频, 检查是否有新的分片发布。
-        这是一个高效的预检查方法, 避免完整扫描。
-        """
         if not self.memory_urls:
             self.log_info("内存数据为空, 跳过分片预检查")
             return False
@@ -1391,10 +1293,6 @@ class VideoMonitor:
             return -time.timezone
 
     def _vectorized_time_features_numpy(self, timestamps_array: np.ndarray) -> dict:
-        """
-        纯 NumPy 实现的时间特征提取，速度提升 100x+
-        完全移除 datetime 和 calendar 循环依赖
-        """
         if len(timestamps_array) == 0:
             return {
                 'day_sin': np.array([], dtype=np.float64),
@@ -1618,16 +1516,6 @@ class VideoMonitor:
         return np.clip(pos_scores - (resistance_coefficient * neg_scores), 0.0, 1.0)
 
     def run_monitor(self) -> None:
-        """主监控流程
-
-        执行三层检测策略: 
-        1. 分片预检查: 检测多分片视频的新分片
-        2. 快速检查: 通过最新视频ID快速判断更新
-        3. 完整检查: 获取所有视频链接并对比
-
-        核心流程: 
-        - GitHub Gist数据同步 → 预检查 → 完整检查 → 新视频发现 → 频率调整
-        """
         try:
             self.log_message("检查开始                  <--")
             
@@ -1734,15 +1622,8 @@ class VideoMonitor:
             self.cleanup()
 
 def main() -> None:
-    """程序入口点
-
-    创建监控实例并启动主循环
-    支持Dev模式：-d/--dev 参数运行单次检查后退出
-    """
     load_env_file()
-
     args = parse_arguments()  
-
     monitor = VideoMonitor(dev_mode=args.dev)
 
     if args.dev:
