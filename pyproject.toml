@@ -1,13 +1,22 @@
 [tool.ruff]
 target-version = "py314"
+line-length = 88
 
 [tool.ruff.lint]
-select = ["E", "W", "F", "I", "UP", "B", "SIM", "N", "PTH", "BLE", "RUF", "D"]
-ignore = [
-	"W191", "D206", "D203", "D213", 
-	"D100", "D101", "D102", "D103", "D104"
+select = [
+	"E", "W", "F", "I", "UP", "B", "SIM", "N", "PTH", "BLE", "RUF", 
+	"C4", "PL", "PERF", "TRY", "DTZ", "S"
 ]
+
+ignore = [
+	"W191", "D206", "D203", "D213", "COM812", "ISC001", 
+	"D", "ANN", "FBT", "PLR0912", "PLR0913", "PLR0915", "C901", "T201", "RET505"
+]
+
+[tool.ruff.lint.pydocstyle]
+convention = "google" 
 
 [tool.ruff.format]
 indent-style = "tab"
 quote-style = "double"
+skip-magic-trailing-comma = false
