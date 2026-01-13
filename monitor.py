@@ -13,6 +13,7 @@ import urllib.parse
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import suppress
 from datetime import UTC
+from zoneinfo import ZoneInfo
 from datetime import datetime as dt
 from pathlib import Path
 from types import FrameType
@@ -67,6 +68,7 @@ class VideoMonitor:
 
 		"""
 		self.dev_mode: bool = dev_mode
+		
 
 		self.GIST_ID: str = os.getenv("GIST_ID", "")
 		self.GITHUB_TOKEN: str = os.getenv("GITHUB_TOKEN", "")
@@ -248,7 +250,7 @@ class VideoMonitor:
 		sys.exit(0)
 
 	def log_message(self, message: str, level: str = "INFO") -> None:
-		timestamp = dt.now(UTC).strftime("%Y-%m-%d %H:%M:%S")
+		timestamp = dt.now(ZoneInfo("Asia/Tokyo")).strftime("%Y-%m-%d %H:%M:%S")
 		log_entry = f"{timestamp} - {level} - {message}\n"
 
 		if self.dev_mode:
@@ -272,10 +274,10 @@ class VideoMonitor:
 
 		if send_bark_notification:
 			if self.notify_error(message):
-				timestamp = dt.now(UTC).strftime("%Y-%m-%d %H:%M:%S")
+				timestamp = dt.now(ZoneInfo("Asia/Tokyo")).strftime("%Y-%m-%d %H:%M:%S")
 				print(f"{timestamp} - INFO - 错误通知已发送")
 			else:
-				timestamp = dt.now(UTC).strftime("%Y-%m-%d %H:%M:%S")
+				timestamp = dt.now(ZoneInfo("Asia/Tokyo")).strftime("%Y-%m-%d %H:%M:%S")
 				print(f"{timestamp} - WARNING - 错误通知发送失败")
 
 	def log_critical_error(
@@ -284,7 +286,7 @@ class VideoMonitor:
 		context: str = "",
 		send_notification: bool = True,
 	) -> None:
-		timestamp = dt.now(UTC).strftime("%Y-%m-%d %H:%M:%S")
+		timestamp = dt.now(ZoneInfo("Asia/Tokyo")).strftime("%Y-%m-%d %H:%M:%S")
 		full_message = f"{message}"
 		if context:
 			full_message += f" [上下文: {context}]"
@@ -379,7 +381,7 @@ class VideoMonitor:
 			response = requests.get(full_url, timeout=30)
 			success = response.status_code == http_ok
 		except requests.RequestException as e:
-			timestamp = dt.now(UTC).strftime("%Y-%m-%d %H:%M:%S")
+			timestamp = dt.now(ZoneInfo("Asia/Tokyo")).strftime("%Y-%m-%d %H:%M:%S")
 			print(f"{timestamp} - WARNING - Bark推送失败: {e}")
 			success = False
 
