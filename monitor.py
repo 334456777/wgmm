@@ -645,7 +645,7 @@ class VideoMonitor:
             self.log_warning(f"创建 mtime.txt 时出错: {e}")
             try:
                 shutil.rmtree(temp_info_dir)
-            except:
+            except Exception:
                 pass
             return False
 
@@ -720,7 +720,6 @@ class VideoMonitor:
         PEAK_ADVANCE_MINUTES = 5
 
         SECONDS_IN_DAY = 86400
-        SECONDS_IN_WEEK = 604800
 
         def get_local_timezone_offset():
             if time.localtime().tm_isdst and time.daylight:
@@ -748,7 +747,6 @@ class VideoMonitor:
                 self.wgmm_config["is_manual_run"] = False
 
         current_timestamp = int(time.time())
-        current_dt = datetime.fromtimestamp(current_timestamp)
 
         def load_miss_history():
             if not os.path.exists(self.miss_history_file):
@@ -905,7 +903,6 @@ class VideoMonitor:
             return float(mean_interval), float(variance)
 
         BASE_INTERVAL, pos_interval_variance = calculate_interval_stats(positive_events)
-        neg_interval_variance = calculate_interval_stats(negative_events)[1]
 
         def _calculate_adaptive_lambda(
             timestamps, last_variance
@@ -1034,7 +1031,6 @@ class VideoMonitor:
 
         gaussian_width = (SIGMA_DAY * SECONDS_IN_DAY / 24.0) * 2.0
         min_step = float(gaussian_width * 0.25)
-        max_step = float(gaussian_width * 4.0)
 
         scan_start = float(np.maximum(lookahead_start, current_timestamp + 600.0))
 
