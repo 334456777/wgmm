@@ -12,9 +12,9 @@ import json
 import argparse
 import urllib.parse
 from datetime import datetime
-from concurrent.futures import ThreadPoolExecutor, as_completed, Future
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import signal
-from typing import TYPE_CHECKING, Any
+from typing import Any
 from types import FrameType
 
 import numpy as np
