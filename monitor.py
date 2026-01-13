@@ -107,6 +107,8 @@ class VideoMonitor:
 		self.last_ytdlp_duration: float = 0.0
 		self.normal_ytdlp_duration: float = 60.0
 
+		self.yt_dlp_path: str | None = None
+
 		self.wgmm_config: dict = self._load_wgmm_config()
 
 		self.setup_logging()
@@ -244,6 +246,7 @@ class VideoMonitor:
 		with suppress(Exception):
 			self.cleanup()
 		sys.exit(0)
+
 	def log_message(self, message: str, level: str = "INFO") -> None:
 		timestamp = dt.now(UTC).strftime("%Y-%m-%d %H:%M:%S")
 		log_entry = f"{timestamp} - {level} - {message}\n"
@@ -257,6 +260,7 @@ class VideoMonitor:
 			self.limit_file_lines(self.log_file, 100000)
 
 		print(f"{timestamp} - {level} - {message}")
+
 	def log_info(self, message: str) -> None:
 		self.log_message(message, "INFO")
 
@@ -624,14 +628,15 @@ class VideoMonitor:
 				self.log_warning(f"获取元信息失败: {stderr[:100]}")
 				return False
 
-			timestamps = []
+			temp_timestamps_file = Path("temp_timestamps.txt")
+			timestamp_count = 0
 
 			for info_file in temp_info_dir.glob("*.info.json"):
 				try:
-					info_data = json.loads(info_file.read_text(encoding="utf-8"))
+					with info_file.open(encoding="utf-8") as f:
+						info_data = json.load(f)
 
 					upload_timestamp = None
-
 					if info_data.get("timestamp"):
 						upload_timestamp = int(info_data["timestamp"])
 					elif info_data.get("upload_date"):
@@ -644,36 +649,65 @@ class VideoMonitor:
 							pass
 
 					if upload_timestamp and upload_timestamp > 0:
-						timestamps.append(upload_timestamp)
+						with temp_timestamps_file.open("a", encoding="utf-8") as tf:
+							tf.write(f"{upload_timestamp}\n")
+						timestamp_count += 1
 
 				except (OSError, json.JSONDecodeError) as e:
 					self.log_warning(f"解析 info.json 文件失败: {info_file} - {e}")
-					continue
 
 			try:
 				shutil.rmtree(temp_info_dir)
 			except OSError as e:
 				self.log_warning(f"清理临时目录失败: {e}")
 
-			if not timestamps:
+			if timestamp_count == 0:
 				self.log_warning("未能从任何 info.json 文件中提取到有效时间戳")
+				with suppress(OSError):
+					temp_timestamps_file.unlink()
 				return False
 
-			sorted_timestamps = sorted(timestamps)
-			mtime_file_path = Path(self.mtime_file)
-			mtime_file_path.write_text(
-				"".join(f"{timestamp}\n" for timestamp in sorted_timestamps),
-				encoding="utf-8",
-			)
+			sort_path = shutil.which("sort")
+			sorted_content = None
+			sort_method = ""
 
-			self.log_info(f"成功创建 mtime.txt, 包含 {len(sorted_timestamps)} 个时间戳")
+			if sort_path and temp_timestamps_file.exists():
+				try:
+					result = subprocess.run(
+						[sort_path, "-n", str(temp_timestamps_file)],
+						capture_output=True,
+						text=True,
+						check=True,
+					)
+					sorted_content = result.stdout
+					sort_method = "系统排序"
+				except (OSError, subprocess.CalledProcessError) as e:
+					self.log_warning(f"系统排序失败: {e}, 使用内存排序")
+					sort_path = None
+
+			if not sort_path and temp_timestamps_file.exists():
+				with temp_timestamps_file.open(encoding="utf-8") as tf:
+					timestamps = [int(line.strip()) for line in tf if line.strip()]
+				timestamps.sort()
+				sorted_content = "".join(f"{ts}\n" for ts in timestamps)
+				sort_method = "内存排序"
+
+			if sorted_content and temp_timestamps_file.exists():
+				mtime_file_path = Path(self.mtime_file)
+				mtime_file_path.write_text(sorted_content, encoding="utf-8")
+				temp_timestamps_file.unlink()
+				self.log_info(
+					f"成功创建 mtime.txt ({sort_method}), 包含 {timestamp_count} 个时间戳"
+				)
+				return True
+
+			return False
+
 		except (OSError, json.JSONDecodeError) as e:
 			self.log_warning(f"创建 mtime.txt 时出错: {e}")
 			with suppress(OSError):
 				shutil.rmtree(temp_info_dir)
 			return False
-		else:
-			return True
 
 	def generate_mtime_file(self, context: str = "") -> bool:
 		mtime_file_path = Path(self.mtime_file)
@@ -746,11 +780,6 @@ class VideoMonitor:
 
 		seconds_in_day = 86400
 
-		def get_local_timezone_offset():
-			if time.localtime().tm_isdst and time.daylight:
-				return -time.altzone
-			return -time.timezone
-
 		config = self.wgmm_config
 
 		if "dimension_weights" not in config:
@@ -807,8 +836,6 @@ class VideoMonitor:
 
 		def load_history_file(filepath):
 			file_path = Path(filepath)
-			if self.dev_mode and filepath == self.mtime_file and not file_path.exists():
-				return []
 
 			try:
 				raw_data = [
@@ -1195,15 +1222,17 @@ class VideoMonitor:
 		command_args: list[str],
 		timeout: int = 300,
 	) -> tuple[bool, str, str]:
-		yt_dlp_path = shutil.which("yt-dlp")
-		if not yt_dlp_path:
-			self.log_error("未找到 yt-dlp 可执行文件, 请检查是否安装。")
-			return False, "", "没有找到 yt-dlp 可执行文件"
+		# Cache yt-dlp path on first use
+		if self.yt_dlp_path is None:
+			self.yt_dlp_path = shutil.which("yt-dlp")
+			if not self.yt_dlp_path:
+				self.log_error("未找到 yt-dlp 可执行文件, 请检查是否安装。")
+				return False, "", "没有找到 yt-dlp 可执行文件"
 
 		start_time = time.time()
 		try:
 			result = subprocess.run(
-				[yt_dlp_path, *command_args],
+				[self.yt_dlp_path, *command_args],
 				capture_output=True,
 				text=True,
 				timeout=timeout,
@@ -1387,6 +1416,7 @@ class VideoMonitor:
 						shutil.rmtree(temp_path)
 			except OSError:
 				pass
+
 	def wait_for_next_check(self) -> None:
 		try:
 			next_check_timestamp = self.get_next_check_time()
@@ -1863,7 +1893,6 @@ def main() -> None:
 		try:
 			while True:
 				monitor.wait_for_next_check()
-
 				monitor.run_monitor()
 		except KeyboardInterrupt:
 			monitor.log_info("程序被用户中断")
