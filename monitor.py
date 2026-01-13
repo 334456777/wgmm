@@ -700,8 +700,8 @@ class VideoMonitor:
 					f"成功创建 mtime.txt ({sort_method}), 包含 {timestamp_count} 个时间戳"
 				)
 				return True
-
-			return False
+			else:
+				return False
 
 		except (OSError, json.JSONDecodeError) as e:
 			self.log_warning(f"创建 mtime.txt 时出错: {e}")
