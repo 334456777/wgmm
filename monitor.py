@@ -1079,7 +1079,7 @@ class VideoMonitor:
         lookahead_end = current_timestamp + lookahead_seconds
 
         gaussian_width = (SIGMA_DAY * SECONDS_IN_DAY / 24.0) * 2.0
-        min_step = float(gaussian_width * 0.001)
+        min_step = float(gaussian_width * 0.25)
         max_step = float(gaussian_width * 4.0)
 
         scan_start = float(np.maximum(lookahead_start, current_timestamp + 600.0))
