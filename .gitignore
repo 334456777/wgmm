@@ -17,3 +17,4 @@
 /.vscode
 /miss_history.txt
 /.claude
+/.ruff_cache
