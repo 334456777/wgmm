@@ -1,53 +1,47 @@
-# systemd 服务文件模板
-# 将此文件复制到 /etc/systemd/system/video-monitor.service
-# 然后根据实际情况修改路径和用户名
-
 [Unit]
-Description=Video Monitor Service - 视频监控服务
-After=network.target
+Description=Video Monitor Service (Direct Python)
+After=network-online.target
 Wants=network-online.target
 
 [Service]
-Type=simple
+# 指定运行服务的用户和组
 User=yusteven
 Group=yusteven
-WorkingDirectory=/home/yusteven/boluo/pyt
-ExecStart=/bin/bash /home/yusteven/boluo/pyt/monitor.sh start-foreground
-ExecStop=/bin/bash /home/yusteven/boluo/pyt/monitor.sh stop
-ExecReload=/bin/bash /home/yusteven/boluo/pyt/monitor.sh restart
 
-# 重启设置
+# 设置工作目录
+WorkingDirectory=/home/yusteven/boluo/pyt
+
+# 直接指向虚拟环境中的 Python 解释器
+ExecStart=/home/yusteven/boluo/pyt/.venv/bin/python /home/yusteven/boluo/pyt/monitor.py
+
+# 如果 monitor.py 需要从 .env 文件读取变量，systemd 可以直接加载它
+EnvironmentFile=-/home/yusteven/boluo/pyt/.env
+
+# 确保 Python 输出直接进入 journal 日志，而不被缓存
+Environment=PYTHONUNBUFFERED=1
+# 将虚拟环境的 bin 目录加入 PATH，确保脚本内调用 yt-dlp 等命令时能找到
+Environment=PATH=/home/yusteven/boluo/pyt/.venv/bin:/usr/local/bin:/usr/bin:/bin
+
+# 重启策略
 Restart=always
-RestartSec=10
+RestartSec=5
 StartLimitInterval=60
 StartLimitBurst=3
 
-# 环境变量
-Environment=PYTHONUNBUFFERED=1
-Environment=PATH=/usr/local/bin:/usr/bin:/bin
-
-# 安全设置
+# --- 安全与沙盒设置 ---
+# 禁止获取新特权
 NoNewPrivileges=true
+# 隔离临时目录
 PrivateTmp=true
-ProtectSystem=strict
+# 设置文件系统为只读，仅允许写入指定的路径
+ProtectSystem=full
 ProtectHome=read-only
 ReadWritePaths=/home/yusteven/boluo/pyt
 
-# 日志设置
+# 日志配置
 StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=video-monitor
 
 [Install]
 WantedBy=multi-user.target
-
-# 安装说明:
-# 1. 复制此文件到 /etc/systemd/system/video-monitor.service
-# 2. 修改 User, Group, WorkingDirectory 路径（如需要）
-# 3. 重新加载 systemd: sudo systemctl daemon-reload
-# 4. 启用服务: sudo systemctl enable video-monitor
-# 5. 启动服务: sudo systemctl start video-monitor
-# 6. 查看状态: sudo systemctl status video-monitor
-# 7. 查看日志: sudo journalctl -u video-monitor -f
-#
-# 注意: 服务使用 monitor.sh start-foreground 启动，确保脚本有执行权限
