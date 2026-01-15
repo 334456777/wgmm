@@ -69,7 +69,6 @@ class VideoMonitor:
 		"""
 		self.dev_mode: bool = dev_mode
 
-
 		self.GIST_ID: str = os.getenv("GIST_ID", "")
 		self.GITHUB_TOKEN: str = os.getenv("GITHUB_TOKEN", "")
 		self.GIST_BASE_URL: str = "https://api.github.com/gists"
@@ -551,9 +550,7 @@ class VideoMonitor:
 					pass
 			if len(parts) >= min_parts_for_date and parts[1] and parts[1] != "NA":
 				try:
-					parsed_dt = dt.strptime(
-						parts[1], "%Y%m%d"
-					).replace(tzinfo=UTC)
+					parsed_dt = dt.strptime(parts[1], "%Y%m%d").replace(tzinfo=UTC)
 					return int(parsed_dt.timestamp())
 				except ValueError:
 					pass
@@ -993,9 +990,7 @@ class VideoMonitor:
 			else:
 				lambda_factor = 0
 
-			base_adaptive_lambda = (
-				lambda_min + (lambda_max - lambda_min) * lambda_factor
-			)
+			base_adaptive_lambda = lambda_min + (lambda_max - lambda_min) * lambda_factor
 			trend_correction = variance_trend_normalized * 0.3 * base_adaptive_lambda
 			adaptive_lambda = base_adaptive_lambda + trend_correction
 
@@ -1376,8 +1371,7 @@ class VideoMonitor:
 		try:
 			with ThreadPoolExecutor(max_workers=5) as executor:
 				future_to_url = {
-					executor.submit(self.get_video_parts, url): url
-					for url in video_urls
+					executor.submit(self.get_video_parts, url): url for url in video_urls
 				}
 
 				for future in as_completed(future_to_url):
@@ -1431,8 +1425,8 @@ class VideoMonitor:
 				weekday_name = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"][
 					next_dt.weekday()
 				]
-				date_str = next_dt.strftime('%Y年%m月%d日')
-				time_str = next_dt.strftime('%H:%M:%S')
+				date_str = next_dt.strftime("%Y年%m月%d日")
+				time_str = next_dt.strftime("%H:%M:%S")
 				next_check_time = f"{date_str} {weekday_name} {time_str}"
 
 				if wait_seconds <= 0:
@@ -1580,11 +1574,9 @@ class VideoMonitor:
 
 			def dist_sq(key):
 				return (
-					current_features[f"{key}_sin"]
-					- events_feat[f"{key}_sin"][valid_mask]
+					current_features[f"{key}_sin"] - events_feat[f"{key}_sin"][valid_mask]
 				) ** 2 + (
-					current_features[f"{key}_cos"]
-					- events_feat[f"{key}_cos"][valid_mask]
+					current_features[f"{key}_cos"] - events_feat[f"{key}_cos"][valid_mask]
 				) ** 2
 
 			combined = (
@@ -1623,9 +1615,7 @@ class VideoMonitor:
 
 		pos_score = calculate_source_score_vectorized(pos_events, pos_lambda)
 		neg_score = (
-			calculate_source_score_vectorized(neg_events, neg_lambda)
-			if neg_events
-			else 0.0
+			calculate_source_score_vectorized(neg_events, neg_lambda) if neg_events else 0.0
 		)
 
 		return float(
@@ -1744,8 +1734,7 @@ class VideoMonitor:
 			parts_result = "发现新内容" if found_new_parts else "无新内容"
 			videos_result = "发现新内容" if found_new_videos else "无新内容"
 			self.log_info(
-				f"预检查完成 - 预测检查: {parts_result} "
-				f"快速检查: {videos_result}",
+				f"预检查完成 - 预测检查: {parts_result} 快速检查: {videos_result}",
 			)
 
 			if not (found_new_parts or found_new_videos):
@@ -1802,7 +1791,7 @@ class VideoMonitor:
 				old_count = len(gist_missing_urls) - len(truly_new_urls)
 				new_count = len(truly_new_urls)
 
-				separator = ' ' if old_count > 0 and new_count > 0 else ''
+				separator = " " if old_count > 0 and new_count > 0 else ""
 				display = f"{'*' * old_count}{separator}{'*' * new_count}"
 				self.log_info(display)
 
