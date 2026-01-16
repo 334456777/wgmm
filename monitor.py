@@ -81,7 +81,7 @@ class VideoMonitor:
 		if not all(
 			[self.GIST_ID, self.GITHUB_TOKEN, self.BILIBILI_UID, self.bark_device_key],
 		):
-			print("缺少必要的环境变量1", file=sys.stderr)
+			print("缺少必要的环境变量", file=sys.stderr)
 			sys.exit(1)
 
 		self.memory_urls: list[str] = []
