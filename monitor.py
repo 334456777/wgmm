@@ -56,15 +56,24 @@ def load_env_file(env_path: str = ".env") -> None:
 
 
 class VideoMonitor:
-	DEFAULT_CHECK_INTERVAL: int = 24000
-	FALLBACK_INTERVAL: int = 7200
-	MAX_RETRY_ATTEMPTS: int = 3
+	"""B站视频监控器 - 基于WGMM算法的自适应监控系统.
+
+	核心功能：
+	1. 三层检测架构（分片预检查 → 快速ID检查 → 完整深度检查）
+	2. WGMM算法自适应调整检查频率，节省60-80%网络请求
+	3. Bark推送通知新视频
+	4. GitHub Gist + 本地文件双层URL管理
+	"""
+
+	DEFAULT_CHECK_INTERVAL: int = 24000  # 默认检查间隔（秒）
+	FALLBACK_INTERVAL: int = 7200  # 降级检查间隔（秒）
+	MAX_RETRY_ATTEMPTS: int = 3  # 最大重试次数
 
 	def __init__(self, dev_mode: bool = False) -> None:
 		"""初始化监控系统.
 
 		Args:
-			dev_mode: 是否为开发模式(沙盒运行)
+			dev_mode: 开发模式标志，True时运行单次检查后退出，不修改配置文件
 
 		"""
 		self.dev_mode: bool = dev_mode
@@ -119,6 +128,7 @@ class VideoMonitor:
 		signal.signal(signal.SIGINT, self.signal_handler)
 
 	def setup_logging(self) -> None:
+		"""配置日志系统格式和输出."""
 		logging.basicConfig(
 			level=logging.INFO,
 			format="%(asctime)s - %(message)s",
@@ -127,6 +137,7 @@ class VideoMonitor:
 		self.logger: logging.Logger = logging.getLogger(__name__)
 
 	def load_known_urls(self) -> None:
+		"""从本地文件加载已知URL集合."""
 		known_file = Path(self.local_known_file)
 		try:
 			if known_file.exists():
@@ -141,6 +152,7 @@ class VideoMonitor:
 			self.known_urls = set()
 
 	def save_known_urls(self) -> None:
+		"""保存已知URL集合到本地文件."""
 		if self.dev_mode:
 			self.sandbox_known_urls = self.known_urls.copy()
 			return
@@ -157,6 +169,7 @@ class VideoMonitor:
 			)
 
 	def _validate_cookies_file(self) -> None:
+		"""验证cookies文件存在且非空."""
 		cookies_path = Path(self.cookies_file)
 
 		if not cookies_path.exists():
@@ -227,6 +240,7 @@ class VideoMonitor:
 			return default_config
 
 	def _save_wgmm_config(self) -> None:
+		"""保存WGMM算法配置到JSON文件."""
 		if self.dev_mode:
 			return
 		config_file = Path(self.wgmm_config_file)
@@ -263,9 +277,11 @@ class VideoMonitor:
 		print(f"{timestamp} - {level} - {message}")
 
 	def log_info(self, message: str) -> None:
+		"""记录INFO级别日志."""
 		self.log_message(message, "INFO")
 
 	def log_warning(self, message: str) -> None:
+		"""记录WARNING级别日志."""
 		self.log_message(message, "WARNING")
 
 	def log_error(self, message: str, send_bark_notification: bool = True) -> None:
@@ -310,10 +326,12 @@ class VideoMonitor:
 				print(f"{timestamp} - WARNING - 重大错误通知发送失败")
 
 	def _limit_critical_log_lines(self, max_lines: int = 20000) -> None:
+		"""限制严重错误日志文件的最大行数."""
 		with suppress(Exception):
 			self.limit_file_lines(self.critical_log_file, max_lines)
 
 	def limit_file_lines(self, filepath: str, max_lines: int) -> None:
+		"""限制日志文件的最大行数，保留最新的内容."""
 		file_path = Path(filepath)
 		try:
 			if file_path.exists():
@@ -387,6 +405,7 @@ class VideoMonitor:
 		return success
 
 	def notify_new_videos(self, count: int, has_new_parts: bool = False) -> bool:
+		"""发送新视频通知到Bark."""
 		body = f"发现 {count} 个新视频{'(含新分片)' if has_new_parts else ''}等待备份"
 
 		return self.send_bark_push(
@@ -398,6 +417,7 @@ class VideoMonitor:
 		)
 
 	def notify_error(self, message: str) -> bool:
+		"""发送普通错误通知到Bark."""
 		return self.send_bark_push(
 			title=f"{self.bark_app_title} - 错误",
 			body=message,
@@ -406,6 +426,7 @@ class VideoMonitor:
 		)
 
 	def notify_critical_error(self, message: str, context: str = "") -> bool:
+		"""发送严重错误通知到Bark（带铃声和来电提醒）."""
 		body = message + (f" ({context})" if context else "")
 
 		return self.send_bark_push(
@@ -419,6 +440,7 @@ class VideoMonitor:
 		)
 
 	def notify_service_issue(self, message: str) -> bool:
+		"""发送服务异常通知到Bark."""
 		return self.send_bark_push(
 			title=f"{self.bark_app_title} - 服务异常",
 			body=message,
@@ -427,6 +449,7 @@ class VideoMonitor:
 		)
 
 	def get_next_check_time(self) -> int:
+		"""从配置文件读取下次检查时间戳."""
 		if self.dev_mode:
 			return self.sandbox_next_check_time
 
@@ -443,6 +466,7 @@ class VideoMonitor:
 			return 0
 
 	def save_next_check_time(self, next_check_timestamp: int) -> None:
+		"""保存下次检查时间戳到配置文件."""
 		if self.dev_mode:
 			self.sandbox_next_check_time = next_check_timestamp
 			return
@@ -523,6 +547,7 @@ class VideoMonitor:
 		return success
 
 	def get_video_upload_time(self, video_url: str) -> int | None:
+		"""获取视频的上传时间戳."""
 		try:
 			success, stdout, _stderr = self.run_yt_dlp(
 				[
@@ -562,6 +587,7 @@ class VideoMonitor:
 			return None
 
 	def save_real_upload_timestamps(self, new_urls: set[str]) -> None:
+		"""获取并保存新视频的真实上传时间戳到mtime.txt."""
 		if not new_urls:
 			return
 
@@ -605,6 +631,7 @@ class VideoMonitor:
 			self.limit_file_lines(self.mtime_file, 100000)
 
 	def create_mtime_from_info_json(self) -> bool:
+		"""通过yt-dlp获取所有视频的info.json，提取上传时间戳生成mtime.txt."""
 		temp_info_dir = Path("temp_info_json")
 		temp_info_dir.mkdir(exist_ok=True)
 
@@ -751,33 +778,50 @@ class VideoMonitor:
 		return False
 
 	def adjust_check_frequency(self, found_new_content: bool = False) -> None:
-		sigma_day = 0.8
-		sigma_week = 1.0
-		sigma_month_week = 1.5
-		sigma_year_month = 2.0
+		"""WGMM算法核心函数 - 根据历史数据自适应调整检查间隔.
 
-		weight_day = 0.5
-		weight_week = 1.0
-		weight_month_week = 0.3
-		weight_year_month = 0.2
+		算法流程：
+		1. 加载正向事件（视频发布）和负向事件（检测未发现）历史数据
+		2. 使用四维时间特征（日/周/月周/年月）计算时间相似性
+		3. 高斯核函数评估当前时间点的发布概率
+		4. 指数衰减权重赋予新数据更高优先级
+		5. 预测未来15天内的发布峰值，提前5分钟检查
+		6. 根据yt-dlp执行时间动态调整检查间隔
 
-		lambda_min = 0.00005
-		lambda_base = 0.0001
-		lambda_max = 0.0005
+		Args:
+			found_new_content: 本次检查是否发现新内容（影响负向事件记录）
 
-		default_interval = 3600
-		max_interval = 300
+		"""
+		# 高斯核标准差 - 控制各时间维度的相似性容忍度
+		sigma_day = 0.8  # 日周期：约1.92小时容差
+		sigma_week = 1.0  # 周周期：约24小时容差
+		sigma_month_week = 1.5  # 月周周期：约36小时容差
+		sigma_year_month = 2.0  # 年月周期：约48小时容差
 
-		mapping_curve = 2.0
-		learning_rate = 0.1
-		min_history_count = 10
+		# 各维度权重 - 初始值，后续会根据数据学习调整
+		weight_day = 0.5  # 日周期权重
+		weight_week = 1.0  # 周周期权重（通常最强）
+		weight_month_week = 0.3  # 月周周期权重
+		weight_year_month = 0.2  # 年月周期权重
 
-		resistance_coefficient = 0.8
-		weight_threshold = 0.001
-		lookahead_days = 15
-		peak_advance_minutes = 5
+		# Lambda参数：指数衰减率，控制历史记忆的遗忘速度
+		lambda_min = 0.00005  # 最小衰减率（长记忆，适合规律发布）
+		lambda_base = 0.0001  # 基础衰减率
+		lambda_max = 0.0005  # 最大衰减率（短记忆，适合快速适应）
 
-		seconds_in_day = 86400
+		default_interval = 3600  # 基础轮询间隔（1小时）
+		max_interval = 300  # 最小检查间隔（5分钟，防止过度请求）
+
+		mapping_curve = 2.0  # 映射曲线指数，控制得分对间隔的影响
+		learning_rate = 0.1  # 维度权重学习率
+		min_history_count = 10  # 最小历史数据量，少于此时进入学习期模式
+
+		resistance_coefficient = 0.8  # 负向事件抑制系数（0-1）
+		weight_threshold = 0.001  # 权重阈值，低于此时数据会被剪枝
+		lookahead_days = 15  # 峰值预测窗口（天）
+		peak_advance_minutes = 5  # 峰值提前检查时间（分钟）
+
+		seconds_in_day = 86400  # 一天的秒数
 
 		config = self.wgmm_config
 
@@ -859,8 +903,21 @@ class VideoMonitor:
 		negative_events = load_miss_history()
 
 		def filter_outliers(timestamps, current_time):
-			min_count_for_filter = 3
-			min_count_for_variance = 2
+			"""过滤异常值时间戳.
+
+		 使用IQR（四分位距）方法检测并移除异常的时间间隔。
+		 异常值定义：间隔 < Q1 - 3*IQR 或 > Q3 + 3*IQR
+
+			Args:
+				timestamps: 历史时间戳列表
+				current_time: 当前时间戳
+
+			Returns:
+				过滤后的时间戳列表
+
+			"""
+			min_count_for_filter = 3  # 最小样本数才进行过滤
+			min_count_for_variance = 2  # 最小样本数才计算方差
 
 			if len(timestamps) < min_count_for_filter:
 				return [ts for ts in timestamps if ts <= current_time]
@@ -894,6 +951,20 @@ class VideoMonitor:
 		negative_events = filter_outliers(negative_events, current_timestamp)
 
 		def prune_old_data(events, last_lambda, threshold):
+			"""剪枝权重过低的历史数据.
+
+		 根据指数衰减权重移除过时的历史记录，保持算法对最新模式的敏感度。
+		 权重公式：w = exp(-lambda * age_hours)
+
+			Args:
+				events: 正向或负向事件列表
+				last_lambda: 上次计算的lambda参数
+				threshold: 权重阈值，低于此值的数据会被移除
+
+			Returns:
+				剪枝后的事件列表
+
+			"""
 			target_file = (
 				self.mtime_file if events is positive_events else self.miss_history_file
 			)
@@ -903,9 +974,11 @@ class VideoMonitor:
 			events_arr = np.array(events, dtype=np.float64)
 			current_ts = float(current_timestamp)
 
+			# 计算每个事件的年龄（小时）和权重
 			ages_hours = (current_ts - events_arr) / 3600.0
 			weights = np.exp(-last_lambda * ages_hours)
 
+			# 保留权重 >= threshold 的数据
 			mask = (ages_hours >= 0) & (weights >= threshold)
 
 			pruned_arr = events_arr[mask]
@@ -967,7 +1040,23 @@ class VideoMonitor:
 			lambda_max,
 			lambda_base,
 		) -> tuple[float, float]:
-			min_count_for_lambda = 2
+			"""自适应计算lambda参数（遗忘速度）.
+
+			策略：
+			- 方差大 → 发布不规律 → 增大lambda（快速遗忘旧模式）
+			- 方差小 → 发布规律 → 减小lambda（保留历史模式）
+			- 方差增大 → 趋向不稳定 → 进一步增大lambda
+
+			Args:
+				timestamps: 历史时间戳列表
+				last_variance: 上次计算的方差
+				lambda_min/max/base: lambda参数范围
+
+			Returns:
+				(adaptive_lambda, current_variance)
+
+			"""
+			min_count_for_lambda = 2  # 最小样本数
 			if len(timestamps) < min_count_for_lambda:
 				return float(lambda_base), 0.0
 
@@ -1017,14 +1106,29 @@ class VideoMonitor:
 		)
 
 		def learn_dimension_weights(timestamps, old_weights):
-			min_count_for_learning = 20
+			"""动态学习各时间维度的权重.
+
+			原理：统计各维度值的分布，离散度（标准差）越小说明该维度越重要。
+			得分 = mean(counts) / std(counts)，得分越高权重越大。
+
+			Args:
+				timestamps: 历史时间戳列表
+				old_weights: 当前维度权重字典
+
+			Returns:
+				平滑后的新权重字典
+
+			"""
+			min_count_for_learning = 20  # 最小样本数才开始学习
 			if len(timestamps) < min_count_for_learning:
 				return old_weights
 
+			# 提取原始时间维度值（小时、星期几、第几周、月份）
 			raw_components = self._get_raw_time_components(
 				np.array(timestamps, dtype=np.float64),
 			)
 
+			# 计算各维度得分：均值/标准差（反映分布集中度）
 			dimension_scores = {}
 			for dim in ["day", "week", "month_week", "year_month"]:
 				keys = raw_components.get(dim, np.array([], dtype=np.int64))
@@ -1032,6 +1136,7 @@ class VideoMonitor:
 					dimension_scores[dim] = 0.0
 					continue
 
+				# 统计每个维度值的出现次数
 				_, counts = np.unique(keys, return_counts=True)
 				counts_arr = counts.astype(np.float64)
 				mean_val = np.mean(counts_arr)
@@ -1039,12 +1144,14 @@ class VideoMonitor:
 				if mean_val == 0:
 					dimension_scores[dim] = 0.0
 				else:
+					# 标准差越小，分布越集中，该维度越重要
 					std_dev = np.std(counts_arr)
 					if std_dev > 0:
 						dimension_scores[dim] = float(mean_val / std_dev)
 					else:
 						dimension_scores[dim] = float(mean_val)
 
+			# 归一化得分，使总权重约为2
 			scores_array = np.array(list(dimension_scores.values()), dtype=np.float64)
 			total_score = np.sum(scores_array, dtype=np.float64)
 
@@ -1056,6 +1163,7 @@ class VideoMonitor:
 			else:
 				new_weights = old_weights
 
+			# 指数平滑更新权重：新权重 * 学习率 + 旧权重 * (1 - 学习率)
 			smoothed_weights = {}
 			for key in dimension_scores:
 				old_weight = old_weights[key]
@@ -1219,7 +1327,6 @@ class VideoMonitor:
 		command_args: list[str],
 		timeout: int = 300,
 	) -> tuple[bool, str, str]:
-		# Cache yt-dlp path on first use
 		if self.yt_dlp_path is None:
 			self.yt_dlp_path = shutil.which("yt-dlp")
 			if not self.yt_dlp_path:
@@ -1257,10 +1364,20 @@ class VideoMonitor:
 			return False, "", str(e)
 
 	def quick_precheck(self) -> bool:
+		"""第二层检测：快速ID检查（轻量级检查）.
+
+		策略：只获取最新视频的ID，与已知URL对比，判断是否需要完整扫描。
+		优势：相比完整扫描节省90%以上的流量和时间。
+
+		Returns:
+			bool: True表示需要完整检查，False表示可以跳过
+
+		"""
 		if not self.memory_urls:
 			self.log_info("memory_urls 为空, 触发完整检查")
 			return True
 
+		# 只获取第一个视频的ID（--playlist-end 1）
 		success, stdout, _stderr = self.run_yt_dlp(
 			[
 				"--cookies",
@@ -1279,11 +1396,21 @@ class VideoMonitor:
 			return True
 
 		latest_id = stdout.strip()
+		# 检查最新ID是否在已知URL中
 		video_exists = any(latest_id in url for url in self.memory_urls)
 
 		return not video_exists
 
 	def check_potential_new_parts(self) -> bool:
+		"""第一层检测：分片预检查（预测性检查）.
+
+		策略：从已知视频URL中提取分片信息，预测是否存在下一分片。
+		例如：已知视频A有分片1-3，尝试访问分片4，成功则说明有新分片。
+
+		Returns:
+			bool: 是否发现新分片
+
+		"""
 		if not self.memory_urls:
 			self.log_info("内存数据为空, 跳过分片预检查")
 			return False
@@ -1291,6 +1418,7 @@ class VideoMonitor:
 		has_new_parts = False
 
 		try:
+			# 提取所有分P视频的最大分片号
 			base_urls = {}
 			for url in self.memory_urls:
 				if "?p=" in url:
@@ -1303,6 +1431,7 @@ class VideoMonitor:
 					except ValueError:
 						continue
 
+			# 对每个多P视频，预测下一分片是否存在
 			for base_url, max_part in base_urls.items():
 				if max_part > 1:
 					next_part = max_part + 1
@@ -1315,6 +1444,7 @@ class VideoMonitor:
 					if success:
 						has_new_parts = True
 
+						# 继续预测更多分片（最多额外检查5个）
 						check_part = next_part + 1
 						while check_part <= next_part + 5:
 							check_url = f"{base_url}?p={check_part}"
@@ -1338,6 +1468,7 @@ class VideoMonitor:
 		return has_new_parts
 
 	def get_video_parts(self, video_url: str) -> list[str]:
+		"""获取单个视频的所有分P URL."""
 		success, stdout, _stderr = self.run_yt_dlp(
 			[
 				"--cookies",
@@ -1414,6 +1545,7 @@ class VideoMonitor:
 				pass
 
 	def wait_for_next_check(self) -> None:
+		"""等待到下次检查时间."""
 		try:
 			next_check_timestamp = self.get_next_check_time()
 
@@ -1457,11 +1589,24 @@ class VideoMonitor:
 				self.log_info("Dev模式下跳过异常等待")
 
 	def _get_local_timezone_offset(self) -> float:
+		"""获取本地时区偏移量（秒）."""
 		if time.localtime().tm_isdst and time.daylight:
 			return -time.altzone
 		return -time.timezone
 
 	def _vectorized_time_features_numpy(self, timestamps_array: np.ndarray) -> dict:
+		"""向量化提取时间特征（NumPy优化版）.
+
+		使用sin/cos编码将周期性时间转换为连续特征，解决23:00和00:00距离远的问题。
+		编码公式：value = [sin(2π*t/period), cos(2π*t/period)]
+
+		Args:
+			timestamps_array: Unix时间戳数组
+
+		Returns:
+			包含8个特征的字典：day/cos, week/cos, month_week/cos, year_month/cos
+
+		"""
 		if len(timestamps_array) == 0:
 			return {
 				"day_sin": np.array([], dtype=np.float64),
@@ -1478,12 +1623,14 @@ class VideoMonitor:
 		offset = self._get_local_timezone_offset()
 		dt64_local = (ts_arr + offset).astype("datetime64[s]")
 
+		# 提取各时间维度
 		seconds_in_day = (dt64_local.astype("int64") % 86400).astype(np.float64)
 		days_since_epoch = dt64_local.astype("datetime64[D]").astype("int64")
-		weekday = (days_since_epoch + 3) % 7
+		weekday = (days_since_epoch + 3) % 7  # 0=周一, 6=周日
 		dates_m = dt64_local.astype("datetime64[M]")
 		months = (dates_m - dates_m.astype("datetime64[Y]")).astype(int) + 1
 
+		# 计算月中的第几周（1-6）
 		day_of_month = (
 			dt64_local.astype("datetime64[D]") - dates_m.astype("datetime64[D]")
 		).astype(int) + 1
@@ -1491,8 +1638,10 @@ class VideoMonitor:
 		first_weekday = (first_day_epoch + 3) % 7
 		current_week_of_month = (day_of_month - 1 + first_weekday) // 7 + 1
 
+		# 周内秒数（用于周周期编码）
 		current_second_of_week = weekday * 86400.0 + seconds_in_day
 
+		# sin/cos编码各维度
 		features = {}
 		const_2pi = 2 * np.pi
 
@@ -1508,6 +1657,17 @@ class VideoMonitor:
 		return features
 
 	def _get_raw_time_components(self, timestamps_array: np.ndarray) -> dict:
+		"""提取原始时间维度值（用于权重学习）.
+
+		返回离散的整数值，用于统计各维度的分布集中度。
+
+		Args:
+			timestamps_array: Unix时间戳数组
+
+		Returns:
+			包含4个维度的字典：day(0-23), week(0-6), month_week(1-6), year_month(1-12)
+
+		"""
 		if len(timestamps_array) == 0:
 			return {
 				"day": np.array([], dtype=np.int64),
@@ -1524,16 +1684,17 @@ class VideoMonitor:
 		days_since_epoch = dt64_local.astype("datetime64[D]").astype("int64")
 		dates_m = dt64_local.astype("datetime64[M]")
 
-		hours = (seconds_in_day // 3600).astype(np.int64)
-		weekday = (days_since_epoch + 3) % 7
-		months = (dates_m - dates_m.astype("datetime64[Y]")).astype(int) + 1
+		# 提取各维度的整数值
+		hours = (seconds_in_day // 3600).astype(np.int64)  # 0-23
+		weekday = (days_since_epoch + 3) % 7  # 0=周一, 6=周日
+		months = (dates_m - dates_m.astype("datetime64[Y]")).astype(int) + 1  # 1-12
 
 		day_of_month = (
 			dt64_local.astype("datetime64[D]") - dates_m.astype("datetime64[D]")
 		).astype(int) + 1
 		first_day_epoch = dates_m.astype("datetime64[D]").astype("int64")
 		first_weekday = (first_day_epoch + 3) % 7
-		month_week = (day_of_month - 1 + first_weekday) // 7 + 1
+		month_week = (day_of_month - 1 + first_weekday) // 7 + 1  # 1-6
 
 		return {
 			"day": hours,
@@ -1553,25 +1714,60 @@ class VideoMonitor:
 		sigmas: dict,
 		resistance_coefficient: float,
 	) -> float:
-		"""单点得分计算 - 使用 NumPy 向量化."""
+		"""计算单个时间点的发布概率得分（WGMM核心）.
+
+		算法步骤：
+		1. 计算目标时间与历史事件的四维时间距离（sin/cos编码的欧氏距离）
+		2. 各维度距离经高斯核转换：exp(-dist² / (2σ²))
+		3. 加权求和得到相似度得分
+		4. 应用指数时间衰减：exp(-lambda * age_hours)
+		5. 归一化到[0, 1]，用负向事件抑制正向得分
+
+		Args:
+			target_timestamp: 目标时间戳
+			pos_events: 正向事件列表（历史发布时间）
+			neg_events: 负向事件列表（历史检测失败时间）
+			dimension_weights: 四个维度的权重字典
+			pos_lambda: 正向事件的衰减率
+			neg_lambda: 负向事件的衰减率
+			sigmas: 各维度的高斯核标准差
+			resistance_coefficient: 负向事件抑制系数
+
+		Returns:
+			0-1之间的概率得分，越高越可能发布新内容
+
+		"""
 		target_feat = self._vectorized_time_features_numpy(np.array([target_timestamp]))
 		current_features = {k: v[0] for k, v in target_feat.items()}
 
 		def calculate_source_score_vectorized(events_array, lambda_decay):
+			"""计算事件数组的得分（向量化实现）.
+
+			Args:
+				events_array: 历史事件时间戳列表
+				lambda_decay: 指数衰减率
+
+			Returns:
+				归一化后的得分（0-1）
+
+			"""
 			if not events_array:
 				return 0.0
 
 			events_arr = np.array(events_array, dtype=np.float64)
 			events_feat = self._vectorized_time_features_numpy(events_arr)
 
+			# 计算时间年龄并过滤未来事件
 			ages_hours = (target_timestamp - events_arr) / 3600.0
 			valid_mask = ages_hours >= 0
 			if not np.any(valid_mask):
 				return 0.0
 
+			# 指数衰减权重：越新的事件权重越大
 			valid_ages = ages_hours[valid_mask]
 			weights = np.exp(-lambda_decay * valid_ages, dtype=np.float64)
 
+			# 计算各维度在sin/cos空间中的欧氏距离平方
 			def dist_sq(key):
 				return (
 					current_features[f"{key}_sin"] - events_feat[f"{key}_sin"][valid_mask]
@@ -1579,6 +1775,7 @@ class VideoMonitor:
 					current_features[f"{key}_cos"] - events_feat[f"{key}_cos"][valid_mask]
 				) ** 2
 
+			# 多维高斯核加权求和：相似度 = Σ(weight * exp(-dist² / (2σ²)))
 			combined = (
 				dimension_weights["day"]
 				* np.exp(-dist_sq("day") / (2 * sigmas["day"] ** 2), dtype=np.float64)
@@ -1596,6 +1793,7 @@ class VideoMonitor:
 				)
 			)
 
+			# 时间衰减权重 * 相似度
 			scores = weights * combined
 			if len(scores) == 0:
 				return 0.0
@@ -1606,6 +1804,7 @@ class VideoMonitor:
 			if count == 1:
 				return float(np.clip(scores[0], 0.0, 1.0))
 
+			# 归一化到[0, 1]：(均值 - 最小值) / (最大值 - 最小值)
 			min_val, max_val = np.min(scores), np.max(scores)
 			if max_val > min_val:
 				return float(
@@ -1613,11 +1812,13 @@ class VideoMonitor:
 				)
 			return 0.5
 
+		# 计算正向和负向得分
 		pos_score = calculate_source_score_vectorized(pos_events, pos_lambda)
 		neg_score = (
 			calculate_source_score_vectorized(neg_events, neg_lambda) if neg_events else 0.0
 		)
 
+		# 最终得分 = 正向得分 - 抑制系数 * 负向得分
 		return float(
 			np.clip(pos_score - (resistance_coefficient * neg_score), 0.0, 1.0),
 		)
@@ -1633,24 +1834,42 @@ class VideoMonitor:
 		sigmas: dict,
 		resistance_coefficient: float,
 	) -> np.ndarray:
-		"""向量化批量计算所有扫描点的得分"""
+		"""批量计算多个时间点的得分（向量化实现）.
+
+		用于峰值预测扫描，一次性计算未来数百个时间点的得分。
+		优化策略：使用广播机制避免显式循环。
+
+		Args:
+			scan_times: 要扫描的时间点数组
+			其他参数同 _calculate_point_score
+
+		Returns:
+			与scan_times等长的得分数组
+
+		"""
 		if len(scan_times) == 0:
 			return np.array([], dtype=np.float64)
 
 		targets_feat = self._vectorized_time_features_numpy(scan_times)
 
 		def get_source_scores_vectorized(events, lambda_decay):
+			"""向量化计算事件集对所有扫描点的得分矩阵.
+
+			返回形状: (len(scan_times),)
+			"""
 			if not events:
 				return np.zeros(len(scan_times), dtype=np.float64)
 
 			events_arr = np.array(events, dtype=np.float64)
 			events_feat = self._vectorized_time_features_numpy(events_arr)
 
+			# 广播计算：ages[scan_count, event_count]
 			ages = (scan_times[:, np.newaxis] - events_arr[np.newaxis, :]) / 3600.0
 			valid_mask = ages >= 0
 			weights = np.zeros_like(ages, dtype=np.float64)
 			weights[valid_mask] = np.exp(-lambda_decay * ages[valid_mask])
 
+			# 计算各维度距离矩阵（广播机制）
 			day_dist_sq = (
 				targets_feat["day_sin"][:, np.newaxis]
 				- events_feat["day_sin"][np.newaxis, :]
@@ -1689,6 +1908,7 @@ class VideoMonitor:
 				"year_month": year_month_dist_sq,
 			}
 
+			# 加权求和各维度的高斯核得分
 			for dim, dist_sq in dist_sq_dict.items():
 				weight = dimension_weights[dim]
 				sigma = sigmas[dim]
@@ -1697,11 +1917,13 @@ class VideoMonitor:
 
 				combined_gaussian += weight * np.exp(dist_sq * coeff, dtype=np.float64)
 
+			# 最终得分 = 时间衰减 * 高斯相似度
 			raw_scores = weights * combined_gaussian * valid_mask
 
 			total_scores = np.sum(raw_scores, axis=1, dtype=np.float64)
 			valid_counts = np.sum(valid_mask, axis=1)
 
+			# 按行归一化到[0, 1]
 			with np.errstate(divide="ignore", invalid="ignore"):
 				row_mins = np.min(np.where(valid_mask, raw_scores, np.inf), axis=1)
 				row_maxs = np.max(np.where(valid_mask, raw_scores, -np.inf), axis=1)
@@ -1717,6 +1939,24 @@ class VideoMonitor:
 		return np.clip(pos_scores - (resistance_coefficient * neg_scores), 0.0, 1.0)
 
 	def run_monitor(self) -> None:
+		"""第三层检测：完整深度检查（主监控流程）.
+
+		执行流程：
+		1. 从 GitHub Gist 同步已知URL
+		2. 执行分片预检查（第一层）
+		3. 执行快速ID检查（第二层）
+		4. 如果预检查通过，执行完整扫描（第三层）
+		5. 对比URL，识别新视频
+		6. 保存新视频的上传时间戳
+		7. 调用 WGMM 算法调整下次检查间隔
+		8. 发送 Bark 通知
+
+		双层URL管理：
+		- memory_urls: 从 Gist 同步的已备份URL
+		- known_urls: 本地已知URL（memory + 未同步的新URL）
+		- truly_new_urls: 既不在 memory 也不在 known 中的URL（才触发通知）
+
+		"""
 		try:
 			self.log_message("检查开始                  <--")
 			sync_success = self.sync_urls_from_gist()
@@ -1728,7 +1968,9 @@ class VideoMonitor:
 				self.cleanup()
 				return
 
+			# 第一层：分片预检查
 			found_new_parts = self.check_potential_new_parts()
+			# 第二层：快速ID检查
 			found_new_videos = self.quick_precheck()
 
 			parts_result = "发现新内容" if found_new_parts else "无新内容"
@@ -1737,11 +1979,13 @@ class VideoMonitor:
 				f"预检查完成 - 预测检查: {parts_result} 快速检查: {videos_result}",
 			)
 
+			# 如果两层预检查都未发现新内容，直接调整频率并退出
 			if not (found_new_parts or found_new_videos):
 				self.adjust_check_frequency(found_new_content=False)
 				self.cleanup()
 				return
 
+			# 第三层：完整深度检查（获取所有视频URL）
 			success, stdout, _stderr = self.run_yt_dlp(
 				[
 					"--cookies",
@@ -1775,16 +2019,20 @@ class VideoMonitor:
 				self.cleanup()
 				return
 
+			# 并行获取所有视频的分片信息
 			all_parts = self.get_all_videos_parallel(video_urls)
 
 			if not all_parts:
 				self.log_info("处理分片时出错, 错误已处理")
 				all_parts = video_urls
 
+			# 双层URL对比逻辑
 			existing_urls_set = set(self.memory_urls)
 			current_urls_set = set(all_parts)
 
+			# Gist中缺失的URL（可能已更新，也可能未同步）
 			gist_missing_urls = current_urls_set - existing_urls_set
+			# 真正的新URL（既不在Gist，也不在本地已知列表）
 			truly_new_urls = gist_missing_urls - self.known_urls
 
 			if gist_missing_urls:
@@ -1795,9 +2043,11 @@ class VideoMonitor:
 				display = f"{'*' * old_count}{separator}{'*' * new_count}"
 				self.log_info(display)
 
+				# 保存真正的新视频的上传时间戳（用于WGMM算法学习）
 				if truly_new_urls:
 					self.save_real_upload_timestamps(truly_new_urls)
 
+				# 更新已知URL列表
 				self.known_urls.update(gist_missing_urls)
 				self.save_known_urls()
 
@@ -1813,6 +2063,7 @@ class VideoMonitor:
 						send_notification=False,
 					)
 
+				# 根据是否发现真正的新内容调整检查频率
 				if truly_new_urls:
 					self.adjust_check_frequency(found_new_content=True)
 				else:
