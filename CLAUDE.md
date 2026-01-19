@@ -30,16 +30,36 @@ python3 monitor.py
 
 ### 代码质量
 
-```bash
-# 使用 ruff 进行代码格式化
-ruff format monitor.py
+**重要：每次修改 Python 代码后，必须运行以下命令确保代码质量符合规范。**
 
-# 使用 ruff 进行 linting
+```bash
+# 激活虚拟环境（如果未激活）
+source .venv/bin/activate
+
+# 1. 使用 ruff 检查 Python 代码质量
 ruff check monitor.py
 
-# 自动修复 ruff 发现的问题
+# 2. 使用 ruff 格式化 Python 代码
+ruff format monitor.py
+
+# 3. 如果 ruff check 发现问题，尝试自动修复
 ruff check --fix monitor.py
 ```
+
+**代码质量检查标准：**
+- ✅ `ruff check` 必须通过（All checks passed!）
+- ✅ `ruff format` 必须通过（already formatted 或格式化成功）
+- ❌ 任何检查失败都不应该提交代码
+
+**适用范围：**
+- ruff 只检查和格式化 `.py` 文件（Python 代码）
+- Markdown 文档（如 CLAUDE.md、README.md）不需要 ruff 检查
+
+**常见问题：**
+- 如果检查失败，查看错误信息并根据提示修复
+- 项目使用 tab 缩进，line-length=92
+- docstring 和注释使用英文标点符号（避免全角符号）
+- 详见 `pyproject.toml` 配置文件
 
 ### systemd 服务管理
 
@@ -249,18 +269,25 @@ EOF
 
 ### 创建提交的步骤
 
+**强制要求：提交前必须通过代码质量检查！**
+
 ```bash
-# 1. 查看修改
+# 1. 代码质量检查（必须通过）
+source .venv/bin/activate
+ruff check monitor.py        # 必须显示 "All checks passed!"
+ruff format monitor.py       # 必须显示 "already formatted" 或格式化成功
+
+# 2. 查看修改
 git status
 git diff
 
-# 2. 添加文件
+# 3. 添加文件
 git add <文件名>
 
-# 3. 创建提交（单行）
+# 4. 创建提交（单行）
 git commit -m "fix: 修复XXX问题"
 
-# 4. 创建提交（多行）
+# 5. 创建提交（多行）
 git commit -m "$(cat <<'EOF'
 docs: 添加详细注释
 
@@ -269,7 +296,18 @@ docs: 添加详细注释
 EOF
 )"
 
-# 5. 推送到远程
+# 6. 推送到远程
+git push
+```
+
+**完整的提交流程：**
+```bash
+# 一键检查并提交的完整示例
+source .venv/bin/activate && \
+ruff check monitor.py && \
+ruff format monitor.py && \
+git add monitor.py && \
+git commit -m "fix: 修复XXX问题" && \
 git push
 ```
 
