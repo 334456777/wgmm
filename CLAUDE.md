@@ -178,19 +178,100 @@ sudo journalctl -u video-monitor -f
 
 ## Commit 规范
 
-遵循 Conventional Commits 规范：
+**重要：** 本存储库强制遵循 Conventional Commits 规范，所有提交都必须符合此格式。
+
+查看提交历史可以验证规范执行情况：
+```bash
+git log --oneline -20
+```
+
+### 基本格式
 
 ```
 <type>: <description>
 ```
 
+### 提交类型（Type）
+
 **常用类型：**
 - `fix:` - Bug 修复
+- `feat:` - 新功能
+- `docs:` - 文档更新（注释、README、配置文件说明等）
 - `refactor:` - 代码重构（不改变功能）
+- `style:` - 代码风格调整（不影响代码运行的格式化）
+- `test:` - 添加或修改测试
+- `chore:` - 构建、工具、依赖更新等杂项
 
-**示例：**
+### 提交说明（Description）
+
+- 使用中文书写
+- 简洁描述做了什么
+- 不超过 50 个字符
+- 首字母不大写，结尾不加标点
+
+**单行示例：**
 - `fix: 修改环境变量缺失提示信息，简化错误输出`
+- `docs: 添加WGMM算法FAQ到README，解释3天间隔的数学原理`
 - `refactor: 简化代码格式，合并多行表达式为单行`
+
+### 多行提交消息格式
+
+对于复杂的提交，建议使用多行格式：
+
+```bash
+git commit -m "$(cat <<'EOF'
+<type>: <简短描述（不超过50字）>
+
+<详细说明（可选）>
+
+- 要点1
+- 要点2
+
+Co-Authored-By: Claude Sonnet 4.5 <noreply@anthropic.com>
+EOF
+)"
+```
+
+**实际示例：**
+```bash
+git commit -m "$(cat <<'EOF'
+docs: 为 monitor.py 添加完整的中文注释，优化代码可读性
+
+- 为所有函数添加 docstring 和行内注释
+- 详细说明 WGMM 算法的数学原理和实现细节
+- 标注三层检测架构的工作流程
+- 在 CLAUDE.md 中添加代码理解提示章节
+
+Co-Authored-By: Claude Sonnet 4.5 <noreply@anthropic.com>
+EOF
+)"
+```
+
+### 创建提交的步骤
+
+```bash
+# 1. 查看修改
+git status
+git diff
+
+# 2. 添加文件
+git add <文件名>
+
+# 3. 创建提交（单行）
+git commit -m "fix: 修复XXX问题"
+
+# 4. 创建提交（多行）
+git commit -m "$(cat <<'EOF'
+docs: 添加详细注释
+
+- 为核心函数添加文档字符串
+- 说明算法实现细节
+EOF
+)"
+
+# 5. 推送到远程
+git push
+```
 
 ## 重要注意事项
 
