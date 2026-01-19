@@ -10,18 +10,22 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ### 基本运行
 
+**注意：** 项目文件夹内已包含 `.venv` 虚拟环境，所有依赖已安装，建议使用虚拟环境运行。
+
 ```bash
-# 正常运行（生产环境）
-python3 monitor.py
+# 激活虚拟环境（首次运行前需要）
+source .venv/bin/activate
+
+# 虚拟环境中运行（推荐）
+python monitor.py
 
 # 开发模式：运行单次检查后立即退出，不修改配置文件
-python3 monitor.py --dev
+python monitor.py --dev
 # 或
-python3 monitor.py -d
+python monitor.py -d
 
-# 虚拟环境中运行
-source .venv/bin/activate
-python monitor.py
+# 不使用虚拟环境直接运行（需要系统已安装依赖）
+python3 monitor.py
 ```
 
 ### 代码质量
