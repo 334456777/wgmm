@@ -55,6 +55,12 @@ ruff check --fix monitor.py
 - ruff 只检查和格式化 `.py` 文件（Python 代码）
 - Markdown 文档（如 CLAUDE.md、README.md）不需要 ruff 检查
 
+**配置管理：**
+- ❌ **禁止修改** `pyproject.toml` 中的 ruff 配置
+- ruff 配置（包括 ignore 规则、line-length、缩进风格等）是项目强制标准
+- 如需调整代码风格，必须修改代码以符合现有配置，而非修改配置文件
+- 项目使用 tab 缩进、line-length=92、遵循 Google 风格的 docstring
+
 **常见问题：**
 - 如果检查失败，查看错误信息并根据提示修复
 - 项目使用 tab 缩进，line-length=92
