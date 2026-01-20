@@ -897,13 +897,8 @@ class VideoMonitor:
 		positive_events = load_history_file(self.mtime_file)
 		negative_events = load_miss_history()
 
-		# 🆕 根据数据量动态调整参数
 		total_events = len(positive_events) + len(negative_events)
-
-		# 动态权重剪枝阈值:数据多时降低,数据少时提高
 		weight_threshold = max(0.0001, 0.001 * (100 / (total_events + 50)))
-
-		# 动态学习率:数据少时高学习率快速收敛,数据多时低学习率稳定微调
 		learning_rate = max(0.02, min(0.2, 0.3 - len(positive_events) * 0.001))
 
 		def filter_outliers(timestamps, current_time):
@@ -1031,7 +1026,7 @@ class VideoMonitor:
 			"""
 			min_interval_samples = 5
 			min_count_for_stats = 2
-			# 数据不足时返回默认值
+
 			if len(timestamps) < min_count_for_stats:
 				return 3600.0, 0.0, 3600, 300
 
@@ -1040,16 +1035,12 @@ class VideoMonitor:
 			mean_interval = np.mean(intervals, dtype=np.float64)
 			variance = np.var(intervals, dtype=np.float64)
 
-			# 动态设置间隔边界
 			if len(timestamps) >= min_interval_samples:
-				# default_interval = 中位数 * 0.8 (提前检查)
 				default_interval = float(np.median(intervals) * 0.8)
-				# max_interval = 5分位数 * 0.5 (最小间隔的一半,有下限保护)
 				min_5th = float(np.percentile(intervals, 5))
 				max_interval = max(300, min_5th * 0.5)
-				max_interval = min(max_interval, 3600)  # 上限1小时
+				max_interval = min(max_interval, 3600)
 			else:
-				# 数据不足时使用默认值
 				default_interval = 3600
 				max_interval = 300
 
@@ -1070,7 +1061,7 @@ class VideoMonitor:
 			- 方差大 → 发布不规律 → 增大lambda(快速遗忘旧模式)
 			- 方差小 → 发布规律 → 减小lambda(保留历史模式)
 			- 方差增大 → 趋向不稳定 → 进一步增大lambda
-			- 🆕 根据CV(变异系数)动态调整lambda范围
+			- 根据CV(变异系数)动态调整lambda范围
 
 			Args:
 				timestamps: 历史时间戳列表
@@ -1089,12 +1080,9 @@ class VideoMonitor:
 			intervals = np.diff(timestamps_arr)
 			current_variance = np.var(intervals, dtype=np.float64)
 
-			# 🆕 根据数据规律性动态调整 Lambda 范围
 			mean_interval = np.mean(intervals)
 			cv = np.std(intervals) / mean_interval if mean_interval > 0 else 1.0
 
-			# CV 小 → 规律发布 → 缩窄范围
-			# CV 大 → 不规律 → 扩大范围
 			lambda_min = lambda_base * 0.3
 			lambda_max = lambda_base * (1.0 + cv * 4.0)
 			lambda_max = min(lambda_max, lambda_base * 15.0)
@@ -1224,7 +1212,6 @@ class VideoMonitor:
 			if len(timestamps) < min_learn_count:
 				return old_sigmas
 
-			# 提取各维度值
 			raw_components = self._get_raw_time_components(
 				np.array(timestamps, dtype=np.float64)
 			)
@@ -1233,17 +1220,14 @@ class VideoMonitor:
 			for dim in ["day", "week", "month_week", "year_month"]:
 				values = raw_components.get(dim, np.array([], dtype=np.int64))
 				if len(values) >= min_sigma_samples:
-					# 归一化到 [0, 1]
 					value_range = float(np.max(values) - np.min(values))
 					if value_range > 0:
 						normalized = (
 							values.astype(np.float64) - np.min(values)
 						) / value_range
 						std = float(np.std(normalized))
-						# Sigma = 标准差 * 系数, 但有边界保护
 						adaptive_sigma = max(0.2, min(std * 3.0, 3.0))
 
-						# 指数平滑: 新值 * 0.3 + 旧值 * 0.7
 						old_sigma = old_sigmas.get(dim, 1.0)
 						new_sigmas[dim] = old_sigma * 0.7 + adaptive_sigma * 0.3
 					else:
@@ -1258,7 +1242,6 @@ class VideoMonitor:
 			dimension_weights_from_config,
 		)
 
-		# 🆕 学习 Sigma 参数
 		learned_sigmas = learn_adaptive_sigmas(positive_events, sigmas_from_config)
 		sigmas = {
 			"day": float(learned_sigmas["day"]),
@@ -1267,10 +1250,8 @@ class VideoMonitor:
 			"year_month": float(learned_sigmas["year_month"]),
 		}
 
-		# 🆕 动态计算负向事件抑制系数
 		intervals = np.diff(np.array(sorted(positive_events), dtype=np.float64))
 		cv = float(np.std(intervals) / np.mean(intervals)) if len(intervals) > 0 else 1.0
-		# 规律性强(CV小)时提高抑制系数,规律性弱(CV大)时降低
 		resistance_coefficient = 0.7 + 0.2 / (1.0 + cv)
 		resistance_coefficient = float(np.clip(resistance_coefficient, 0.5, 0.95))
 
@@ -1296,7 +1277,6 @@ class VideoMonitor:
 		lookahead_start = current_timestamp + base_frequency_sec
 		lookahead_end = current_timestamp + lookahead_seconds
 
-		# 🆕 使用动态计算的 sigma_day
 		gaussian_width = (sigmas["day"] * seconds_in_day / 24.0) * 2.0
 		min_step = float(gaussian_width * 0.25)
 
@@ -1381,7 +1361,7 @@ class VideoMonitor:
 		self.wgmm_config["last_update"] = current_timestamp
 		self.wgmm_config["next_check_time"] = next_check_timestamp
 		self.wgmm_config["dimension_weights"] = dimension_weights
-		self.wgmm_config["sigmas"] = sigmas  # 🆕 保存学习后的 Sigma
+		self.wgmm_config["sigmas"] = sigmas
 		self.wgmm_config["last_lambda"] = pos_lambda
 		self.wgmm_config["last_pos_variance"] = pos_current_variance
 		self.wgmm_config["last_neg_variance"] = neg_current_variance
