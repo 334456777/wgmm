@@ -96,6 +96,82 @@ sudo journalctl -u video-monitor -f
 
 例如，搜索 `def adjust_check_frequency` 可以找到 WGMM 算法的主函数，其 docstring 详细说明了算法的 6 个步骤。
 
+### WGMM 算法数学核心
+
+理解这些数学原理对修改算法至关重要：
+
+**1. 时间特征周期性编码** (monitor.py:1667-1727)
+- **问题**：线性时间无法表示周期性（23:59 和 00:01 差距大）
+- **解决**：使用 sin/cos 编码将时间映射到单位圆
+  ```python
+  day_sin = sin(2π × seconds_in_day / 86400)
+  day_cos = cos(2π × seconds_in_day / 86400)
+  ```
+- **四个维度**：日周期（24小时）、周周期（7天）、月周（每月第几周）、年月（月份）
+
+**2. 高斯核相似性** (monitor.py:1849-1864)
+- **作用**：将时间距离转换为 0-1 的相似度得分
+- **公式**：`similarity = exp(-dist² / (2σ²))`
+- **参数**：σ 控制时间容忍度，越小越严格
+
+**3. 指数时间衰减** (monitor.py:1838)
+- **作用**：近期事件权重更大，远期事件逐渐"遗忘"
+- **公式**：`weight = exp(-λ × age_hours)`
+- **参数**：λ 控制遗忘速度，当前为 0.0001/小时
+
+**4. 自适应学习机制**
+- **动态维度权重** (monitor.py:1127-1193)：算法学习哪些时间维度重要
+- **自适应 Lambda** (monitor.py:1053-1111)：根据发布方差调整遗忘速度
+- **自适应 Sigma** (monitor.py:1195-1238)：根据数据离散度调整时间容忍度
+
+### 常见代码修改场景
+
+**场景 1：调整预测激进程度**
+```python
+# 更激进：更频繁检查（适合热点UP主）
+mapping_curve = 2.0  # → 改为 3.0 或更高
+peak_advance_minutes = 5  # → 改为 10（更早检查）
+
+# 更保守：减少请求（适合冷门UP主）
+mapping_curve = 2.0  # → 改为 1.5
+```
+
+**场景 2：修改时间容忍度**
+```python
+# 更严格：只匹配极相似时间
+sigmas["day"] = 0.8  # → 改为 0.5
+
+# 更宽松：容忍更大时间差异
+sigmas["week"] = 1.0  # → 改为 1.5
+```
+
+**场景 3：调整记忆速度**
+```python
+# 快速适应：UP主经常改变习惯
+lambda_base = 0.0001  # → 改为 0.0002
+
+# 长期记忆：UP主习惯稳定
+lambda_base = 0.0001  # → 改为 0.00005
+```
+
+### 性能优化要点
+
+代码已经高度优化，修改时需注意：
+
+**向量化计算** (monitor.py:1810-1894)
+- 使用 NumPy 向量操作，避免 Python 循环
+- `_batch_calculate_scores` 可一次计算数百个时间点
+- 修改时保持向量化风格，避免引入显式循环
+
+**批处理优化** (monitor.py:1896-1975)
+- 峰值预测使用广播机制避免重复计算
+- 所有历史事件一次性计算相似性
+- 不要将批处理改为循环调用
+
+**内存管理** (monitor.py:952-998)
+- `prune_old_data` 自动删除权重过低的历史数据
+- 保持 O(n) 时间复杂度，n 为历史事件数
+
 ### 主要组件：VideoMonitor 类
 
 `monitor.py` (约1900行) 是整个系统的核心，包含完整的监控逻辑和 WGMM 算法实现。
@@ -141,6 +217,48 @@ sudo journalctl -u video-monitor -f
 - `get_video_parts()`: 获取视频分片信息
 - `get_all_videos_parallel()`: 并行获取视频信息
 - `cleanup()`: 清理临时文件
+
+### 系统架构关键流程
+
+**主监控循环** (monitor.py:500-700)
+```
+run_monitor() 主循环
+├── sync_urls_from_gist()       # 从 GitHub Gist 同步已知 URL
+├── check_potential_new_parts() # 第一层：分片预检查
+├── quick_precheck()            # 第二层：快速 ID 检查
+│   └── 如果有变化 → 触发完整检查
+├── get_all_videos_parallel()   # 第三层：完整深度检查
+├── notify_new_videos()         # 发送通知
+└── adjust_check_frequency()    # WGMM 计算下次检查时间
+```
+
+**WGMM 预测流程** (monitor.py:786-1400)
+```
+adjust_check_frequency()
+├── 加载正向事件(mtime.txt)和负向事件(miss_history.txt)
+├── filter_outliers()           # 过滤异常值
+├── prune_old_data()            # 剪枝低权重历史数据
+├── _calculate_adaptive_lambda() # 自适应计算遗忘速度
+├── learn_dimension_weights()   # 学习各维度重要性
+├── learn_adaptive_sigmas()      # 学习时间容忍度
+├── _calculate_point_score()    # 计算当前时间发布概率
+├── _batch_calculate_scores()   # 扫描未来15天找峰值
+└── 映射得分 → 检查间隔
+```
+
+**数据流向**
+```
+GitHub Gist (云端备份)
+    ↓ sync_urls_from_gist()
+memory_urls (已备份视频)
+    + local_known.txt (本地状态)
+    ↓
+known_urls (完整已知集合)
+    ↓ 对比检测结果
+truly_new_urls (真正的新视频)
+    ↓ notify_new_videos()
+Bark 推送 + GitHub Gist 更新
+```
 
 ### WGMM 算法核心概念
 
