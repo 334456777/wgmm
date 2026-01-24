@@ -12,7 +12,7 @@ import time
 import urllib.parse
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import suppress
-from datetime import UTC
+from datetime import UTC, timedelta, timezone
 from datetime import datetime as dt
 from pathlib import Path
 from types import FrameType
@@ -21,6 +21,9 @@ from zoneinfo import ZoneInfo
 
 import numpy as np
 import requests
+
+# 日本时区 (JST, UTC+9)
+JST = timezone(timedelta(hours=9))
 
 
 def parse_arguments():
@@ -1555,7 +1558,7 @@ class VideoMonitor:
 
 		if success and stdout:
 			return [line.strip() for line in stdout.split("\n") if line.strip()]
-		_success, _stdout, stderr = self.run_yt_dlp(
+		_success, _stdout, _stderr = self.run_yt_dlp(
 			[
 				"--cookies",
 				self.cookies_file,
@@ -1625,7 +1628,7 @@ class VideoMonitor:
 				current_timestamp = int(time.time())
 				wait_seconds = next_check_timestamp - current_timestamp
 
-				next_dt = dt.fromtimestamp(next_check_timestamp, tz=UTC)
+				next_dt = dt.fromtimestamp(next_check_timestamp, tz=JST)
 				weekday_name = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"][
 					next_dt.weekday()
 				]
