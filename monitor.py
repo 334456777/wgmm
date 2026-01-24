@@ -804,6 +804,7 @@ class VideoMonitor:
 		# 固定参数(不随数据变化)
 		mapping_curve = 2.0  # 映射曲线指数, 控制得分对间隔的影响
 		min_history_count = 10  # 最小历史数据量, 少于此时进入学习期模式
+		prune_threshold = 1000  # 数据剪枝阈值, 超过此数量才进行剪枝
 		lookahead_days = 15  # 峰值预测窗口(天)
 		peak_advance_minutes = 5  # 峰值提前检查时间(分钟)
 		seconds_in_day = 86400  # 一天的秒数
@@ -998,8 +999,10 @@ class VideoMonitor:
 			return events
 
 		last_lambda = config.get("last_lambda", lambda_base)
-		positive_events = prune_old_data(positive_events, last_lambda, weight_threshold)
-		negative_events = prune_old_data(negative_events, last_lambda, weight_threshold)
+		# 只有当历史数据超过阈值时才进行剪枝, 避免数据量过小时丢失重要信息
+		if len(positive_events) >= prune_threshold:
+			positive_events = prune_old_data(positive_events, last_lambda, weight_threshold)
+			negative_events = prune_old_data(negative_events, last_lambda, weight_threshold)
 
 		def check_positive_sufficient(events):
 			return len(events) >= min_history_count
