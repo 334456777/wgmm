@@ -1,10 +1,10 @@
 # 代码逻辑流程全图
 
-> **版本**: v2.0 (2296行代码)
+> **版本**: v2.1 (2296行代码, 58个方法)
 > **更新时间**: 2026-01-24
 > **适用版本**: monitor.py v2.x
 
-本文档详细描述了WGMM视频监控系统的微观和宏观逻辑结构，包括所有54个方法的执行流程和调用关系。
+本文档详细描述了WGMM视频监控系统的微观和宏观逻辑结构，包括所有58个方法的执行流程和调用关系。
 
 ---
 
@@ -1456,6 +1456,8 @@ monitor.py:29       - parse_arguments() - 命令行参数解析
 monitor.py:40       - load_env_file() - 环境变量加载
 monitor.py:61       - VideoMonitor 类定义
 monitor.py:75       - __init__() - 初始化监控系统
+monitor.py:133      - setup_logging() - 配置日志系统
+monitor.py:174      - _validate_cookies_file() - 验证cookies文件
 monitor.py:2236     - main() - 程序入口点
 monitor.py:2295     - if __name__ == "__main__" - 启动
 
@@ -1516,6 +1518,7 @@ monitor.py:288      - log_info() - INFO 级别日志
 monitor.py:292      - log_warning() - WARNING 级别日志
 monitor.py:296      - log_error() - ERROR 级别日志
 monitor.py:307      - log_critical_error() - CRITICAL 级别日志
+monitor.py:337      - _limit_critical_log_lines() - 限制严重错误日志行数
 monitor.py:342      - limit_file_lines() - 限制日志文件行数
 
 【配置管理】
@@ -1534,14 +1537,15 @@ monitor.py:73       - MAX_RETRY_ATTEMPTS - 最大重试次数
 【统计信息】
 • 总行数: 2296 行
 • 类数量: 1 个 (VideoMonitor)
-• 方法数量: 54 个
-• 函数数量: 2 个 (parse_arguments, load_env_file, main)
+• 方法数量: 58 个 (包含嵌套函数)
+• 函数数量: 3 个 (parse_arguments, load_env_file, main)
 ```
 
 ---
 
 ## 版本历史
 
+- **v2.1** (2026-01-24): 修正方法数量统计(58个), 添加遗漏的方法索引(_limit_critical_log_lines等)
 - **v2.0** (2026-01-24): 基于2296行代码重构，新增11个核心类方法，完整更新文档
 - **v1.0** (2026-01-23): 初始版本，基于2439行代码（包含Phase 1实验性功能）
 
