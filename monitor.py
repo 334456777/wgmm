@@ -1562,7 +1562,6 @@ class VideoMonitor:
 				video_url,
 			],
 		)
-		self.log_warning(f"获取分片失败: {stderr[:50]}...")
 		return []
 
 	def get_all_videos_parallel(self, video_urls: list[str]) -> list[str]:
