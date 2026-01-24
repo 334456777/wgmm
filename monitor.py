@@ -786,6 +786,449 @@ class VideoMonitor:
 		)
 		return False
 
+	def _load_miss_history(self) -> list[int]:
+		"""加载负向事件历史(检测未发现新内容的时间).
+
+		Returns:
+			负向事件时间戳列表, 如果文件不存在或读取失败则返回空列表
+
+		"""
+		miss_history_path = Path(self.miss_history_file)
+		if not miss_history_path.exists():
+			return []
+		try:
+			with miss_history_path.open() as f:
+				return [int(line.strip()) for line in f if line.strip().isdigit()]
+		except OSError as e:
+			self.log_warning(f"读取失败历史记录失败: {e}")
+			return []
+
+	def _save_miss_history(self, timestamp: int, is_manual_run: bool) -> None:
+		"""保存负向事件到历史文件.
+
+		Args:
+			timestamp: 要保存的时间戳
+			is_manual_run: 是否为手动运行(手动运行时不保存)
+
+		"""
+		if is_manual_run:
+			return
+		if self.dev_mode:
+			self.sandbox_miss_history.append(timestamp)
+			return
+		miss_history_path = Path(self.miss_history_file)
+		try:
+			with miss_history_path.open("a") as f:
+				f.write(f"{timestamp}\n")
+			self.limit_file_lines(self.miss_history_file, 100000)
+		except OSError as e:
+			self.log_warning(f"写入失败历史记录失败: {e}")
+
+	def _load_history_file(self, filepath: str) -> list[int]:
+		"""加载历史文件并去重.
+
+		Args:
+			filepath: 历史文件路径
+
+		Returns:
+			去重后的时间戳列表, 如果读取失败则返回空列表
+
+		"""
+		file_path = Path(filepath)
+
+		try:
+			raw_data = [
+				line.strip()
+				for line in file_path.read_text(encoding="utf-8").splitlines()
+				if line.strip().isdigit()
+			]
+			seen_timestamps = set()
+			filtered = []
+			for timestamp_str in raw_data:
+				timestamp = int(timestamp_str)
+				if timestamp > 0 and timestamp not in seen_timestamps:
+					filtered.append(timestamp)
+					seen_timestamps.add(timestamp)
+		except OSError as e:
+			self.log_warning(f"读取历史文件失败 {filepath}: {e}")
+			return []
+		else:
+			return filtered
+
+	def _filter_outliers(self, timestamps: list, current_time: int) -> list:
+		"""过滤异常值时间戳.
+
+		使用IQR(四分位距)方法检测并移除异常的时间间隔.
+		异常值定义: 间隔 < Q1 - 3*IQR 或 > Q3 + 3*IQR
+
+		Args:
+			timestamps: 历史时间戳列表
+			current_time: 当前时间戳
+
+		Returns:
+			过滤后的时间戳列表
+
+		"""
+		min_count_for_filter = 3  # 最小样本数才进行过滤
+		min_count_for_variance = 2  # 最小样本数才计算方差
+
+		if len(timestamps) < min_count_for_filter:
+			return [ts for ts in timestamps if ts <= current_time]
+
+		sorted_ts = np.array(sorted(timestamps), dtype=np.float64)
+		if len(sorted_ts) < min_count_for_variance:
+			return timestamps
+
+		intervals = np.diff(sorted_ts)
+		if len(intervals) == 0:
+			return timestamps
+
+		q1 = np.percentile(intervals, 25)
+		q3 = np.percentile(intervals, 75)
+
+		iqr = q3 - q1
+		lower_bound = q1 - 3.0 * iqr
+		upper_bound = q3 + 3.0 * iqr
+
+		mask = (intervals >= lower_bound) & (intervals <= upper_bound)
+
+		filtered_indices = np.concatenate(([0], np.where(mask)[0] + 1))
+		filtered_ts = sorted_ts[filtered_indices]
+
+		current_mask = filtered_ts <= current_time
+		final_ts = filtered_ts[current_mask]
+
+		return final_ts.tolist()
+
+	def _prune_old_data(
+		self,
+		events: list,
+		last_lambda: float,
+		threshold: float,
+		current_timestamp: int,
+	) -> list:
+		"""剪枝权重过低的历史数据.
+
+		根据指数衰减权重移除过时的历史记录, 保持算法对最新模式的敏感度.
+		权重公式: w = exp(-lambda * age_hours)
+
+		Args:
+			events: 正向或负向事件列表
+			last_lambda: 上次计算的lambda参数
+			threshold: 权重阈值, 低于此值的数据会被移除
+			current_timestamp: 当前时间戳
+
+		Returns:
+			剪枝后的事件列表
+
+		"""
+		target_file = self.mtime_file if events is not None else self.miss_history_file
+		if not events or not Path(target_file).exists():
+			return events
+
+		events_arr = np.array(events, dtype=np.float64)
+		current_ts = float(current_timestamp)
+
+		# 计算每个事件的年龄(小时)和权重
+		ages_hours = (current_ts - events_arr) / 3600.0
+		weights = np.exp(-last_lambda * ages_hours)
+
+		# 保留权重 >= threshold 的数据
+		mask = (ages_hours >= 0) & (weights >= threshold)
+
+		pruned_arr = events_arr[mask]
+
+		if len(pruned_arr) < len(events_arr):
+			filepath = Path(target_file)
+			try:
+				pruned_list = pruned_arr.astype(int).tolist()
+				filepath.write_text(
+					"".join(f"{ts}\n" for ts in pruned_list),
+					encoding="utf-8",
+				)
+			except OSError as e:
+				self.log_warning(f"数据剪枝失败: {e}")
+				return events
+			return pruned_list
+
+		return events
+
+	def _calculate_interval_stats(self, timestamps: list) -> tuple[float, float, int, int]:
+		"""计算历史间隔统计量并动态设置间隔边界.
+
+		Args:
+			timestamps: 历史时间戳列表
+
+		Returns:
+			(mean_interval, variance, default_interval, max_interval)
+
+		"""
+		min_interval_samples = 5
+		min_count_for_stats = 2
+
+		if len(timestamps) < min_count_for_stats:
+			return 3600.0, 0.0, 3600, 300
+
+		timestamps_arr = np.array(sorted(timestamps), dtype=np.float64)
+		intervals = np.diff(timestamps_arr)
+		mean_interval = np.mean(intervals, dtype=np.float64)
+		variance = np.var(intervals, dtype=np.float64)
+
+		if len(timestamps) >= min_interval_samples:
+			default_interval = float(np.median(intervals) * 0.8)
+			min_5th = float(np.percentile(intervals, 5))
+			max_interval = max(300, min_5th * 0.5)
+			max_interval = min(max_interval, 3600)
+		else:
+			default_interval = 3600
+			max_interval = 300
+
+		return (
+			float(mean_interval),
+			float(variance),
+			int(default_interval),
+			int(max_interval),
+		)
+
+	def _learn_dimension_weights(
+		self, timestamps: list, old_weights: dict, learning_rate: float
+	) -> dict:
+		"""动态学习各时间维度的权重.
+
+		原理:统计各维度值的分布, 离散度(标准差)越小说明该维度越重要.
+		得分 = mean(counts) / std(counts), 得分越高权重越大.
+
+		Args:
+			timestamps: 历史时间戳列表
+			old_weights: 当前维度权重字典
+			learning_rate: 学习率(控制新旧权重的混合比例)
+
+		Returns:
+			平滑后的新权重字典
+
+		"""
+		min_count_for_learning = 20  # 最小样本数才开始学习
+		if len(timestamps) < min_count_for_learning:
+			return old_weights
+
+		# 提取原始时间维度值(小时、星期几、第几周、月份)
+		raw_components = self._get_raw_time_components(
+			np.array(timestamps, dtype=np.float64),
+		)
+
+		# 计算各维度得分:均值/标准差(反映分布集中度)
+		dimension_scores = {}
+		for dim in ["day", "week", "month_week", "year_month"]:
+			keys = raw_components.get(dim, np.array([], dtype=np.int64))
+			if len(keys) == 0:
+				dimension_scores[dim] = 0.0
+				continue
+
+			# 统计每个维度值的出现次数
+			_, counts = np.unique(keys, return_counts=True)
+			counts_arr = counts.astype(np.float64)
+			mean_val = np.mean(counts_arr)
+
+			if mean_val == 0:
+				dimension_scores[dim] = 0.0
+			else:
+				# 标准差越小, 分布越集中, 该维度越重要
+				std_dev = np.std(counts_arr)
+				if std_dev > 0:
+					dimension_scores[dim] = float(mean_val / std_dev)
+				else:
+					dimension_scores[dim] = float(mean_val)
+
+		# 归一化得分, 使总权重约为2
+		scores_array = np.array(list(dimension_scores.values()), dtype=np.float64)
+		total_score = np.sum(scores_array, dtype=np.float64)
+
+		if total_score > 0:
+			normalized_scores = scores_array / total_score * 2.0
+			new_weights = dict(zip(dimension_scores.keys(), normalized_scores, strict=True))
+		else:
+			new_weights = old_weights
+
+		# 指数平滑更新权重:新权重 * 学习率 + 旧权重 * (1 - 学习率)
+		smoothed_weights = {}
+		for key in dimension_scores:
+			old_weight = old_weights[key]
+			new_weight = new_weights[key]
+			smoothed = old_weight * (1 - learning_rate) + new_weight * learning_rate
+			smoothed_weights[key] = float(smoothed)
+
+		return smoothed_weights
+
+	def _learn_adaptive_sigmas(self, timestamps: list, old_sigmas: dict) -> dict:
+		"""根据数据离散度动态学习 Sigma 参数.
+
+		数学原理:
+		- Sigma 应该反映数据的不确定性
+		- 标准差小 -> 规律性强 -> Sigma 小 (精确匹配)
+		- 标准差大 -> 规律性弱 -> Sigma 大 (宽松匹配)
+
+		Args:
+			timestamps: 历史时间戳列表
+			old_sigmas: 当前的 sigma 字典
+
+		Returns:
+			学习后的 sigma 字典
+
+		"""
+		min_learn_count = 20
+		min_sigma_samples = 3
+		if len(timestamps) < min_learn_count:
+			return old_sigmas
+
+		raw_components = self._get_raw_time_components(
+			np.array(timestamps, dtype=np.float64)
+		)
+
+		new_sigmas = {}
+		for dim in ["day", "week", "month_week", "year_month"]:
+			values = raw_components.get(dim, np.array([], dtype=np.int64))
+			if len(values) >= min_sigma_samples:
+				value_range = float(np.max(values) - np.min(values))
+				if value_range > 0:
+					normalized = (values.astype(np.float64) - np.min(values)) / value_range
+					std = float(np.std(normalized))
+					adaptive_sigma = max(0.2, min(std * 3.0, 3.0))
+
+					old_sigma = old_sigmas.get(dim, 1.0)
+					new_sigmas[dim] = old_sigma * 0.7 + adaptive_sigma * 0.3
+				else:
+					new_sigmas[dim] = old_sigmas.get(dim, 1.0)
+			else:
+				new_sigmas[dim] = old_sigmas.get(dim, 1.0)
+
+		return new_sigmas
+
+	def _format_frequency_interval(self, seconds: float) -> str:
+		"""格式化频率间隔为人类可读字符串.
+
+		Args:
+			seconds: 间隔秒数
+
+		Returns:
+			格式化后的字符串, 如 "1 天 2 小时 30 秒"
+
+		"""
+		total_seconds = float(seconds)
+		polling_days_float = total_seconds / 86400.0
+		polling_hours_float = (total_seconds % 86400.0) / 3600.0
+		polling_minutes_float = (total_seconds % 3600.0) / 60.0
+		polling_seconds_float = total_seconds % 60.0
+
+		polling_days = int(polling_days_float)
+		polling_hours = int(polling_hours_float)
+		polling_minutes = int(polling_minutes_float)
+		polling_seconds = int(polling_seconds_float)
+
+		polling_interval_parts = []
+		if polling_days > 0:
+			polling_interval_parts.append(f"{polling_days} 天")
+		if polling_hours > 0:
+			polling_interval_parts.append(f"{polling_hours} 小时")
+		if polling_minutes > 0:
+			polling_interval_parts.append(f"{polling_minutes} 分钟")
+		if polling_seconds > 0 or not polling_interval_parts:
+			polling_interval_parts.append(f"{polling_seconds} 秒")
+		return " ".join(polling_interval_parts)
+
+	def _calculate_adaptive_lambda(
+		self, timestamps: list, last_variance: float, lambda_base: float
+	) -> tuple[float, float]:
+		"""自适应计算lambda参数(遗忘速度).
+
+		策略:
+		- 方差大 → 发布不规律 → 增大lambda(快速遗忘旧模式)
+		- 方差小 → 发布规律 → 减小lambda(保留历史模式)
+		- 方差增大 → 趋向不稳定 → 进一步增大lambda
+		- 根据CV(变异系数)动态调整lambda范围
+
+		Args:
+			timestamps: 历史时间戳列表
+			last_variance: 上次计算的方差
+			lambda_base: lambda基础值
+
+		Returns:
+			(adaptive_lambda, current_variance)
+
+		"""
+		min_count_for_lambda = 2  # 最小样本数
+		if len(timestamps) < min_count_for_lambda:
+			return float(lambda_base), 0.0
+
+		timestamps_arr = np.array(sorted(timestamps), dtype=np.float64)
+		intervals = np.diff(timestamps_arr)
+		current_variance = np.var(intervals, dtype=np.float64)
+
+		mean_interval = np.mean(intervals)
+		cv = np.std(intervals) / mean_interval if mean_interval > 0 else 1.0
+
+		lambda_min = lambda_base * 0.3
+		lambda_max = lambda_base * (1.0 + cv * 4.0)
+		lambda_max = min(lambda_max, lambda_base * 15.0)
+
+		if last_variance > 0:
+			variance_trend_normalized = (current_variance - last_variance) / last_variance
+		else:
+			variance_trend_normalized = 0.0
+
+		seconds_in_day_sq = 86400**2
+		normalized_variance = current_variance / seconds_in_day_sq
+
+		if normalized_variance > 0:
+			lambda_factor = np.log(1 + normalized_variance * 10) / np.log(11)
+		else:
+			lambda_factor = 0
+
+		base_adaptive_lambda = lambda_min + (lambda_max - lambda_min) * lambda_factor
+		trend_correction = variance_trend_normalized * 0.3 * base_adaptive_lambda
+		adaptive_lambda = base_adaptive_lambda + trend_correction
+
+		final_lambda = np.clip(adaptive_lambda, lambda_min, lambda_max)
+
+		return float(final_lambda), float(current_variance)
+
+	def _initialize_wgmm_config(self) -> tuple[dict, dict, bool]:
+		"""初始化 WGMM 配置参数.
+
+		Returns:
+			(dimension_weights, sigmas, is_manual_run)
+
+		"""
+		config = self.wgmm_config
+
+		if "dimension_weights" not in config:
+			config["dimension_weights"] = {
+				"day": 0.5,
+				"week": 1.0,
+				"month_week": 0.3,
+				"year_month": 0.2,
+			}
+
+		dimension_weights = config["dimension_weights"]
+
+		if "sigmas" not in config:
+			config["sigmas"] = {
+				"day": 0.8,
+				"week": 1.0,
+				"month_week": 1.5,
+				"year_month": 2.0,
+			}
+
+		sigmas = config["sigmas"]
+
+		if self.dev_mode:
+			is_manual_run = True
+		else:
+			is_manual_run = self.wgmm_config.get("is_manual_run", True)
+			if is_manual_run:
+				self.wgmm_config["is_manual_run"] = False
+
+		return dimension_weights, sigmas, is_manual_run
+
 	def adjust_check_frequency(self, found_new_content: bool = False) -> None:
 		"""WGMM算法核心函数 - 根据历史数据自适应调整检查间隔.
 
@@ -812,62 +1255,14 @@ class VideoMonitor:
 		peak_advance_minutes = 5  # 峰值提前检查时间(分钟)
 		seconds_in_day = 86400  # 一天的秒数
 
-		config = self.wgmm_config
-
-		if "dimension_weights" not in config:
-			config["dimension_weights"] = {
-				"day": 0.5,
-				"week": 1.0,
-				"month_week": 0.3,
-				"year_month": 0.2,
-			}
-
-		dimension_weights_from_config = config["dimension_weights"]
-
-		if "sigmas" not in config:
-			config["sigmas"] = {
-				"day": 0.8,
-				"week": 1.0,
-				"month_week": 1.5,
-				"year_month": 2.0,
-			}
-
-		sigmas_from_config = config["sigmas"]
-
-		if self.dev_mode:
-			is_manual_run = True
-		else:
-			is_manual_run = self.wgmm_config.get("is_manual_run", True)
-			if is_manual_run:
-				self.wgmm_config["is_manual_run"] = False
+		# 初始化配置
+		dimension_weights_from_config, sigmas_from_config, is_manual_run = (
+			self._initialize_wgmm_config()
+		)
 
 		current_timestamp = int(time.time())
 
-		def load_miss_history():
-			miss_history_path = Path(self.miss_history_file)
-			if not miss_history_path.exists():
-				return []
-			try:
-				with miss_history_path.open() as f:
-					return [int(line.strip()) for line in f if line.strip().isdigit()]
-			except OSError as e:
-				self.log_warning(f"读取失败历史记录失败: {e}")
-				return []
-
-		def save_to_miss_history(timestamp):
-			if is_manual_run:
-				return
-			if self.dev_mode:
-				self.sandbox_miss_history.append(timestamp)
-				return
-			miss_history_path = Path(self.miss_history_file)
-			try:
-				with miss_history_path.open("a") as f:
-					f.write(f"{timestamp}\n")
-				self.limit_file_lines(self.miss_history_file, 100000)
-			except OSError as e:
-				self.log_warning(f"写入失败历史记录失败: {e}")
-
+		# 确保 mtime.txt 文件存在
 		mtime_file_path = Path(self.mtime_file)
 		if not mtime_file_path.exists() and not self.generate_mtime_file(
 			"adjust_check_frequency"
@@ -876,141 +1271,31 @@ class VideoMonitor:
 				self.save_next_check_time(int(time.time()) + 7200)
 			return
 
-		def load_history_file(filepath):
-			file_path = Path(filepath)
+		# 加载正向和负向事件历史
+		positive_events = self._load_history_file(self.mtime_file)
+		negative_events = self._load_miss_history()
 
-			try:
-				raw_data = [
-					line.strip()
-					for line in file_path.read_text(encoding="utf-8").splitlines()
-					if line.strip().isdigit()
-				]
-				seen_timestamps = set()
-				filtered = []
-				for timestamp_str in raw_data:
-					timestamp = int(timestamp_str)
-					if timestamp > 0 and timestamp not in seen_timestamps:
-						filtered.append(timestamp)
-						seen_timestamps.add(timestamp)
-			except OSError as e:
-				self.log_warning(f"读取历史文件失败 {filepath}: {e}")
-				return []
-			else:
-				return filtered
-
-		positive_events = load_history_file(self.mtime_file)
-		negative_events = load_miss_history()
+		# 过滤异常值
+		positive_events = self._filter_outliers(positive_events, current_timestamp)
+		negative_events = self._filter_outliers(negative_events, current_timestamp)
 
 		total_events = len(positive_events) + len(negative_events)
 		weight_threshold = max(0.0001, 0.001 * (100 / (total_events + 50)))
 		learning_rate = max(0.02, min(0.2, 0.3 - len(positive_events) * 0.001))
 
-		def filter_outliers(timestamps, current_time):
-			"""过滤异常值时间戳.
-
-			使用IQR(四分位距)方法检测并移除异常的时间间隔.
-			异常值定义: 间隔 < Q1 - 3*IQR 或 > Q3 + 3*IQR
-
-			Args:
-				timestamps: 历史时间戳列表
-				current_time: 当前时间戳
-
-			Returns:
-				过滤后的时间戳列表
-
-			"""
-			min_count_for_filter = 3  # 最小样本数才进行过滤
-			min_count_for_variance = 2  # 最小样本数才计算方差
-
-			if len(timestamps) < min_count_for_filter:
-				return [ts for ts in timestamps if ts <= current_time]
-
-			sorted_ts = np.array(sorted(timestamps), dtype=np.float64)
-			if len(sorted_ts) < min_count_for_variance:
-				return timestamps
-
-			intervals = np.diff(sorted_ts)
-			if len(intervals) == 0:
-				return timestamps
-
-			q1 = np.percentile(intervals, 25)
-			q3 = np.percentile(intervals, 75)
-
-			iqr = q3 - q1
-			lower_bound = q1 - 3.0 * iqr
-			upper_bound = q3 + 3.0 * iqr
-
-			mask = (intervals >= lower_bound) & (intervals <= upper_bound)
-
-			filtered_indices = np.concatenate(([0], np.where(mask)[0] + 1))
-			filtered_ts = sorted_ts[filtered_indices]
-
-			current_mask = filtered_ts <= current_time
-			final_ts = filtered_ts[current_mask]
-
-			return final_ts.tolist()
-
-		positive_events = filter_outliers(positive_events, current_timestamp)
-		negative_events = filter_outliers(negative_events, current_timestamp)
-
-		def prune_old_data(events, last_lambda, threshold):
-			"""剪枝权重过低的历史数据.
-
-			根据指数衰减权重移除过时的历史记录, 保持算法对最新模式的敏感度.
-			权重公式: w = exp(-lambda * age_hours)
-
-			Args:
-				events: 正向或负向事件列表
-				last_lambda: 上次计算的lambda参数
-				threshold: 权重阈值, 低于此值的数据会被移除
-
-			Returns:
-				剪枝后的事件列表
-
-			"""
-			target_file = (
-				self.mtime_file if events is positive_events else self.miss_history_file
-			)
-			if not events or not Path(target_file).exists():
-				return events
-
-			events_arr = np.array(events, dtype=np.float64)
-			current_ts = float(current_timestamp)
-
-			# 计算每个事件的年龄(小时)和权重
-			ages_hours = (current_ts - events_arr) / 3600.0
-			weights = np.exp(-last_lambda * ages_hours)
-
-			# 保留权重 >= threshold 的数据
-			mask = (ages_hours >= 0) & (weights >= threshold)
-
-			pruned_arr = events_arr[mask]
-
-			if len(pruned_arr) < len(events_arr):
-				filepath = Path(target_file)
-				try:
-					pruned_list = pruned_arr.astype(int).tolist()
-					filepath.write_text(
-						"".join(f"{ts}\n" for ts in pruned_list),
-						encoding="utf-8",
-					)
-				except OSError as e:
-					self.log_warning(f"数据剪枝失败: {e}")
-					return events
-				return pruned_list
-
-			return events
-
-		last_lambda = config.get("last_lambda", lambda_base)
+		# 剪枝旧数据
+		last_lambda = self.wgmm_config.get("last_lambda", lambda_base)
 		# 只有当历史数据超过阈值时才进行剪枝, 避免数据量过小时丢失重要信息
 		if len(positive_events) >= prune_threshold:
-			positive_events = prune_old_data(positive_events, last_lambda, weight_threshold)
-			negative_events = prune_old_data(negative_events, last_lambda, weight_threshold)
+			positive_events = self._prune_old_data(
+				positive_events, last_lambda, weight_threshold, current_timestamp
+			)
+			negative_events = self._prune_old_data(
+				negative_events, last_lambda, weight_threshold, current_timestamp
+			)
 
-		def check_positive_sufficient(events):
-			return len(events) >= min_history_count
-
-		pos_sufficient = check_positive_sufficient(positive_events)
+		# 检查正向数据是否充足
+		pos_sufficient = len(positive_events) >= min_history_count
 
 		if not pos_sufficient:
 			self.log_info(f"正向数据不足({len(positive_events)}条), 进入学习期模式")
@@ -1024,231 +1309,34 @@ class VideoMonitor:
 				self._save_wgmm_config()
 			return
 
-		def calculate_interval_stats(timestamps):
-			"""计算历史间隔统计量并动态设置间隔边界.
-
-			Returns:
-				(mean_interval, variance, default_interval, max_interval)
-			"""
-			min_interval_samples = 5
-			min_count_for_stats = 2
-
-			if len(timestamps) < min_count_for_stats:
-				return 3600.0, 0.0, 3600, 300
-
-			timestamps_arr = np.array(sorted(timestamps), dtype=np.float64)
-			intervals = np.diff(timestamps_arr)
-			mean_interval = np.mean(intervals, dtype=np.float64)
-			variance = np.var(intervals, dtype=np.float64)
-
-			if len(timestamps) >= min_interval_samples:
-				default_interval = float(np.median(intervals) * 0.8)
-				min_5th = float(np.percentile(intervals, 5))
-				max_interval = max(300, min_5th * 0.5)
-				max_interval = min(max_interval, 3600)
-			else:
-				default_interval = 3600
-				max_interval = 300
-
-			return float(mean_interval), float(variance), default_interval, max_interval
-
-		base_interval, _, _default_interval, max_interval = calculate_interval_stats(
+		# 计算间隔统计量
+		base_interval, _, _default_interval, max_interval = self._calculate_interval_stats(
 			positive_events
 		)
 
-		def _calculate_adaptive_lambda(
-			timestamps,
-			last_variance,
-			lambda_base,
-		) -> tuple[float, float]:
-			"""自适应计算lambda参数(遗忘速度).
-
-			策略:
-			- 方差大 → 发布不规律 → 增大lambda(快速遗忘旧模式)
-			- 方差小 → 发布规律 → 减小lambda(保留历史模式)
-			- 方差增大 → 趋向不稳定 → 进一步增大lambda
-			- 根据CV(变异系数)动态调整lambda范围
-
-			Args:
-				timestamps: 历史时间戳列表
-				last_variance: 上次计算的方差
-				lambda_base: lambda基础值
-
-			Returns:
-				(adaptive_lambda, current_variance)
-
-			"""
-			min_count_for_lambda = 2  # 最小样本数
-			if len(timestamps) < min_count_for_lambda:
-				return float(lambda_base), 0.0
-
-			timestamps_arr = np.array(sorted(timestamps), dtype=np.float64)
-			intervals = np.diff(timestamps_arr)
-			current_variance = np.var(intervals, dtype=np.float64)
-
-			mean_interval = np.mean(intervals)
-			cv = np.std(intervals) / mean_interval if mean_interval > 0 else 1.0
-
-			lambda_min = lambda_base * 0.3
-			lambda_max = lambda_base * (1.0 + cv * 4.0)
-			lambda_max = min(lambda_max, lambda_base * 15.0)
-
-			if last_variance > 0:
-				variance_trend_normalized = (
-					current_variance - last_variance
-				) / last_variance
-			else:
-				variance_trend_normalized = 0.0
-
-			seconds_in_day_sq = 86400**2
-			normalized_variance = current_variance / seconds_in_day_sq
-
-			if normalized_variance > 0:
-				lambda_factor = np.log(1 + normalized_variance * 10) / np.log(11)
-			else:
-				lambda_factor = 0
-
-			base_adaptive_lambda = lambda_min + (lambda_max - lambda_min) * lambda_factor
-			trend_correction = variance_trend_normalized * 0.3 * base_adaptive_lambda
-			adaptive_lambda = base_adaptive_lambda + trend_correction
-
-			final_lambda = np.clip(adaptive_lambda, lambda_min, lambda_max)
-
-			return float(final_lambda), float(current_variance)
-
-		last_pos_variance = config.get("last_pos_variance", 0.0)
-		pos_lambda, pos_current_variance = _calculate_adaptive_lambda(
+		# 自适应计算 Lambda 参数
+		last_pos_variance = self.wgmm_config.get("last_pos_variance", 0.0)
+		pos_lambda, pos_current_variance = self._calculate_adaptive_lambda(
 			positive_events,
 			last_pos_variance,
 			lambda_base,
 		)
-		last_neg_variance = config.get("last_neg_variance", 0.0)
+		last_neg_variance = self.wgmm_config.get("last_neg_variance", 0.0)
 
-		neg_lambda, neg_current_variance = _calculate_adaptive_lambda(
+		neg_lambda, neg_current_variance = self._calculate_adaptive_lambda(
 			negative_events,
 			last_neg_variance,
 			lambda_base,
 		)
 
-		def learn_dimension_weights(timestamps, old_weights):
-			"""动态学习各时间维度的权重.
-
-			原理:统计各维度值的分布, 离散度(标准差)越小说明该维度越重要.
-			得分 = mean(counts) / std(counts), 得分越高权重越大.
-
-			Args:
-				timestamps: 历史时间戳列表
-				old_weights: 当前维度权重字典
-
-			Returns:
-				平滑后的新权重字典
-
-			"""
-			min_count_for_learning = 20  # 最小样本数才开始学习
-			if len(timestamps) < min_count_for_learning:
-				return old_weights
-
-			# 提取原始时间维度值(小时、星期几、第几周、月份)
-			raw_components = self._get_raw_time_components(
-				np.array(timestamps, dtype=np.float64),
-			)
-
-			# 计算各维度得分:均值/标准差(反映分布集中度)
-			dimension_scores = {}
-			for dim in ["day", "week", "month_week", "year_month"]:
-				keys = raw_components.get(dim, np.array([], dtype=np.int64))
-				if len(keys) == 0:
-					dimension_scores[dim] = 0.0
-					continue
-
-				# 统计每个维度值的出现次数
-				_, counts = np.unique(keys, return_counts=True)
-				counts_arr = counts.astype(np.float64)
-				mean_val = np.mean(counts_arr)
-
-				if mean_val == 0:
-					dimension_scores[dim] = 0.0
-				else:
-					# 标准差越小, 分布越集中, 该维度越重要
-					std_dev = np.std(counts_arr)
-					if std_dev > 0:
-						dimension_scores[dim] = float(mean_val / std_dev)
-					else:
-						dimension_scores[dim] = float(mean_val)
-
-			# 归一化得分, 使总权重约为2
-			scores_array = np.array(list(dimension_scores.values()), dtype=np.float64)
-			total_score = np.sum(scores_array, dtype=np.float64)
-
-			if total_score > 0:
-				normalized_scores = scores_array / total_score * 2.0
-				new_weights = dict(
-					zip(dimension_scores.keys(), normalized_scores, strict=True)
-				)
-			else:
-				new_weights = old_weights
-
-			# 指数平滑更新权重:新权重 * 学习率 + 旧权重 * (1 - 学习率)
-			smoothed_weights = {}
-			for key in dimension_scores:
-				old_weight = old_weights[key]
-				new_weight = new_weights[key]
-				smoothed = old_weight * (1 - learning_rate) + new_weight * learning_rate
-				smoothed_weights[key] = float(smoothed)
-
-			return smoothed_weights
-
-		def learn_adaptive_sigmas(timestamps: list, old_sigmas: dict) -> dict:
-			"""根据数据离散度动态学习 Sigma 参数.
-
-			数学原理:
-			- Sigma 应该反映数据的不确定性
-			- 标准差小 -> 规律性强 -> Sigma 小 (精确匹配)
-			- 标准差大 -> 规律性弱 -> Sigma 大 (宽松匹配)
-
-			Args:
-				timestamps: 历史时间戳列表
-				old_sigmas: 当前的 sigma 字典
-
-			Returns:
-				学习后的 sigma 字典
-			"""
-			min_learn_count = 20
-			min_sigma_samples = 3
-			if len(timestamps) < min_learn_count:
-				return old_sigmas
-
-			raw_components = self._get_raw_time_components(
-				np.array(timestamps, dtype=np.float64)
-			)
-
-			new_sigmas = {}
-			for dim in ["day", "week", "month_week", "year_month"]:
-				values = raw_components.get(dim, np.array([], dtype=np.int64))
-				if len(values) >= min_sigma_samples:
-					value_range = float(np.max(values) - np.min(values))
-					if value_range > 0:
-						normalized = (
-							values.astype(np.float64) - np.min(values)
-						) / value_range
-						std = float(np.std(normalized))
-						adaptive_sigma = max(0.2, min(std * 3.0, 3.0))
-
-						old_sigma = old_sigmas.get(dim, 1.0)
-						new_sigmas[dim] = old_sigma * 0.7 + adaptive_sigma * 0.3
-					else:
-						new_sigmas[dim] = old_sigmas.get(dim, 1.0)
-				else:
-					new_sigmas[dim] = old_sigmas.get(dim, 1.0)
-
-			return new_sigmas
-
-		dimension_weights = learn_dimension_weights(
+		# 学习维度权重和 Sigma 参数
+		dimension_weights = self._learn_dimension_weights(
 			positive_events,
 			dimension_weights_from_config,
+			learning_rate,
 		)
 
-		learned_sigmas = learn_adaptive_sigmas(positive_events, sigmas_from_config)
+		learned_sigmas = self._learn_adaptive_sigmas(positive_events, sigmas_from_config)
 		sigmas = {
 			"day": float(learned_sigmas["day"]),
 			"week": float(learned_sigmas["week"]),
@@ -1359,7 +1447,7 @@ class VideoMonitor:
 
 		final_frequency_sec = float(final_frequency_sec * impedance_factor)
 		if not found_new_content and not is_manual_run:
-			save_to_miss_history(current_timestamp)
+			self._save_miss_history(current_timestamp, is_manual_run)
 
 		next_check_timestamp = int(time.time()) + int(final_frequency_sec)
 		self.save_next_check_time(next_check_timestamp)
@@ -1375,27 +1463,7 @@ class VideoMonitor:
 		if not self.dev_mode:
 			self._save_wgmm_config()
 
-		total_seconds = float(final_frequency_sec)
-		polling_days_float = total_seconds / 86400.0
-		polling_hours_float = (total_seconds % 86400.0) / 3600.0
-		polling_minutes_float = (total_seconds % 3600.0) / 60.0
-		polling_seconds_float = total_seconds % 60.0
-
-		polling_days = int(polling_days_float)
-		polling_hours = int(polling_hours_float)
-		polling_minutes = int(polling_minutes_float)
-		polling_seconds = int(polling_seconds_float)
-
-		polling_interval_parts = []
-		if polling_days > 0:
-			polling_interval_parts.append(f"{polling_days} 天")
-		if polling_hours > 0:
-			polling_interval_parts.append(f"{polling_hours} 小时")
-		if polling_minutes > 0:
-			polling_interval_parts.append(f"{polling_minutes} 分钟")
-		if polling_seconds > 0 or not polling_interval_parts:
-			polling_interval_parts.append(f"{polling_seconds} 秒")
-		polling_interval_str = " ".join(polling_interval_parts)
+		polling_interval_str = self._format_frequency_interval(final_frequency_sec)
 		self.log_info(f"WGMM调频 - 轮询间隔: {polling_interval_str}")
 
 	def run_yt_dlp(
