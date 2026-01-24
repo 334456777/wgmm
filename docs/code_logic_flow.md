@@ -1,10 +1,34 @@
-# 程序执行逻辑链条全图
+# 代码逻辑流程全图
 
-## 1. 程序启动与初始化流程
+> **版本**: v2.0 (2296行代码)
+> **更新时间**: 2026-01-24
+> **适用版本**: monitor.py v2.x
+
+本文档详细描述了WGMM视频监控系统的微观和宏观逻辑结构，包括所有54个方法的执行流程和调用关系。
+
+---
+
+## 目录
+
+1. [程序入口与初始化流程](#1-程序入口与初始化流程)
+2. [主监控循环](#2-主监控循环)
+3. [三层检测架构](#3-三层检测架构)
+4. [WGMM算法核心流程](#4-wgmm算法核心流程)
+5. [数据流与文件操作](#5-数据流与文件操作)
+6. [通知系统](#6-通知系统)
+7. [错误处理机制](#7-错误处理机制)
+8. [并发处理机制](#8-并发处理机制)
+9. [工具方法与辅助功能](#9-工具方法与辅助功能)
+10. [性能与优化](#10-性能与优化)
+11. [代码位置快速索引](#11-代码位置快速索引)
+
+---
+
+## 1. 程序入口与初始化流程
 
 ```
 ═══════════════════════════════════════════════════════════════════════
-                        程序入口点 (monitor.py:2438)
+                        程序入口点 (monitor.py:2295)
 ═══════════════════════════════════════════════════════════════════════
 
 if __name__ == "__main__":
@@ -12,16 +36,16 @@ if __name__ == "__main__":
          │
          ▼
 ┌─────────────────────────────────────────────────────────────────────┐
-│  main() 函数 (monitor.py:2379)                                      │
+│  main() 函数 (monitor.py:2236)                                      │
 └─────────────────────────────────────────────────────────────────────┘
     │
     ├─ 1. 加载环境变量
-    │   └─> load_env_file() (monitor.py:37)
+    │   └─> load_env_file() (monitor.py:40)
     │       • 读取 .env 文件
     │       • 设置 GITHUB_TOKEN, GIST_ID, BILIBILI_UID, BARK_DEVICE_KEY
     │
     ├─ 2. 解析命令行参数
-    │   └─> parse_arguments() (monitor.py:26)
+    │   └─> parse_arguments() (monitor.py:29)
     │       • --dev / -d: 开发模式标志
     │
     ├─ 3. 创建 VideoMonitor 实例
@@ -29,7 +53,7 @@ if __name__ == "__main__":
     │       │
     │       ▼
     │   ┌─────────────────────────────────────────────────────────┐
-    │   │  VideoMonitor.__init__() (monitor.py:74)                │
+    │   │  VideoMonitor.__init__() (monitor.py:75)                │
     │   └─────────────────────────────────────────────────────────┘
     │       │
     │       ├─ 环境变量验证
@@ -45,6 +69,7 @@ if __name__ == "__main__":
     │       │   • sandbox_config: dict
     │       │   • sandbox_known_urls: set[str]
     │       │   • sandbox_miss_history: list[int]
+    │       │   • sandbox_next_check_time: int = 0
     │       │   • dev_new_videos: int = 0
     │       │
     │       ├─ 定义文件路径
@@ -110,6 +135,8 @@ if __name__ == "__main__":
         • OSError/JSONDecodeError/SubprocessError: 记录严重错误，发送通知
 ```
 
+---
+
 ## 2. 主监控循环
 
 ```
@@ -117,10 +144,10 @@ if __name__ == "__main__":
                         主循环 (正常模式)
 ═══════════════════════════════════════════════════════════════════════
 
-while True:  (monitor.py:2422)
+while True:  (monitor.py:2279)
     │
     ├─ 【步骤1】等待到下次检查时间
-    │   └─> monitor.wait_for_next_check()  (monitor.py:1658)
+    │   └─> monitor.wait_for_next_check()  (monitor.py:1690)
     │       │
     │       ├─ 获取下次检查时间戳
     │       │   └─> next_check_timestamp = get_next_check_time()
@@ -144,7 +171,7 @@ while True:  (monitor.py:2422)
     │           └─> "下次检查: 2026年01月23日 周四 15:30:00"
     │
     ├─ 【步骤2】执行完整监控流程
-    │   └─> monitor.run_monitor()  (monitor.py:2052)
+    │   └─> monitor.run_monitor()  (monitor.py:2084)
     │       │
     │       └─> [详见第3节：run_monitor() 详细流程]
     │
@@ -161,149 +188,9 @@ while True:  (monitor.py:2422)
                     └─> sys.exit(1)
 ```
 
-## 3. run_monitor() 详细流程
+---
 
-```
-═══════════════════════════════════════════════════════════════════════
-                    run_monitor() - 完整深度检查 (monitor.py:2052)
-═══════════════════════════════════════════════════════════════════════
-
-try:
-    │
-    ├─ 【阶段1】同步已知 URL (monitor.py:2073)
-    │   └─> sync_success = sync_urls_from_gist()
-    │       │
-    │       ├─ GET https://api.github.com/gists/{GIST_ID}
-    │       │
-    │       ├─ 解析响应，提取 memory_urls
-    │       │   • 从 Gist 的文件内容读取已备份的 URL 列表
-    │       │
-    │       ├─ 处理失败情况
-    │       │   └─> if not sync_success and not self.memory_urls:
-    │       │           • 无法获取基准数据
-    │       │           • 跳过本次检查
-    │       │           • cleanup() 并 return
-    │       │
-    │       └─ 返回同步成功标志
-    │
-    ├─ 【阶段2】第一层检测 - 分片预检查 (monitor.py:2083)
-    │   └─> found_new_parts = check_potential_new_parts()
-    │       │
-    │       └─> [详见第4节：三层检测架构]
-    │
-    ├─ 【阶段3】第二层检测 - 快速 ID 检查 (monitor.py:2085)
-    │   └─> found_new_videos = quick_precheck()
-    │       │
-    │       └─> [详见第4节：三层检测架构]
-    │
-    ├─ 【阶段4】预检查结果判断 (monitor.py:2094)
-    │   │
-    │   ├─ if not (found_new_parts or found_new_videos):
-    │   │   └─> 两层预检查都未发现新内容
-    │   │       • adjust_check_frequency(found_new_content=False)
-    │   │       • cleanup()
-    │   │       • return (跳过完整扫描)
-    │   │
-    │   └─> 任一预检查发现新内容，继续完整扫描
-    │
-    ├─ 【阶段5】第三层检测 - 完整深度扫描 (monitor.py:2100)
-    │   │
-    │   ├─ 执行 yt-dlp 获取所有视频 URL
-    │   │   └─> run_yt_dlp([
-    │   │           "--cookies", self.cookies_file,
-    │   │           "--flat-playlist",
-    │   │           "--print", "%(webpage_url)s",
-    │   │           f"https://space.bilibili.com/{self.BILIBILI_UID}/video"
-    │   │       ])
-    │   │
-    │   ├─ 处理失败情况
-    │   │   ├─ if not success or not stdout:
-    │   │   │   • 记录严重错误
-    │   │   │   • adjust_check_frequency(found_new_content=False)
-    │   │   │   • cleanup() 并 return
-    │   │   │
-    │   │   └─ if not video_urls (解析为空列表):
-    │   │       • 记录严重错误
-    │   │       • adjust_check_frequency(found_new_content=False)
-    │   │       • cleanup() 并 return
-    │   │
-    │   ├─ 并行获取所有视频的分片信息
-    │   │   └─> all_parts = get_all_videos_parallel(video_urls)
-    │   │       • 使用 ThreadPoolExecutor 并发请求
-    │   │       • 每个视频调用 get_video_parts()
-    │   │       • 返回所有分片 URL 的扁平列表
-    │   │
-    │   └─ 处理分片获取失败
-    │       └─> if not all_parts:
-    │           • 使用原始 video_urls 作为后备
-    │
-    ├─ 【阶段6】双层 URL 对比 (monitor.py:2141)
-    │   │
-    │   ├─ existing_urls_set = set(memory_urls)
-    │   │   • Gist 中已存在的 URL 集合
-    │   │
-    │   ├─ current_urls_set = set(all_parts)
-    │   │   • 当前检测到的所有 URL 集合
-    │   │
-    │   ├─ gist_missing_urls = current_urls_set - existing_urls_set
-    │   │   • Gist 中缺失的 URL (可能已更新，也可能未同步)
-    │   │
-    │   ├─ truly_new_urls = gist_missing_urls - known_urls
-    │   │   • 真正的新 URL (既不在 Gist，也不在本地已知列表)
-    │   │   • 只有这些 URL 才会触发通知
-    │   │
-    │   └─ 判断是否有新内容
-    │       └─> if gist_missing_urls:
-    │           ├─ 计算新 URL 数量
-    │           │   • old_count = len(gist_missing_urls) - len(truly_new_urls)
-    │           │   • new_count = len(truly_new_urls)
-    │   │
-    │           ├─ 保存真正新视频的上传时间戳
-    │           │   └─> if truly_new_urls:
-    │           │       └─> save_real_upload_timestamps(truly_new_urls)
-    │           │           • 调用 yt-dlp 获取每个新视频的上传时间
-    │           │           • 追加到 mtime.txt (WGMM 算法的训练数据)
-    │           │
-    │           ├─ 更新本地已知 URL 列表
-    │           │   └─> known_urls.update(gist_missing_urls)
-    │           │   └─> save_known_urls()
-    │           │       • 保存到 local_known.txt
-    │           │
-    │           ├─ 开发模式处理
-    │           │   └─> if self.dev_mode:
-    │           │       └─> dev_new_videos += len(gist_missing_urls)
-    │           │
-    │           ├─ 发送 Bark 通知
-    │           │   └─> notify_new_videos(
-    │           │           len(gist_missing_urls),
-    │           │           has_new_parts=found_new_parts
-    │           │       )
-    │           │       • 调用 Bark API 推送通知
-    │           │       • 更新 memory_urls 并同步到 Gist
-    │           │
-    │           └─ 根据是否发现真正的新内容调整检查频率
-    │               ├─ if truly_new_urls:
-    │               │   └─> adjust_check_frequency(found_new_content=True)
-    │               │
-    │               └─ else:
-    │                   └─> adjust_check_frequency(found_new_content=False)
-    │
-    ├─ 【阶段7】处理仅发现新分片的情况 (monitor.py:2182)
-    │   └─> elif found_new_parts:
-    │       • log_info("完整检查未发现新视频 - 但发现新分片, 已处理")
-    │       • adjust_check_frequency(found_new_content=True)
-    │
-    ├─ 【阶段8】处理未发现新内容的情况 (monitor.py:2185)
-    │   └─> else:
-    │       • log_info("完整检查未发现新内容")
-    │       • adjust_check_frequency(found_new_content=False)
-    │
-    └─ 【阶段9】清理资源 (monitor.py:2189)
-        └─> cleanup()
-            • 删除临时输出目录 (tmp_outputs/)
-```
-
-## 4. 三层检测架构
+## 3. 三层检测架构
 
 ```
 ═══════════════════════════════════════════════════════════════════════
@@ -312,67 +199,64 @@ try:
 
 ┌─────────────────────────────────────────────────────────────────────┐
 │ 第一层: 分片预检查 (check_potential_new_parts)                      │
-│ monitor.py:1515                                                     │
+│ monitor.py:1548                                                     │
 │                                                                     │
 │ 目标: 快速检测是否有视频增加了新分片                                 │
-│ 成本: 仅调用一次 yt-dlp 获取视频列表                                 │
+│ 成本: 对已知多P视频预测下一分片是否存在                              │
 └─────────────────────────────────────────────────────────────────────┘
     │
-    ├─ 执行 yt-dlp 获取最新视频列表
-    │   └─> run_yt_dlp([
-    │           "--cookies", self.cookies_file,
-    │           "--flat-playlist",
-    │           "--print", "%(webpage_url)s",
-    │           "--playlist-end", "10",  # 只检查最新10个视频
-    │           f"https://space.bilibili.com/{self.BILIBILI_UID}/video"
-    │       ])
+    ├─ 提取多P视频的最大分片号
+    │   └─> 遍历 memory_urls，提取 "?p=" 后的分片号
+    │       • 记录每个 base_url 的最大分片数
     │
-    ├─ 解析输出获取最新视频 URL 列表
-    │   └─> recent_videos = [line.strip() for line in stdout.split("\n")]
+    ├─ 预测下一分片是否存在
+    │   └─> 对每个多P视频 (max_part > 1):
+    │       • next_part = max_part + 1
+    │       • next_url = f"{base_url}?p={next_part}"
+    │       • run_yt_dlp(["--simulate", next_url])
+    │       • 成功 → 发现新分片
     │
-    ├─ 并行获取每个视频的分片信息
-    │   └─> get_all_videos_parallel(recent_videos)
-    │       • 对每个视频调用 get_video_parts(url)
-    │       • get_video_parts() 获取视频的分片数 (p 属性)
-    │       • 返回所有分片 URL 的扁平列表
-    │
-    ├─ 对比本地已知分片
-    │   └─> new_parts = [url for url in all_parts if url not in known_urls]
+    ├─ 继续预测更多分片 (最多额外检查5个)
+    │   └─> while check_part <= next_part + 5:
+    │       • 检查 check_url 是否存在
+    │       • 成功继续，失败停止
     │
     └─ 返回结果
-        └─> return len(new_parts) > 0
+        └─> return has_new_parts
 
 ┌─────────────────────────────────────────────────────────────────────┐
 │ 第二层: 快速 ID 检查 (quick_precheck)                               │
-│ monitor.py:1477                                                     │
+│ monitor.py:1510                                                     │
 │                                                                     │
-│ 目标: 检测是否有新视频 (仅检查 URL 数量)                             │
-│ 成本: 仅调用一次 yt-dlp 获取视频数量                                 │
+│ 目标: 检测是否有新视频 (仅检查最新视频ID)                           │
+│ 成本: 仅调用一次 yt-dlp 获取第一个视频ID                            │
 └─────────────────────────────────────────────────────────────────────┘
     │
-    ├─ 执行 yt-dlp 获取视频数量
+    ├─ 判断 memory_urls 是否为空
+    │   └─> if not self.memory_urls:
+    │       └─> return True  (触发完整检查)
+    │
+    ├─ 执行 yt-dlp 获取最新视频ID
     │   └─> run_yt_dlp([
     │           "--cookies", self.cookies_file,
     │           "--flat-playlist",
-    │           "--print", "playlist_count",
+    │           "--print", "%(id)s",
+    │           "--playlist-end", "1",  # 只获取第一个视频
     │           f"https://space.bilibili.com/{self.BILIBILI_UID}/video"
     │       ])
     │
-    ├─ 解析输出
-    │   └─> current_count = int(stdout.strip())
+    ├─ 解析最新视频ID
+    │   └─> latest_id = stdout.strip()
     │
-    ├─ 对比内存中的 URL 数量
-    │   └─> memory_count = len(memory_urls)
-    │
-    ├─ 判断是否有新视频
-    │   └─> has_new = current_count > memory_count
+    ├─ 检查最新ID是否在已知URL中
+    │   └─> video_exists = any(latest_id in url for url in self.memory_urls)
     │
     └─ 返回结果
-        └─> return has_new
+        └─> return not video_exists  (ID不存在 → 有新视频)
 
 ┌─────────────────────────────────────────────────────────────────────┐
-│ 第三层: 完整深度检查 (run_monitor 中的扫描)                         │
-│ monitor.py:2100                                                     │
+│ 第三层: 完整深度检查 (run_monitor)                                  │
+│ monitor.py:2084                                                     │
 │                                                                     │
 │ 目标: 获取所有视频 URL，进行完整对比                                 │
 │ 成本: 调用 yt-dlp 获取完整播放列表 + 并行获取分片                   │
@@ -390,7 +274,7 @@ try:
     │
     ├─ 并行获取所有视频的分片信息
     │   └─> get_all_videos_parallel(video_urls)
-    │       • ThreadPoolExecutor(max_workers=10)
+    │       • ThreadPoolExecutor(max_workers=5)
     │       • 每个视频调用 get_video_parts()
     │       • 返回所有分片 URL 的扁平列表
     │
@@ -406,7 +290,9 @@ try:
         └─> notify_new_videos(count, has_new_parts)
 ```
 
-## 5. WGMM 算法完整执行流程
+---
+
+## 4. WGMM算法核心流程
 
 ```
 ═══════════════════════════════════════════════════════════════════════
@@ -416,19 +302,19 @@ try:
 调用位置: run_monitor() 结束前
 参数: found_new_content (bool) - 是否发现新内容
 
-monitor.py:794
+monitor.py:1232
 
 ┌─────────────────────────────────────────────────────────────────────┐
 │ 【步骤1】加载历史数据和配置                                          │
 └─────────────────────────────────────────────────────────────────────┘
     │
     ├─ 加载正向事件 (成功的发布时间)
-    │   └─> positive_events = 读取 mtime.txt
+    │   └─> positive_events = _load_history_file(mtime.txt)
     │       • 格式: 每行一个 Unix 时间戳
     │       • 示例: 1706160000\n1706246400\n...
     │
     ├─ 加载负向事件 (检测失败的空检查时间)
-    │   └─> negative_events = 读取 miss_history.txt
+    │   └─> negative_events = _load_miss_history()
     │       • 格式: 每行一个 Unix 时间戳
     │
     ├─ 加载 WGMM 算法配置
@@ -437,7 +323,8 @@ monitor.py:794
     │         "dimension_weights": { "day": 0.5, "week": 1.0, ... },
     │         "sigmas": { "day": 0.8, "week": 1.0, ... },
     │         "last_lambda": 0.0001,
-    │         "online_lambda": 0.0001,
+    │         "last_pos_variance": 0.0,
+    │         "last_neg_variance": 0.0,
     │         ...
     │       }
     │
@@ -451,17 +338,22 @@ monitor.py:794
 └─────────────────────────────────────────────────────────────────────┘
     │
     ├─ 过滤异常值
-    │   └─> filter_outliers(events)
+    │   └─> filtered_events = _filter_outliers(events, current_time)
     │       • 使用 IQR (四分位距) 方法检测异常
     │       • Q1 = 25th percentile, Q3 = 75th percentile
     │       • IQR = Q3 - Q1
-    │       • 移除 [Q1-1.5×IQR, Q3+1.5×IQR] 之外的数据
+    │       • 移除 [Q1-3×IQR, Q3+3×IQR] 之外的数据
     │
     └─ 剪枝低权重历史数据
-        └─> prune_old_data(events, lambda)
+        └─> pruned_events = _prune_old_data(
+                events,
+                last_lambda,
+                weight_threshold,
+                current_timestamp
+            )
             • 计算每个事件的时间衰减权重
             • weight = exp(-lambda × age_hours)
-            • 移除权重 < threshold 的事件 (默认 0.01)
+            • 移除权重 < threshold 的事件
             • 保持算法 O(n) 时间复杂度
 
 ┌─────────────────────────────────────────────────────────────────────┐
@@ -469,314 +361,255 @@ monitor.py:794
 └─────────────────────────────────────────────────────────────────────┘
     │
     ├─ 计算 Lambda (遗忘速度)
-    │   └─> lambda = _calculate_adaptive_lambda(positive_events, negative_events)
+    │   └─> pos_lambda, pos_variance = _calculate_adaptive_lambda(
+                positive_events,
+                last_pos_variance,
+                lambda_base
+            )
     │       │
     │       ├─ 计算正向事件时间方差
-    │       │   └─> pos_variance = var(positive_events)
+    │       │   └─> intervals = np.diff(sorted(timestamps))
+    │       │   └─> current_variance = np.var(intervals)
     │       │
-    │       ├─ 计算负向事件时间方差
-    │       │   └─> neg_variance = var(negative_events)
+    │       ├─ 计算变异系数 (CV)
+    │       │   └─> cv = std(intervals) / mean(intervals)
     │       │
     │       ├─ Lambda 自适应公式
-    │       │   └─> lambda = base_lambda × (1 + variance_factor)
-    │       │       • variance_factor = (pos_variance + neg_variance) / scale
+    │       │   └─> lambda_factor = log(1 + variance * 10) / log(11)
+    │       │   └─> lambda_min = lambda_base * 0.3
+    │       │   └─> lambda_max = lambda_base * (1 + cv * 4)
+    │       │   └─> adaptive_lambda = lambda_min + (lambda_max - lambda_min) * lambda_factor
     │       │       • 方差大 → lambda 大 → 快速遗忘 (不稳定模式)
     │       │       • 方差小 → lambda 小 → 长期记忆 (稳定模式)
     │       │
-    │       └─ 限制范围 [0.00005, 0.0002]
+    │       └─ 限制范围
+    │           └─> final_lambda = clip(adaptive_lambda, lambda_min, lambda_max)
     │
     ├─ 学习维度权重
-    │   └─> dimension_weights = learn_dimension_weights(events)
+    │   └─> dimension_weights = _learn_dimension_weights(
+                positive_events,
+                old_weights,
+                learning_rate
+            )
     │       │
-    │       ├─ 计算每个维度的时间分布方差
-    │       │   • hour_var (日周期)
-    │       │   • weekday_var (周周期)
-    │       │   • month_week_var (月周周期)
-    │       │   • month_var (年月周期)
+    │       ├─ 提取原始时间维度
+    │       │   └─> raw_components = _get_raw_time_components(timestamps)
+    │       │       • day: 小时 (0-23)
+    │       │       • week: 星期 (0-6)
+    │       │       • month_week: 月周 (1-6)
+    │       │       • year_month: 月份 (1-12)
+    │       │
+    │       ├─ 计算各维度得分
+    │       │   └─> for dim in ["day", "week", "month_week", "year_month"]:
+    │       │       • 统计每个值的出现次数
+    │       │       • dimension_score = mean(counts) / std(counts)
+    │       │       • 标准差越小 → 分布越集中 → 得分越高
     │       │
     │       ├─ 归一化权重
-    │       │   └─> weight_i = variance_i / sum(variances)
-    │       │       • 方差大 → 权重大 (该维度信息丰富)
+    │       │   └─> normalized_scores = scores / sum(scores) * 2.0
     │       │
-    │       └─ 保存到 config["dimension_weights"]
+    │       └─ 指数平滑更新
+    │           └─> smoothed = old_weight * (1 - lr) + new_weight * lr
     │
     └─ 学习时间容忍度 (Sigmas)
-        └─> sigmas = learn_adaptive_sigmas(events)
+        └─> learned_sigmas = _learn_adaptive_sigmas(positive_events, old_sigmas)
             │
-            ├─ 计算每个维度的时间离散度
-            │   • day_std, week_std, month_week_std, year_month_std
+            ├─ 提取原始时间维度
+            │   └─> raw_components = _get_raw_time_components(timestamps)
             │
-            ├─ Sigma 自适应公式
-            │   └─> sigma = base_sigma × (1 + std_factor)
-            │       • std_factor = std / scale
-            │       • 离散度大 → sigma 大 (更宽松的匹配)
+            ├─ 计算各维度的标准差
+            │   └─> for dim in ["day", "week", "month_week", "year_month"]:
+            │       • value_range = max(values) - min(values)
+            │       • normalized = (values - min) / range
+            │       • std = np.std(normalized)
+            │       • adaptive_sigma = max(0.2, min(std * 3.0, 3.0))
             │
-            └─ 保存到 config["sigmas"]
+            └─ 指数平滑更新
+                └─> new_sigma = old_sigma * 0.7 + adaptive_sigma * 0.3
 
 ┌─────────────────────────────────────────────────────────────────────┐
 │ 【步骤4】计算当前时间发布概率                                        │
 └─────────────────────────────────────────────────────────────────────┘
     │
     ├─ 编码当前时间
-    │   └─> current_components = _get_time_components(now)
+    │   └─> target_feat = _vectorized_time_features_numpy([current_timestamp])
     │       {
     │         "day_sin": sin(2π × hour / 24),
     │         "day_cos": cos(2π × hour / 24),
     │         "week_sin": sin(2π × weekday / 7),
     │         "week_cos": cos(2π × weekday / 7),
-    │         "month_week_sin": sin(2π × week_of_month / 4),
-    │         "month_week_cos": cos(2π × week_of_month / 4),
+    │         "month_week_sin": sin(2π × week_of_month / 6),
+    │         "month_week_cos": cos(2π × week_of_month / 6),
     │         "year_month_sin": sin(2π × month / 12),
     │         "year_month_cos": cos(2π × month / 12)
     │       }
     │
     ├─ 计算正向得分 (成功发布历史的相似性)
-    │   └─> positive_score = _calculate_point_score(
-    │           current_components,
+    │   └─> pos_score = _calculate_point_score(
+    │           current_timestamp,
     │           positive_events,
+    │           negative_events,
     │           dimension_weights,
+    │           pos_lambda,
+    │           neg_lambda,
     │           sigmas,
-    │           lambda
+    │           resistance_coefficient
     │       )
     │       │
-    │       ├─ 对每个历史事件:
-    │       │   └─> 计算四维时间距离
-    │       │       • day_dist = sqrt((sin1-sin2)² + (cos1-cos2)²)
-    │       │       • week_dist, month_week_dist, year_month_dist
+    │       ├─ 计算时间年龄并过滤未来事件
+    │       │   └─> ages_hours = (current_timestamp - events) / 3600
+    │       │   └─> valid_mask = ages_hours >= 0
     │       │
-    │       │   └─> 计算高斯核相似性
-    │       │       • similarity = exp(-dist² / (2×sigma²))
+    │       ├─ 计算指数衰减权重
+    │       │   └─> weights = exp(-lambda × ages_hours)
     │       │
-    │       │   └─> 计算指数衰减权重
-    │       │       • weight = exp(-lambda × age_hours)
+    │       ├─ 计算四维时间距离 (sin/cos编码的欧氏距离)
+    │       │   └─> for dim in ["day", "week", "month_week", "year_month"]:
+    │       │       dist_sq = (sin_current - sin_event)² + (cos_current - cos_event)²
     │       │
-    │       │   └─> 加权求和
-    │       │       • event_score = similarity × weight
+    │       ├─ 计算高斯核相似性
+    │       │   └─> for dim in ["day", "week", "month_week", "year_month"]:
+    │       │       gaussian = exp(-dist_sq / (2 × sigma²))
     │       │
-    │       ├─ 维度加权求和
-    │       │   └─> total_score =
-    │       │           day_weight × day_score +
-    │       │           week_weight × week_score +
-    │       │           month_week_weight × month_week_score +
-    │       │           year_month_weight × year_month_score
+    │       ├─ 加权求和
+    │       │   └─> combined =
+    │       │       day_weight × day_gaussian +
+    │       │       week_weight × week_gaussian +
+    │       │       month_week_weight × month_week_gaussian +
+    │       │       year_month_weight × year_month_gaussian
+    │       │
+    │       ├─ 时间衰减 × 相似度
+    │       │   └─> scores = weights × combined
     │       │
     │       └─ 归一化到 [0, 1]
-    │           └─> positive_score = total_score / len(positive_events)
+    │           └─> normalized = (mean - min) / (max - min)
     │
     ├─ 计算负向得分 (失败历史的惩罚)
-    │   └─> negative_score = _calculate_point_score(
-    │           current_components,
+    │   └─> neg_score = _calculate_point_score(
+    │           current_timestamp,
     │           negative_events,
-    │           dimension_weights,
-    │           sigmas,
-    │           lambda
+    │           ...  # 相同算法
     │       )
-    │       • 使用相同算法计算负向事件的相似性
     │
     └─ 计算最终得分
-        └─> current_score = positive_score - 0.3 × negative_score
+        └─> current_score = pos_score - resistance_coefficient × neg_score
             • 正向得分促进检查
-            • 负向得分抑制检查 (0.3 是惩罚系数)
-            • 结果范围: [-0.3, 1.0]
+            • 负向得分抑制检查
+            • resistance_coefficient = 0.7 + 0.2 / (1 + cv)
+            • 结果范围: [0, 1]
 
 ┌─────────────────────────────────────────────────────────────────────┐
-│ 【步骤5】峰值预测 - 扫描未来15天                                    │
+│ 【步骤5】非线性映射到检查间隔                                        │
 └─────────────────────────────────────────────────────────────────────┘
     │
-    ├─ 生成未来时间点
-    │   └─> future_timestamps = [now + i×3600 for i in range(360)]  # 15天
+    ├─ 计算间隔统计量
+    │   └─> mean_interval, variance, default_interval, max_interval =
+            _calculate_interval_stats(positive_events)
+    │       • mean_interval: 平均间隔
+    │       • default_interval: 中位数 × 0.8
+    │       • max_interval: 5th percentile × 0.5
+    │
+    ├─ 非线性映射
+    │   └─> exponential_score = current_score ** mapping_curve  # mapping_curve = 2.0
+    │   └─> base_interval_sec = mean_interval - (mean_interval - max_interval) × exponential_score
+    │       • score = 1.0 → interval = max_interval (最小间隔)
+    │       • score = 0.5 → interval = mean_interval
+    │       • score = 0.0 → interval = mean_interval × 2 (最大间隔)
+    │
+    └─ 限制范围
+        └─> base_frequency_sec = clip(base_interval_sec, max_interval, mean_interval × 2)
+
+┌─────────────────────────────────────────────────────────────────────┐
+│ 【步骤6】峰值预测 - 扫描未来15天                                    │
+└─────────────────────────────────────────────────────────────────────┘
+    │
+    ├─ 生成扫描时间点
+    │   └─> lookahead_seconds = 15 × 86400  # 15天
+    │   └─> gaussian_width = (sigmas["day"] × 86400 / 24) × 2
+    │   └─> min_step = gaussian_width × 0.25
+    │   └─> scan_step = min_step if current_score > 0.5 else min_step × 2
+    │   └─> scan_times = np.arange(
+    │           scan_start,
+    │           lookahead_end + scan_step,
+    │           scan_step
+    │       )
     │
     ├─ 批量计算得分
-    │   └─> scores = _batch_calculate_scores(
-    │           future_timestamps,
+    │   └─> scan_scores = _batch_calculate_scores(
+    │           scan_times,
     │           positive_events,
     │           negative_events,
     │           dimension_weights,
+    │           pos_lambda,
+    │           neg_lambda,
     │           sigmas,
-    │           lambda
+    │           resistance_coefficient
     │       )
     │       • NumPy 向量化计算
-    │       • 一次性计算 360 个时间点的得分
+    │       • 一次性计算数百个时间点
     │       • 避免显式循环，保持 O(n) 复杂度
     │
-    ├─ 找到峰值
-    │   ├─ peak_score = max(scores)
-    │   ├─ peak_time = future_timestamps[argmax(scores)]
-    │   └─> distance_to_peak = peak_time - now
+    ├─ 寻找峰值
+    │   └─> if len(scan_scores) > 1:
+    │       • 计算梯度: gradients = np.diff(scan_scores)
+    │       • 检测峰值: peaks_mask = (gradients[:-1] > 0) & (gradients[1:] < 0)
+    │       • 过滤低分峰值: score > 0.7
+    │       • 过滤陡峭峰值: abs(gradient) < 0.05
+    │       • 选择最佳峰值: argmax(peak_scores)
     │
-    └─ 映射得分到检查间隔
-        └─> base_frequency = map_score_to_interval(current_score)
-            │
-            ├─ 非线性映射公式
-            │   └─> interval = DEFAULT × (1 - score)^curve
-            │       • score=1.0 → interval=0 (最高频)
-            │       • score=0.5 → interval=DEFAULT/2
-            │       • score=0.0 → interval=DEFAULT
-            │       • curve=2.0 (控制映射激进程度)
-            │
-            ├─ 峰值提前量调整
-            │   └─> if distance_to_peak < peak_advance_minutes:
-            │       interval = min(interval, 300秒)  # 加快检查
-            │
-            └─ 低活跃期调整
-                └─> if activity_score < 0.2:
-                    interval = interval × 4  # 延长间隔 (最大30天)
-
-┌─────────────────────────────────────────────────────────────────────┐
-│ 【步骤6】EWMA 异常检测 (Phase 1 新增)                               │
-└─────────────────────────────────────────────────────────────────────┘
-    │
-    ├─ 初始化 EWMA 检测器
-    │   └─> ewma_detector = EWMAAnomalyDetector(config)
-    │       {
-    │         "ewma_lambda": 0.3,        # EWMA 平滑系数
-    │         "control_limit_k": 3.0,    # 控制限倍数 (±3σ)
-    │         "min_history": 10          # 最小历史数据量
-    │       }
-    │
-    ├─ 检查当前得分是否异常
-    │   └─> is_anomaly, reason = ewma_detector.check_anomaly(current_score)
-    │       │
-    │       ├─ 更新 EWMA 统计量
-    │       │   └─> ewma_mean = alpha × score + (1-alpha) × old_mean
-    │       │   └─> ewma_std = sqrt(alpha × variance + (1-alpha) × old_variance)
-    │       │
-    │       ├─ 计算控制限
-    │       │   └─> UCL = ewma_mean + k × ewma_std
-    │       │   └─> LCL = ewma_mean - k × ewma_std
-    │       │
-    │       ├─ 判断异常
-    │       │   └─> is_anomaly = (score < LCL) or (score > UCL)
-    │       │
-    │       ├─ 连续异常计数
-    │       │   └─> if is_anomaly:
-    │       │       consecutive_anomalies++
-    │       │   else:
-    │       │       consecutive_anomalies = 0
-    │       │
-    │       └─ 保存状态到 config
-    │           • ewma_mean, ewma_std
-    │           • score_history (最近100次)
-    │           • consecutive_anomalies
-    │
-    └─ 触发强制快速检查
-        └─> if is_anomaly and consecutive_anomalies >= 2:
-            └─> final_frequency_sec = 300秒  # 覆盖其他计算
+    └─ 峰值提前量调整
+        └─> if best_peak_score > 0.6:
+            • peak_interval = best_peak_time - current_timestamp
+            • if peak_interval < base_frequency_sec × 1.2:
+                • advanced_time = best_peak_time - 5分钟
+                • advanced_interval = advanced_time - current_timestamp
+                • if advanced_interval > 300秒:
+                    • final_frequency_sec = advanced_interval
 
 ┌─────────────────────────────────────────────────────────────────────┐
 │ 【步骤7】yt-dlp 阻抗因子 (原始机制)                                  │
 └─────────────────────────────────────────────────────────────────────┘
     │
+    └─> impedance_factor = 1.0
     └─> if last_duration > normal_duration × 2:
-        └─> impedance_factor = 1.0 ~ 1.5
-            • yt-dlp 运行时间异常延长
-            • 可能是网络问题或 B站响应慢
-            • 延长检查间隔，减少请求频率
+        • impedance_ratio = last_duration / normal_duration
+        • impedance_factor = 1.0 + min(0.5, (impedance_ratio - 2) × 0.1)
+        • yt-dlp 运行时间异常延长
+        • 可能是网络问题或 B站响应慢
+        • 延长检查间隔，减少请求频率
 
 ┌─────────────────────────────────────────────────────────────────────┐
-│ 【步骤8】负向事件记录                                                │
-└─────────────────────────────────────────────────────────────────────┘
-    │
-    └─> if not found_new_content:
-        └─> miss_history.append(now)
-            • 记录本次空检查的时间戳
-            • 保存到 miss_history.txt
-            • 下次计算时作为负向事件抑制得分
-
-┌─────────────────────────────────────────────────────────────────────┐
-│ 【步骤9】在线反馈学习 (Phase 1 新增)                                │
-└─────────────────────────────────────────────────────────────────────┘
-    │
-    ├─ 初始化在线学习器
-    │   └─> online_learner = OnlineFeedbackLearner(config)
-    │       {
-    │         "lambda_learning_rate": 0.05,  # Lambda 学习率
-    │         "sigma_step": 0.05,            # Sigma 调整步长
-    │         "REWARD_HISTORY_MAXLEN": 50    # 奖励历史长度
-    │       }
-    │
-    ├─ 根据反馈更新参数
-    │   └─> updated_lambda, updated_sigmas = online_learner.update_from_feedback(
-    │           found_new_content,
-    │           current_score,
-    │           current_sigmas
-    │       )
-    │       │
-    │       ├─ 计算奖励
-    │       │   └─> if found_new_content:
-    │       │       reward = 1.0 + current_score  # 正奖励
-    │       │   else:
-    │       │       reward = -1.0 × current_score  # 负奖励 ⚠️
-    │       │
-    │       ├─ Lambda 自适应调整 (惩罚机制B)
-    │       │   └─> lambda_factor = 1.05 (默认)
-    │       │   └─> if found_new_content:
-    │       │       lambda_factor = 1/1.05  # 成功时减小 lambda (保持记忆)
-    │       │   else:
-    │       │       lambda_factor = 1.05   # 失败时增大 lambda (快速遗忘) ⚠️
-    │       │   └─> updated_lambda = online_lambda × lambda_factor
-    │       │
-    │       ├─ Sigma 动态调整 (奖励机制C)
-    │       │   └─> if current_score > 0.7:
-    │       │       sigmas *= 0.975  # 高分时收紧 (更严格匹配)
-    │       │   elif current_score < 0.3:
-    │       │       sigmas *= 1.025  # 低分时放松 (更宽松匹配)
-    │       │
-    │       └─ 保存学习状态
-    │           • online_lambda
-    │           • total_reward += reward
-    │           • detection_count++
-    │           • if found_new_content: success_count++
-    │           • reward_history.append(reward)
-    │
-    └─ 更新配置中的 lambda 和 sigmas
-        └─> config["online_lambda"] = updated_lambda
-        └─> config["sigmas"] = updated_sigmas
-
-┌─────────────────────────────────────────────────────────────────────┐
-│ 【步骤10】保存配置并设置下次检查                                     │
+│ 【步骤8】保存配置并设置下次检查                                     │
 └─────────────────────────────────────────────────────────────────────┘
     │
     ├─ 应用最终的检查间隔
-    │   └─> if anomaly_detected and consecutive_anomalies >= 2:
-    │       final_frequency_sec = 300秒  # EWMA 触发的快速检查
-    │   else:
-    │       final_frequency_sec = base_frequency × impedance_factor
+    │   └─> final_frequency_sec = base_frequency_sec × impedance_factor
     │
-    ├─ 限制间隔范围
-    │   └─> final_frequency_sec = max(min(final_frequency, MAX_INTERVAL), MIN_INTERVAL)
-    │       • MIN_INTERVAL = 300秒 (5分钟)
-    │       • MAX_INTERVAL = 2592000秒 (30天)
+    ├─ 记录负向事件
+    │   └─> if not found_new_content and not is_manual_run:
+    │       • _save_miss_history(current_timestamp, is_manual_run)
     │
     ├─ 计算下次检查时间
-    │   └─> next_check_time = now + final_frequency_sec
+    │   └─> next_check_timestamp = current_timestamp + final_frequency_sec
     │
     ├─ 保存配置到文件
+    │   └─> wgmm_config["next_check_time"] = next_check_timestamp
+    │   └─> wgmm_config["dimension_weights"] = dimension_weights
+    │   └─> wgmm_config["sigmas"] = sigmas
+    │   └─> wgmm_config["last_lambda"] = pos_lambda
+    │   └─> wgmm_config["last_pos_variance"] = pos_current_variance
+    │   └─> wgmm_config["last_neg_variance"] = neg_current_variance
+    │   └─> wgmm_config["last_update"] = current_timestamp
     │   └─> _save_wgmm_config()
-    │       {
-    │         "dimension_weights": {...},
-    │         "sigmas": {...},
-    │         "last_lambda": lambda,
-    │         "online_lambda": updated_lambda,
-    │         "ewma_mean": ewma_mean,
-    │         "ewma_std": ewma_std,
-    │         "consecutive_anomalies": consecutive_anomalies,
-    │         "total_reward": total_reward,
-    │         "success_count": success_count,
-    │         "next_check_time": next_check_time,
-    │         "last_update": now
-    │       }
     │
     └─ 打印日志
-        └─> log_info(
-            f"WGMM调频 - 轮询间隔: {final_frequency_sec}秒 " +
-            f"(得分: {current_score:.3f}, " +
-            f"Lambda: {updated_lambda:.5f}, " +
-            f"下次检查: {next_check_time})"
-        )
+        └─> polling_interval_str = _format_frequency_interval(final_frequency_sec)
+        └─> log_info(f"WGMM调频 - 轮询间隔: {polling_interval_str}")
 ```
 
-## 6. 数据流与文件操作
+---
+
+## 5. 数据流与文件操作
 
 ```
 ═══════════════════════════════════════════════════════════════════════
@@ -793,44 +626,35 @@ monitor.py:794
     └─ BARK_DEVICE_KEY
          │
          ▼
-    VideoMonitor.__init__()  ← 读取
+    VideoMonitor.__init__()  ← 读取 (load_env_file)
 
 ═══════════════════════════════════════════════════════════════════════
 
     wgmm_config.json (算法状态)
     │
     ├─ dimension_weights (四维时间权重)
-    │   ├─ day: 0.5
-    │   ├─ week: 1.0
-    │   ├─ month_week: 0.3
+    │   ├─ day: 0.3 ~ 0.5
+    │   ├─ week: 0.25 ~ 1.0
+    │   ├─ month_week: 0.25 ~ 0.3
     │   └─ year_month: 0.2
     │
     ├─ sigmas (时间容忍度)
-    │   ├─ day: 0.8
-    │   ├─ week: 1.0
-    │   ├─ month_week: 1.5
-    │   └─ year_month: 2.0
+    │   ├─ day: 0.8 (动态学习)
+    │   ├─ week: 1.0 (动态学习)
+    │   ├─ month_week: 1.5 (动态学习)
+    │   └─ year_month: 2.0 (动态学习)
     │
     ├─ last_lambda (自适应 lambda)
-    ├─ online_lambda (在线学习 lambda) ⚠️ Phase 1
-    ├─ lambda_learning_rate ⚠️ Phase 1
-    ├─ sigma_step ⚠️ Phase 1
-    │
-    ├─ ewma_mean ⚠️ Phase 1
-    ├─ ewma_std ⚠️ Phase 1
-    ├─ consecutive_anomalies ⚠️ Phase 1
-    │
-    ├─ total_reward ⚠️ Phase 1
-    ├─ detection_count ⚠️ Phase 1
-    ├─ success_count ⚠️ Phase 1
-    ├─ reward_history ⚠️ Phase 1
+    ├─ last_pos_variance (正向事件方差)
+    ├─ last_neg_variance (负向事件方差)
     │
     ├─ next_check_time (下次检查时间戳)
-    └─ last_update (最后更新时间戳)
+    ├─ last_update (最后更新时间戳)
+    └─ is_manual_run (手动运行标志)
          │
          ▼
-    _load_wgmm_config()  ← 读取
-    _save_wgmm_config()  ← 保存
+    _load_wgmm_config()  ← 读取 (monitor.py:208)
+    _save_wgmm_config()  ← 保存 (monitor.py:251)
 
 ═══════════════════════════════════════════════════════════════════════
 
@@ -848,8 +672,9 @@ monitor.py:794
         • 计算正向得分 (成功发布的历史模式)
          │
          ▼
-    save_real_upload_timestamps()  ← 追加
-    generate_mtime_file()  ← 首次生成
+    _load_history_file()  ← 读取 (monitor.py:827)
+    save_real_upload_timestamps()  ← 追加 (monitor.py:598)
+    generate_mtime_file()  ← 首次生成 (monitor.py:747)
 
 ═══════════════════════════════════════════════════════════════════════
 
@@ -866,7 +691,8 @@ monitor.py:794
         • 计算负向得分 (抑制失败时间点的预测)
          │
          ▼
-    adjust_check_frequency()  ← 追加 (当 found_new_content=False)
+    _load_miss_history()  ← 读取 (monitor.py:789)
+    _save_miss_history()  ← 追加 (monitor.py:806)
 
 ═══════════════════════════════════════════════════════════════════════
 
@@ -883,8 +709,8 @@ monitor.py:794
         • 与 memory_urls (Gist) 一起防止重复通知
          │
          ▼
-    load_known_urls()  ← 读取
-    save_known_urls()  ← 保存
+    load_known_urls()  ← 读取 (monitor.py:142)
+    save_known_urls()  ← 保存 (monitor.py:157)
 
 ═══════════════════════════════════════════════════════════════════════
 
@@ -893,16 +719,12 @@ monitor.py:794
     ├─ GET https://api.github.com/gists/{GIST_ID}
     │   └─> 响应: Gist 文件内容 (memory_urls)
     │
-    ├─ PATCH https://api.github.com/gists/{GIST_ID}
-    │   └─> 请求: 更新 Gist 文件内容
-    │
     └─> 用途:
         • 双层 URL 管理的云端层
         • 跨实例/设备同步已知 URL
          │
          ▼
-    sync_urls_from_gist()  ← 同步
-    notify_new_videos()    ← 更新
+    sync_urls_from_gist()  ← 同步 (monitor.py:501)
 
 ═══════════════════════════════════════════════════════════════════════
 
@@ -912,35 +734,37 @@ monitor.py:794
     ├─ 示例:
     │   2026-01-23 15:30:00 - INFO - 检查开始                  <--
     │   2026-01-23 15:30:05 - INFO - 预检查完成 - 预测检查: 无新内容 快速检查: 无新内容
-    │   2026-01-23 15:30:10 - INFO - WGMM调频 - 轮询间隔: 7200秒
+    │   2026-01-23 15:30:10 - INFO - WGMM调频 - 轮询间隔: 2 小时 15 分钟 30 秒
     │   ...
     │
     └─> 用途:
         • 记录所有 INFO/WARNING/ERROR 级别日志
-        • 自动限制 1000 行
+        • 自动限制 100000 行
          │
          ▼
-    log_message()  ← 写入
+    log_message()  ← 写入 (monitor.py:274)
 
 ═══════════════════════════════════════════════════════════════════════
 
     critical_errors.log (严重错误日志)
     │
-    ├─ 格式: 时间戳 - [位置] - 错误消息
+    ├─ 格式: 时间戳 - CRITICAL - 消息 [上下文]
     ├─ 示例:
-    │   2026-01-23 15:30:00 - [run_monitor] - 无法获取视频列表
+    │   2026-01-23 15:30:00 - CRITICAL - 无法获取视频列表 [上下文: 完整检查阶段]
     │   ...
     │
     └─> 用途:
         • 专门记录 CRITICAL 级别错误
         • 自动发送 Bark 通知
-        • 自动限制 500 行
+        • 自动限制 20000 行
          │
          ▼
-    log_critical_error()  ← 写入
+    log_critical_error()  ← 写入 (monitor.py:307)
 ```
 
-## 7. 通知系统
+---
+
+## 6. 通知系统
 
 ```
 ═══════════════════════════════════════════════════════════════════════
@@ -949,97 +773,102 @@ monitor.py:794
 
 ┌─────────────────────────────────────────────────────────────────────┐
 │ send_bark_push() - 通用 Bark 推送方法                               │
-│ monitor.py:308                                                      │
+│ monitor.py:365                                                      │
 └─────────────────────────────────────────────────────────────────────┘
     │
+    ├─ 参数
+    │   ├─ title: 通知标题
+    │   ├─ body: 通知内容
+    │   ├─ level: 通知级别 ("active", "timeSensitive", "critical")
+    │   ├─ sound: 提示音
+    │   ├─ group: 分组
+    │   ├─ icon: 图标URL
+    │   ├─ url: 点击跳转URL
+    │   └─ call: 是否来电提醒
+    │
     ├─ 构造请求 URL
-    │   └─> url = f"{bark_base_url}/{bark_device_key}/{title}/{body}"
-    │       • base_url: "https://api.day.app"
-    │       • device_key: 从环境变量读取
-    │       • title: 通知标题 (URL 编码)
-    │       • body: 通知内容 (URL 编码)
+    │   └─> base_url = f"{bark_base_url}/{bark_device_key}/{title}/{body}"
+    │
+    ├─ 添加参数
+    │   └─> if level != "active": params.append(f"level={level}")
+    │   └─> if sound: params.append(f"sound={sound}")
+    │   └─> if call: params.append("call=1")
+    │   └─> if volume and level == "critical": params.append(f"volume={volume}")
+    │   └─> if group: params.append(f"group={group}")
+    │   └─> if icon: params.append(f"icon={icon}")
+    │   └─> if url: params.append(f"url={url}")
+    │   └─> if is_archive: params.append("isArchive=1")
     │
     ├─ 发送 GET 请求
-    │   └─> requests.get(url, timeout=10)
+    │   └─> requests.get(full_url, timeout=30)
     │
-    ├─ 处理响应
-    │   ├─ 成功: status_code == 200
-    │   │   └─> log_info("Bark 通知已发送")
-    │   │
-    │   └─ 失败: status_code != 200
-    │       └─> log_warning(f"Bark 通知发送失败: {status_code}")
-    │
-    └─ 异常处理
-        └─> except requests.RequestException:
-            └─> log_warning(f"Bark 通知发送异常: {e}")
+    └─ 返回结果
+        └─> return response.status_code == 200
 
 ┌─────────────────────────────────────────────────────────────────────┐
 │ notify_new_videos() - 新视频通知                                    │
-│ monitor.py:421                                                      │
+│ monitor.py:416                                                      │
 └─────────────────────────────────────────────────────────────────────┘
     │
     ├─ 参数
     │   ├─ count: 新视频数量
     │   └─ has_new_parts: 是否包含新分片
     │
-    ├─ 构造通知标题
-    │   └─> title = f"{self.bark_app_title} - 发现 {count} 个新视频"
-    │
     ├─ 构造通知内容
-    │   └─> body = "B站有新视频发布！"
-    │       if has_new_parts:
-    │           body += " (包含新分片)"
+    │   └─> body = f"发现 {count} 个新视频{'(含新分片)' if has_new_parts else ''}等待备份"
     │
-    ├─ 发送 Bark 推送
-    │   └─> send_bark_push(title, body)
-    │
-    ├─ 更新 memory_urls
-    │   └─> memory_urls.extend(gist_missing_urls)
-    │
-    └─ 同步到 GitHub Gist
-        └─> sync_to_gist()
-            ├─ 构造 Gist 更新请求
-            │   {
-            │     "files": {
-            │       "bilibili_videos.txt": {
-            │         "content": "\n".join(memory_urls)
-            │       }
-            │     }
-            │   }
-            │
-            ├─ PATCH https://api.github.com/gists/{GIST_ID}
-            │
-            └─ 处理响应
-                ├─ 成功: log_info("已同步到 Gist")
-                └─ 失败: log_warning("Gist 同步失败")
+    └─ 发送 Bark 推送
+        └─> send_bark_push(
+                title=self.bark_app_title,
+                body=body,
+                level="timeSensitive",
+                sound="minuet",
+                group="新视频"
+            )
 
 ┌─────────────────────────────────────────────────────────────────────┐
-│ log_critical_error() - 严重错误通知                                  │
-│ monitor.py:366                                                      │
+│ notify_error() - 普通错误通知                                       │
+│ monitor.py:428                                                      │
 └─────────────────────────────────────────────────────────────────────┘
     │
-    ├─ 参数
-    │   ├─ message: 错误消息
-    │   ├─ location: 错误位置 (函数名)
-    │   └─ send_notification: 是否发送 Bark 通知
+    └─> send_bark_push(
+            title=f"{self.bark_app_title} - 错误",
+            body=message,
+            level="active",
+            group="错误"
+        )
+
+┌─────────────────────────────────────────────────────────────────────┐
+│ notify_critical_error() - 严重错误通知                              │
+│ monitor.py:437                                                      │
+└─────────────────────────────────────────────────────────────────────┘
     │
-    ├─ 写入 critical_errors.log
-    │   └─> with open(critical_log_file, "a", encoding="utf-8") as f:
-    │           f.write(f"{timestamp} - [{location}] - {message}\n")
+    └─> send_bark_push(
+            title=f"⚠️ {self.bark_app_title} - 严重错误",
+            body=message + context,
+            level="critical",
+            sound="alarm",
+            volume=8,
+            call=True,
+            group="严重错误"
+        )
+
+┌─────────────────────────────────────────────────────────────────────┐
+│ notify_service_issue() - 服务异常通知                               │
+│ monitor.py:451                                                      │
+└─────────────────────────────────────────────────────────────────────┘
     │
-    ├─ 限制日志文件大小 (500 行)
-    │   └─> 读取所有行，保留最后 500 行
-    │
-    ├─ 发送 Bark 通知 (如果 send_notification=True)
-    │   └─> title = "⚠️ 监控脚本严重错误"
-    │   └─> body = f"[{location}] {message}"
-    │   └─> send_bark_push(title, body)
-    │
-    └─ 记录到主日志
-        └─> log_error(f"严重错误: {message}")
+    └─> send_bark_push(
+            title=f"{self.bark_app_title} - 服务异常",
+            body=message,
+            level="timeSensitive",
+            group="服务异常"
+        )
 ```
 
-## 8. 错误处理机制
+---
+
+## 7. 错误处理机制
 
 ```
 ═══════════════════════════════════════════════════════════════════════
@@ -1056,7 +885,7 @@ monitor.py:794
     │   ├─ Bark 通知发送失败
     │   │   └─> log_warning("Bark 通知发送失败")
     │   │
-    │   ├─ GitHub Gist 同步失败
+    │   ├─ GitHub Gist 同步失败 (但有内存数据)
     │   │   └─> log_warning("Gist 同步失败")
     │   │
     │   ├─ 配置文件读写失败
@@ -1145,7 +974,9 @@ monitor.py:794
             • 重置临时状态
 ```
 
-## 9. 并发处理机制
+---
+
+## 8. 并发处理机制
 
 ```
 ═══════════════════════════════════════════════════════════════════════
@@ -1154,27 +985,30 @@ monitor.py:794
 
 ┌─────────────────────────────────────────────────────────────────────┐
 │ get_all_videos_parallel() - 并发获取所有视频的分片信息              │
-│ monitor.py:1609                                                     │
+│ monitor.py:1641                                                     │
 └─────────────────────────────────────────────────────────────────────┘
     │
     ├─ 参数
     │   └─> video_urls: list[str] - 视频 URL 列表
     │
+    ├─ 创建临时目录
+    │   └─> Path(self.tmp_outputs_dir).mkdir(exist_ok=True)
+    │
     ├─ 创建线程池
-    │   └─> with ThreadPoolExecutor(max_workers=10) as executor:
-    │       • 最多 10 个并发线程
+    │   └─> with ThreadPoolExecutor(max_workers=5) as executor:
+    │       • 最多 5 个并发线程
     │       • 自动管理线程生命周期
     │
     ├─ 提交任务
-    │   └─> futures = {
-    │           executor.submit(get_video_parts, url): url
+    │   └─> future_to_url = {
+    │           executor.submit(self.get_video_parts, url): url
     │           for url in video_urls
     │       }
     │       • 为每个 URL 创建一个异步任务
     │       • 返回 {Future: URL} 映射
     │
     ├─ 收集结果
-    │   └─> for future in as_completed(futures):
+    │   └─> for future in as_completed(future_to_url):
     │           │
     │           ├─ 获取分片信息
     │           │   └─> parts = future.result()
@@ -1186,14 +1020,14 @@ monitor.py:794
     │           │
     │           └─ 异常处理
     │               └─> except Exception:
-    │                   └─> log_warning(f"获取视频分片失败: {url}")
+    │                   └─> log_warning(f"处理分片出错: {url}")
     │
     └─ 返回结果
         └─> return all_parts (所有分片的扁平列表)
 
 ┌─────────────────────────────────────────────────────────────────────┐
 │ get_video_parts() - 获取单个视频的分片信息                          │
-│ monitor.py:1572                                                     │
+│ monitor.py:1614                                                     │
 └─────────────────────────────────────────────────────────────────────┘
     │
     ├─ 参数
@@ -1202,24 +1036,15 @@ monitor.py:794
     ├─ 执行 yt-dlp 获取分片信息
     │   └─> run_yt_dlp([
     │           "--cookies", self.cookies_file,
-    │           "--print", "playlist_count",
+    │           "--flat-playlist",
+    │           "--print", "%(webpage_url)s",
     │           video_url
     │       ])
-    │       • playlist_count: 视频的分片数量
+    │       • 返回视频的所有分片 URL (如果有)
     │
-    ├─ 解析分片数
-    │   └─> part_count = int(stdout.strip()) if stdout else 0
-    │
-    ├─ 生成分片 URL
-    │   └─> if part_count > 1:
-    │           parts = []
-    │           for i in range(1, part_count + 1):
-    │               # B站分片 URL 格式: ?p=1, ?p=2, ...
-    │               part_url = f"{video_url}?p={i}"
-    │               parts.append(part_url)
-    │           return parts
-    │       else:
-    │           return [video_url]  # 无分片，返回原 URL
+    ├─ 解析输出
+    │   └─> if success and stdout:
+    │       • return [line.strip() for line in stdout.split("\n")]
     │
     └─ 返回结果
         └─> return parts (分片 URL 列表)
@@ -1229,12 +1054,12 @@ monitor.py:794
 └─────────────────────────────────────────────────────────────────────┘
     │
     ├─ 并发控制
-    │   • max_workers=10: 平衡并发度和资源占用
+    │   • max_workers=5: 平衡并发度和资源占用
     │   • 避免过多并发导致 B站限流
     │
     ├─ 超时处理
-    │   • yt-dlp 默认超时: 60 秒
-    │   • requests 超时: 10 秒
+    │   • yt-dlp: 默认 300 秒
+    │   • requests: 30 秒
     │
     ├─ 资源管理
     │   • with 语句自动管理线程池
@@ -1245,7 +1070,9 @@ monitor.py:794
         • 异常被捕获并记录，不会传播
 ```
 
-## 10. 工具方法与辅助功能
+---
+
+## 9. 工具方法与辅助功能
 
 ```
 ═══════════════════════════════════════════════════════════════════════
@@ -1254,11 +1081,12 @@ monitor.py:794
 
 ┌─────────────────────────────────────────────────────────────────────┐
 │ run_yt_dlp() - 执行 yt-dlp 命令                                     │
-│ monitor.py:272                                                      │
+│ monitor.py:1469                                                     │
 └─────────────────────────────────────────────────────────────────────┘
     │
     ├─ 参数
-    │   └─> args: list[str] - yt-dlp 命令行参数
+    │   ├─ command_args: list[str] - yt-dlp 命令行参数
+    │   └─ timeout: int - 超时时间 (默认300秒)
     │
     ├─ 查找 yt-dlp 可执行文件
     │   ├─ 首次调用: shutil.which("yt-dlp")
@@ -1266,76 +1094,166 @@ monitor.py:794
     │   └─> 重复使用: 直接使用缓存路径
     │
     ├─ 构造完整命令
-    │   └─> cmd = [yt_dlp_path] + args
-    │       • 例如: ["yt-dlp", "--cookies", "cookies.txt", ...]
+    │   └─> cmd = [yt_dlp_path, *command_args]
     │
     ├─ 执行命令
     │   └─> subprocess.run(
     │           cmd,
     │           capture_output=True,
     │           text=True,
-    │           check=False,
-    │           timeout=120
+    │           timeout=timeout,
+    │           encoding="utf-8",
+    │           check=False
     │       )
-    │       • capture_output=True: 捕获 stdout 和 stderr
-    │       • timeout=120: 2 分钟超时
     │
     ├─ 记录执行时间
-    │   └─> last_ytdlp_duration = elapsed_time
-    │       • 用于 yt-dlp 阻抗因子计算
+    │   └─> self.last_ytdlp_duration = elapsed_time
+    │   └─> if returncode == 0:
+    │       • self.normal_ytdlp_duration = 0.9 × normal + 0.1 × elapsed
     │
     └─ 返回结果
         └─> return (success, stdout, stderr)
-            • success: returncode == 0
-            • stdout: 标准输出内容
-            • stderr: 标准错误内容
 
 ┌─────────────────────────────────────────────────────────────────────┐
 │ save_real_upload_timestamps() - 保存真实上传时间                    │
-│ monitor.py:1541                                                     │
+│ monitor.py:598                                                      │
 └─────────────────────────────────────────────────────────────────────┘
     │
     ├─ 参数
-    │   └─> urls: list[str] - 新视频 URL 列表
+    │   └─> urls: set[str] - 新视频 URL 集合
+    │
+    ├─ 确保 mtime.txt 存在
+    │   └─> if not mtime_file_path.exists():
+    │       • generate_mtime_file("save_real_upload_timestamps")
     │
     ├─ 遍历每个 URL
     │   └─> for url in urls:
     │       │
     │       ├─ 获取上传时间
     │       │   └─> upload_timestamp = get_video_upload_time(url)
-    │       │       • 调用 yt-dlp 的 --print "%(timestamp)" 选项
+    │       │       • 调用 yt-dlp 的 --print "%(timestamp)s|%(upload_date)s"
     │       │       • 返回 Unix 时间戳
     │       │
-    │       ├─ 写入 mtime.txt
-    │       │   └─> with open(mtime_file, "a", encoding="utf-8") as f:
-    │       │           f.write(f"{upload_timestamp}\n")
+    │       ├─ 降级处理
+    │       │   └─> if not upload_timestamp:
+    │       │       • timestamps.append(current_time)
     │       │
-    │       └─ 异常处理
-    │           └─> except Exception:
-    │               └─> log_warning(f"无法获取视频上传时间: {url}")
+    │       └─ 成功获取
+    │           └─> timestamps.append(upload_timestamp)
     │
-    └─ 开发模式处理
-        └─> if dev_mode:
-            • 不写入文件，仅记录到 sandbox_miss_history
+    ├─ 排序并写入文件
+    │   └─> sorted_timestamps = sorted(timestamps)
+    │   └─> with mtime_file_path.open("a") as f:
+    │       • f.writelines(f"{ts}\n" for ts in sorted_timestamps)
+    │
+    └─ 限制文件大小
+        └─> limit_file_lines(self.mtime_file, 100000)
+
+┌─────────────────────────────────────────────────────────────────────┐
+│ generate_mtime_file() - 生成 mtime.txt                              │
+│ monitor.py:747                                                      │
+└─────────────────────────────────────────────────────────────────────┘
+    │
+    ├─ 检查文件是否存在
+    │   └─> if mtime_file_path.exists() and size > 0:
+    │       • return True
+    │
+    ├─ 最多尝试 3 次
+    │   └─> for attempt in range(1, 4):
+    │       │
+    │       ├─ 记录尝试次数
+    │       │   └─> log_info(f"mtime.txt 第 {attempt} 次尝试生成")
+    │       │
+    │       ├─ 调用创建方法
+    │       │   └─> if create_mtime_from_info_json():
+    │       │       • return True
+    │       │
+    │       └─ 继续下一次尝试
+    │
+    └─ 3次都失败
+        └─> log_critical_error("经过 3 次尝试仍无法生成 mtime.txt")
+        └─> return False
+
+┌─────────────────────────────────────────────────────────────────────┐
+│ create_mtime_from_info_json() - 通过 info.json 创建                │
+│ monitor.py:642                                                      │
+└─────────────────────────────────────────────────────────────────────┘
+    │
+    ├─ 创建临时目录
+    │   └─> temp_info_dir = Path("temp_info_json")
+    │   └─> temp_info_dir.mkdir(exist_ok=True)
+    │
+    ├─ 获取所有视频的 info.json
+    │   └─> run_yt_dlp([
+    │           "--write-info-json",
+    │           "--skip-download",
+    │           "--output", f"{temp_info_dir}/%(id)s.%(ext)s",
+    │           ...
+    │       ])
+    │
+    ├─ 提取时间戳
+    │   └─> for info_file in temp_info_dir.glob("*.info.json"):
+    │       • 读取 JSON 数据
+    │       • 提取 timestamp 或 upload_date
+    │       • 写入临时文件
+    │
+    ├─ 排序时间戳
+    │   ├─ 优先使用系统 sort 命令
+    │   │   └─> subprocess.run(["sort", "-n", temp_file])
+    │   │
+    │   └─ 降级使用内存排序
+    │       └─> timestamps.sort()
+    │
+    ├─ 写入 mtime.txt
+    │   └─> mtime_file_path.write_text(sorted_content)
+    │
+    └─ 清理临时文件
+        └─> shutil.rmtree(temp_info_dir)
+
+┌─────────────────────────────────────────────────────────────────────┐
+│ get_video_upload_time() - 获取视频上传时间                          │
+│ monitor.py:558                                                      │
+└─────────────────────────────────────────────────────────────────────┘
+    │
+    ├─ 参数
+    │   └─> video_url: str - 视频 URL
+    │
+    ├─ 执行 yt-dlp
+    │   └─> run_yt_dlp([
+    │           "--print", "%(timestamp)s|%(upload_date)s",
+    │           "--no-download",
+    │           video_url
+    │       ])
+    │
+    ├─ 解析输出
+    │   ├─ 优先使用 timestamp
+    │   │   └─> if parts[0] and parts[0] != "NA":
+    │   │       • return int(parts[0])
+    │   │
+    │   └─ 降级使用 upload_date
+    │       └─> if parts[1] and parts[1] != "NA":
+    │           • parsed_dt = datetime.strptime(parts[1], "%Y%m%d")
+    │           • return int(parsed_dt.timestamp())
+    │
+    └─ 失败返回 None
 
 ┌─────────────────────────────────────────────────────────────────────┐
 │ cleanup() - 清理临时资源                                            │
-│ monitor.py:1636                                                     │
+│ monitor.py:1668                                                     │
 └─────────────────────────────────────────────────────────────────────┘
     │
     ├─ 删除临时输出目录
-    │   └─> tmp_dir = Path(self.tmp_outputs_dir)
-    │   └─> if tmp_dir.exists():
-    │       └─> shutil.rmtree(tmp_dir)
-    │           • 递归删除整个目录
+    │   └─> tmp_outputs_path = Path(self.tmp_outputs_dir)
+    │   └─> if tmp_outputs_path.exists():
+    │       • shutil.rmtree(tmp_outputs_path)
     │
-    └─ 其他清理操作 (可扩展)
-        • 关闭文件句柄
-        • 重置临时状态
+    └─ 开发模式额外清理
+        └─> if self.dev_mode:
+            • 删除 temp_info_json 目录
 
 ┌─────────────────────────────────────────────────────────────────────┐
 │ signal_handler() - 信号处理器                                       │
-│ monitor.py:1453                                                     │
+│ monitor.py:264                                                      │
 └─────────────────────────────────────────────────────────────────────┘
     │
     ├─ 注册信号
@@ -1344,7 +1262,8 @@ monitor.py:794
     │
     ├─ 信号处理流程
     │   ├─ 接收信号
-    │   ├─ log_info("收到中断信号, 正在退出...")
+    │   ├─ log_message(f"收到信号 {signum}, 正在清理并退出...")
+    │   ├─ save_known_urls() 保存状态
     │   ├─ cleanup() 清理资源
     │   └─ sys.exit(0) 优雅退出
     │
@@ -1355,22 +1274,72 @@ monitor.py:794
 
 ┌─────────────────────────────────────────────────────────────────────┐
 │ get_next_check_time() - 获取下次检查时间                            │
-│ monitor.py:1627                                                     │
+│ monitor.py:460                                                      │
 └─────────────────────────────────────────────────────────────────────┘
     │
-    ├─ 读取配置
-    │   └─> config = _load_wgmm_config()
+    ├─ 开发模式
+    │   └─> return self.sandbox_next_check_time
     │
-    ├─ 获取时间戳
-    │   └─> next_check_time = config.get("next_check_time", 0)
+    ├─ 正常模式
+    │   └─> config_file = Path(self.wgmm_config_file)
+    │   └─> if config_file.exists():
+    │       • config = json.loads(config_file.read_text())
+    │       • return config.get("next_check_time", 0)
+    │   └─> else:
+    │       • return 0
+    │
+    └─ 异常处理
+        └─> except Exception:
+            • log_warning("读取next_check_time失败")
+            • return 0
+
+┌─────────────────────────────────────────────────────────────────────┐
+│ save_next_check_time() - 保存下次检查时间                           │
+│ monitor.py:477                                                      │
+└─────────────────────────────────────────────────────────────────────┘
+    │
+    ├─ 开发模式
+    │   └─> self.sandbox_next_check_time = next_check_timestamp
+    │
+    ├─ 正常模式
+    │   └─> config_file = Path(self.wgmm_config_file)
+    │   └─> if config_file.exists():
+    │       • config = json.loads(config_file.read_text())
+    │   └─> config["next_check_time"] = next_check_timestamp
+    │   └─> config_file.write_text(json.dumps(config, ...))
+    │
+    └─ 异常处理
+        └─> log_critical_error("保存next_check_time失败")
+
+┌─────────────────────────────────────────────────────────────────────┐
+│ _format_frequency_interval() - 格式化时间间隔                       │
+│ monitor.py:1106                                                     │
+└─────────────────────────────────────────────────────────────────────┘
+    │
+    ├─ 参数
+    │   └─> seconds: float - 间隔秒数
+    │
+    ├─ 分解时间单位
+    │   ├─ polling_days = int(total_seconds // 86400)
+    │   ├─ polling_hours = int((total_seconds % 86400) // 3600)
+    │   ├─ polling_minutes = int((total_seconds % 3600) // 60)
+    │   └─ polling_seconds = int(total_seconds % 60)
+    │
+    ├─ 构造格式化字符串
+    │   └─> parts = []
+    │   └─> if polling_days > 0: parts.append(f"{polling_days} 天")
+    │   └─> if polling_hours > 0: parts.append(f"{polling_hours} 小时")
+    │   └─> if polling_minutes > 0: parts.append(f"{polling_minutes} 分钟")
+    │   └─> if polling_seconds > 0 or not parts:
+    │       • parts.append(f"{polling_seconds} 秒")
     │
     └─ 返回结果
-        └─> return next_check_time
-            • 0: 未设置，立即检查
-            • >0: 等待到该时间戳
+        └─> return " ".join(parts)
 ```
 
-## 11. 性能与优化
+---
+
+## 10. 性能与优化
 
 ```
 ═══════════════════════════════════════════════════════════════════════
@@ -1381,24 +1350,25 @@ monitor.py:794
 │ WGMM 算法性能优化                                                   │
 └─────────────────────────────────────────────────────────────────────┘
     │
-    ├─ 向量化计算 (monitor.py:1932)
+    ├─ 向量化计算 (monitor.py:1740)
     │   ├─ 使用 NumPy 数组操作
     │   │   • 避免显式 Python 循环
     │   │   • 利用 C 层级的性能
     │   │
-    │   └─ _batch_calculate_scores() 批处理
-    │       • 一次性计算 360 个时间点
+    │   └─ _batch_calculate_scores() 批处理 (monitor.py:1969)
+    │       • 一次性计算数百个时间点
     │       • 时间复杂度: O(n) = O(历史事件数)
     │       • 典型执行时间: ~10ms
     │
-    ├─ 内存管理 (monitor.py:952)
-    │   ├─ prune_old_data() 自动剪枝
-    │   │   • 移除权重 < 0.01 的历史事件
+    ├─ 内存管理 (monitor.py:903)
+    │   ├─ _prune_old_data() 自动剪枝
+    │   │   • 移除权重 < threshold 的历史事件
+    │   │   • threshold = max(0.0001, 0.001 × (100 / (total_events + 50)))
     │   │   • 保持算法 O(n) 复杂度
     │   │
     │   └─ 使用生成器而非列表
-    │       • filter_outliers() 返回迭代器
-    │       • 按需计算，减少内存占用
+    │       • _filter_outliers() 返回 NumPy 数组
+    │       • 减少内存占用
     │
     └─ 缓存优化
         ├─ yt-dlp 路径缓存
@@ -1414,17 +1384,17 @@ monitor.py:794
 └─────────────────────────────────────────────────────────────────────┘
     │
     ├─ 并发控制
-    │   • ThreadPoolExecutor(max_workers=10)
+    │   • ThreadPoolExecutor(max_workers=5)
     │   • 平衡并发度和 B站限流风险
     │
     ├─ 超时设置
-    │   • yt-dlp: 120 秒
-    │   • requests: 10 秒
+    │   • yt-dlp: 300 秒
+    │   • requests: 30 秒
     │   • 避免长时间阻塞
     │
     ├─ 三层检测架构
-    │   ├─ 第一层: 仅检查最新 10 个视频
-    │   ├─ 第二层: 仅获取视频数量
+    │   ├─ 第一层: 仅检查已知多P视频的下一分片
+    │   ├─ 第二层: 仅获取第一个视频ID
     │   └─ 第三层: 完整扫描 (仅在前两层触发时执行)
     │
     └─ 请求节省率
@@ -1436,9 +1406,9 @@ monitor.py:794
 └─────────────────────────────────────────────────────────────────────┘
     │
     ├─ 日志文件大小限制
-    │   ├─ urls.log: 1000 行
-    │   ├─ critical_errors.log: 500 行
-    │   └─ 防止磁盘空间耗尽
+    │   ├─ urls.log: 100000 行
+    │   ├─ critical_errors.log: 20000 行
+    │   └─ mtime.txt: 100000 行
     │
     ├─ 批量写入
     │   • save_known_urls(): 一次性写入所有 URL
@@ -1457,8 +1427,8 @@ monitor.py:794
     │   • 内存: <1MB
     │
     ├─ 三层检测
-    │   • 第一层: ~2秒 (10 个视频)
-    │   • 第二层: ~1秒 (仅数量)
+    │   • 第一层: ~1秒 (数个多P视频)
+    │   • 第二层: ~1秒 (仅第一个视频ID)
     │   • 第三层: ~10秒 (100 个视频，含分片)
     │
     ├─ 系统资源占用
@@ -1467,12 +1437,14 @@ monitor.py:794
     │   • 网络: 取决于视频数量
     │
     └─ 并发性能
-        • 10 个并发线程
+        • 5 个并发线程
         • 单个视频获取: ~1秒
-        • 100 个视频总耗时: ~10秒
+        • 100 个视频总耗时: ~20秒
 ```
 
-## 12. 代码位置快速索引
+---
+
+## 11. 代码位置快速索引
 
 ```
 ═══════════════════════════════════════════════════════════════════════
@@ -1480,68 +1452,100 @@ monitor.py:794
 ═══════════════════════════════════════════════════════════════════════
 
 【程序入口与初始化】
-monitor.py:26      - parse_arguments() - 命令行参数解析
-monitor.py:37      - load_env_file() - 环境变量加载
-monitor.py:58      - VideoMonitor 类定义
-monitor.py:74      - __init__() - 初始化监控系统
-monitor.py:2379    - main() - 程序入口点
-monitor.py:2438    - if __name__ == "__main__" - 启动
+monitor.py:29       - parse_arguments() - 命令行参数解析
+monitor.py:40       - load_env_file() - 环境变量加载
+monitor.py:61       - VideoMonitor 类定义
+monitor.py:75       - __init__() - 初始化监控系统
+monitor.py:2236     - main() - 程序入口点
+monitor.py:2295     - if __name__ == "__main__" - 启动
 
 【主监控循环】
-monitor.py:2052    - run_monitor() - 主监控流程
-monitor.py:1658    - wait_for_next_check() - 等待下次检查
+monitor.py:2084     - run_monitor() - 主监控流程
+monitor.py:1690     - wait_for_next_check() - 等待下次检查
 
 【三层检测架构】
-monitor.py:1515    - check_potential_new_parts() - 第一层: 分片预检查
-monitor.py:1477    - quick_precheck() - 第二层: 快速 ID 检查
-monitor.py:2100    - 第三层: 完整深度扫描 (run_monitor 内)
+monitor.py:1548     - check_potential_new_parts() - 第一层: 分片预检查
+monitor.py:1510     - quick_precheck() - 第二层: 快速 ID 检查
+monitor.py:2084     - 第三层: 完整深度扫描 (run_monitor 内)
 
 【WGMM 核心算法】
-monitor.py:794     - adjust_check_frequency() - WGMM 主函数
-monitor.py:1827    - _calculate_point_score() - 计算单个时间点得分
-monitor.py:1932    - 最终得分 = 正向 - 0.3 × 负向
-monitor.py:1958    - _batch_calculate_scores() - 批量计算得分
-monitor.py:1667    - _get_time_components() - 时间特征编码
-monitor.py:1053    - _calculate_adaptive_lambda() - Lambda 自适应
-monitor.py:1127    - learn_dimension_weights() - 维度权重学习
-monitor.py:1195    - learn_adaptive_sigmas() - Sigma 学习
-
-【Phase 1 在线学习】
-monitor.py:2204    - OnlineFeedbackLearner 类定义
-monitor.py:2223    - update_from_feedback() - 在线反馈学习
-monitor.py:2290    - EWMAAnomalyDetector 类定义
-monitor.py:2314    - check_anomaly() - EWMA 异常检测
+monitor.py:1232     - adjust_check_frequency() - WGMM 主函数
+monitor.py:1849     - _calculate_point_score() - 计算单个时间点得分
+monitor.py:1969     - _batch_calculate_scores() - 批量计算得分
+monitor.py:1740     - _vectorized_time_features_numpy() - 时间特征编码
+monitor.py:1138     - _calculate_adaptive_lambda() - Lambda 自适应
+monitor.py:993      - _learn_dimension_weights() - 维度权重学习
+monitor.py:1062     - _learn_adaptive_sigmas() - Sigma 学习
+monitor.py:858      - _filter_outliers() - 过滤异常值
+monitor.py:903      - _prune_old_data() - 剪枝旧数据
 
 【数据管理】
-monitor.py:129     - sync_urls_from_gist() - 同步 Gist URL
-monitor.py:142     - load_known_urls() - 加载本地已知 URL
-monitor.py:157     - save_known_urls() - 保存本地已知 URL
-monitor.py:1541    - save_real_upload_timestamps() - 保存上传时间
-monitor.py:233     - _load_wgmm_config() - 加载 WGMM 配置
-monitor.py:244     - _save_wgmm_config() - 保存 WGMM 配置
+monitor.py:501      - sync_urls_from_gist() - 同步 Gist URL
+monitor.py:142      - load_known_urls() - 加载本地已知 URL
+monitor.py:157      - save_known_urls() - 保存本地已知 URL
+monitor.py:598      - save_real_upload_timestamps() - 保存上传时间
+monitor.py:208      - _load_wgmm_config() - 加载 WGMM 配置
+monitor.py:251      - _save_wgmm_config() - 保存 WGMM 配置
+monitor.py:827      - _load_history_file() - 加载历史文件
+monitor.py:789      - _load_miss_history() - 加载失败历史
+monitor.py:806      - _save_miss_history() - 保存失败历史
 
 【通知系统】
-monitor.py:308     - send_bark_push() - Bark 推送通知
-monitor.py:421     - notify_new_videos() - 新视频通知
-monitor.py:366     - log_critical_error() - 严重错误通知
+monitor.py:365      - send_bark_push() - Bark 推送通知
+monitor.py:416      - notify_new_videos() - 新视频通知
+monitor.py:428      - notify_error() - 普通错误通知
+monitor.py:437      - notify_critical_error() - 严重错误通知
+monitor.py:451      - notify_service_issue() - 服务异常通知
 
 【工具方法】
-monitor.py:272     - run_yt_dlp() - 执行 yt-dlp 命令
-monitor.py:1572    - get_video_parts() - 获取视频分片
-monitor.py:1609    - get_all_videos_parallel() - 并发获取视频信息
-monitor.py:1636    - cleanup() - 清理临时资源
-monitor.py:1453    - signal_handler() - 信号处理器
-monitor.py:1627    - get_next_check_time() - 获取下次检查时间
+monitor.py:1469     - run_yt_dlp() - 执行 yt-dlp 命令
+monitor.py:1614     - get_video_parts() - 获取视频分片
+monitor.py:1641     - get_all_videos_parallel() - 并发获取视频信息
+monitor.py:1668     - cleanup() - 清理临时资源
+monitor.py:264      - signal_handler() - 信号处理器
+monitor.py:460      - get_next_check_time() - 获取下次检查时间
+monitor.py:477      - save_next_check_time() - 保存下次检查时间
+monitor.py:558      - get_video_upload_time() - 获取视频上传时间
+monitor.py:747      - generate_mtime_file() - 生成 mtime.txt
+monitor.py:642      - create_mtime_from_info_json() - 通过 info.json 创建
+monitor.py:1106     - _format_frequency_interval() - 格式化时间间隔
 
 【日志与错误处理】
-monitor.py:385     - log_message() - 统一日志记录
-monitor.py:342     - log_info() - INFO 级别日志
-monitor.py:349     - log_warning() - WARNING 级别日志
-monitor.py:356     - log_error() - ERROR 级别日志
+monitor.py:274      - log_message() - 统一日志记录
+monitor.py:288      - log_info() - INFO 级别日志
+monitor.py:292      - log_warning() - WARNING 级别日志
+monitor.py:296      - log_error() - ERROR 级别日志
+monitor.py:307      - log_critical_error() - CRITICAL 级别日志
+monitor.py:342      - limit_file_lines() - 限制日志文件行数
+
+【配置管理】
+monitor.py:1194     - _initialize_wgmm_config() - 初始化 WGMM 配置
+monitor.py:956      - _calculate_interval_stats() - 计算间隔统计量
+
+【辅助方法】
+monitor.py:1734     - _get_local_timezone_offset() - 获取本地时区偏移
+monitor.py:1802     - _get_raw_time_components() - 提取原始时间维度
+
+【类常量定义】
+monitor.py:71       - DEFAULT_CHECK_INTERVAL - 默认检查间隔
+monitor.py:72       - FALLBACK_INTERVAL - 降级检查间隔
+monitor.py:73       - MAX_RETRY_ATTEMPTS - 最大重试次数
+
+【统计信息】
+• 总行数: 2296 行
+• 类数量: 1 个 (VideoMonitor)
+• 方法数量: 54 个
+• 函数数量: 2 个 (parse_arguments, load_env_file, main)
 ```
 
 ---
 
-**文档生成时间**: 2026-01-23
-**对应代码版本**: monitor.py (2439 行)
-**适用版本**: v1.x - WGMM Phase 1 完整实现
+## 版本历史
+
+- **v2.0** (2026-01-24): 基于2296行代码重构，新增11个核心类方法，完整更新文档
+- **v1.0** (2026-01-23): 初始版本，基于2439行代码（包含Phase 1实验性功能）
+
+---
+
+**文档维护**: 请在代码重大变更后及时更新本文档
+**问题反馈**: 请通过 GitHub Issues 报告文档问题
