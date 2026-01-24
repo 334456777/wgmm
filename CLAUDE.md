@@ -15,6 +15,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 **重要架构决策**:
 - **ADR 001**: 保持 Python 实现，不迁移到 Go（见 `docs/adr/001-keep-python-implementation.md`）
 - **ADR 002**: 不引入 X-Algorithm 推荐系统技术（见 `docs/adr/002-do-not-adopt-x-algorithm-techniques.md`）
+- **ADR 003**: 采用单体架构，拒绝 Pipeline 模块化重构（见 `docs/adr/003-keep-monolithic-architecture.md`）
 
 在提出重大架构变更前，请务必阅读这些 ADR 文档和 `CONTRIBUTING.md`。
 
