@@ -88,10 +88,16 @@ class VideoMonitor:
 
 		self.bark_device_key: str = os.getenv("BARK_DEVICE_KEY", "")
 		self.bark_base_url: str = "https://api.day.app"
-		self.bark_app_title: str = "菠萝视频备份"
+		self.bark_app_title: str = os.getenv("BARK_APP_TITLE", "")
 
 		if not all(
-			[self.GIST_ID, self.GITHUB_TOKEN, self.BILIBILI_UID, self.bark_device_key],
+			[
+				self.GIST_ID,
+				self.GITHUB_TOKEN,
+				self.BILIBILI_UID,
+				self.bark_device_key,
+				self.bark_app_title,
+			],
 		):
 			print("缺少必要的环境变量", file=sys.stderr)
 			sys.exit(1)
