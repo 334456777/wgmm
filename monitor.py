@@ -1229,6 +1229,107 @@ class VideoMonitor:
 
 		return dimension_weights, sigmas, is_manual_run
 
+	def _scan_future_peak(
+		self,
+		current_timestamp: int,
+		base_frequency_sec: float,
+		lookahead_days: int,
+		gaussian_width: float,
+		current_score: float,
+		positive_events: list,
+		negative_events: list,
+		dimension_weights: dict,
+		pos_lambda: float,
+		neg_lambda: float,
+		sigmas: dict,
+		resistance_coefficient: float,
+	) -> tuple[float | None, float]:
+		"""扫描未来时间段寻找最佳发布峰值.
+
+		策略:
+		1. 在未来15天内按步长扫描时间点
+		2. 使用 WGMM 算法批量计算每个时间点的得分
+		3. 通过梯度检测找到局部峰值点
+		4. 过滤低得分和高梯度的峰值, 确保找到可靠的高峰
+
+		Args:
+			current_timestamp: 当前时间戳
+			base_frequency_sec: 基础检查间隔(秒)
+			lookahead_days: 向前预测天数
+			gaussian_width: 高斯核宽度(秒)
+			current_score: 当前时间点的得分
+			positive_events: 正向事件列表
+			negative_events: 负向事件列表
+			dimension_weights: 维度权重字典
+			pos_lambda: 正向事件衰减率
+			neg_lambda: 负向事件衰减率
+			sigmas: Sigma 参数字典
+			resistance_coefficient: 负向事件抑制系数
+
+		Returns:
+			(best_peak_time, best_peak_score) - 最佳峰值时间和得分, 无峰值则返回 (None, 0.0)
+
+		"""
+		seconds_in_day = 86400
+		lookahead_seconds = lookahead_days * seconds_in_day
+		lookahead_start = current_timestamp + base_frequency_sec
+		lookahead_end = current_timestamp + lookahead_seconds
+
+		min_step = float(gaussian_width * 0.25)
+		scan_start = float(np.maximum(lookahead_start, current_timestamp + 600.0))
+
+		best_peak_time = None
+		best_peak_score = 0.0
+
+		score_threshold = 0.5
+		if lookahead_end > scan_start:
+			scan_step = min_step if current_score > score_threshold else min_step * 2
+
+			scan_times = np.arange(
+				scan_start,
+				lookahead_end + scan_step,
+				scan_step,
+				dtype=np.float64,
+			)
+
+			scan_scores = self._batch_calculate_scores(
+				scan_times,
+				positive_events,
+				negative_events,
+				dimension_weights,
+				pos_lambda,
+				neg_lambda,
+				sigmas,
+				resistance_coefficient,
+			)
+
+			if len(scan_scores) > 1:
+				gradients = np.diff(scan_scores)
+				peaks_mask = (gradients[:-1] > 0) & (gradients[1:] < 0)
+
+				peak_score_threshold = 0.7
+				gradient_threshold = 0.05
+				for i in range(len(peaks_mask)):
+					if peaks_mask[i]:
+						scan_idx = i + 1
+						score_condition = scan_scores[scan_idx] > peak_score_threshold
+						gradient_condition = abs(gradients[i]) < gradient_threshold
+						if score_condition and gradient_condition:
+							peaks_mask[i] = True
+
+				peak_indices = np.where(peaks_mask)[0]
+
+				if len(peak_indices) > 0:
+					peak_scores = scan_scores[peak_indices]
+					best_idx_in_peaks = np.argmax(peak_scores)
+					best_peak_idx = peak_indices[best_idx_in_peaks]
+
+					if peak_scores[best_idx_in_peaks] > best_peak_score:
+						best_peak_score = float(peak_scores[best_idx_in_peaks])
+						best_peak_time = float(scan_times[best_peak_idx])
+
+		return best_peak_time, best_peak_score
+
 	def adjust_check_frequency(self, found_new_content: bool = False) -> None:
 		"""WGMM算法核心函数 - 根据历史数据自适应调整检查间隔.
 
@@ -1367,64 +1468,21 @@ class VideoMonitor:
 
 		base_frequency_sec = np.clip(base_interval_sec, max_interval, base_interval * 2)
 
-		lookahead_seconds = lookahead_days * seconds_in_day
-		lookahead_start = current_timestamp + base_frequency_sec
-		lookahead_end = current_timestamp + lookahead_seconds
-
 		gaussian_width = (sigmas["day"] * seconds_in_day / 24.0) * 2.0
-		min_step = float(gaussian_width * 0.25)
-
-		scan_start = float(np.maximum(lookahead_start, current_timestamp + 600.0))
-
-		best_peak_time = None
-		best_peak_score = 0.0
-
-		score_threshold = 0.5
-		if lookahead_end > scan_start:
-			scan_step = min_step if current_score > score_threshold else min_step * 2
-
-			scan_times = np.arange(
-				scan_start,
-				lookahead_end + scan_step,
-				scan_step,
-				dtype=np.float64,
-			)
-
-			scan_scores = self._batch_calculate_scores(
-				scan_times,
-				positive_events,
-				negative_events,
-				dimension_weights,
-				pos_lambda,
-				neg_lambda,
-				sigmas,
-				resistance_coefficient,
-			)
-
-			if len(scan_scores) > 1:
-				gradients = np.diff(scan_scores)
-				peaks_mask = (gradients[:-1] > 0) & (gradients[1:] < 0)
-
-				peak_score_threshold = 0.7
-				gradient_threshold = 0.05
-				for i in range(len(peaks_mask)):
-					if peaks_mask[i]:
-						scan_idx = i + 1
-						score_condition = scan_scores[scan_idx] > peak_score_threshold
-						gradient_condition = abs(gradients[i]) < gradient_threshold
-						if score_condition and gradient_condition:
-							peaks_mask[i] = True
-
-				peak_indices = np.where(peaks_mask)[0]
-
-				if len(peak_indices) > 0:
-					peak_scores = scan_scores[peak_indices]
-					best_idx_in_peaks = np.argmax(peak_scores)
-					best_peak_idx = peak_indices[best_idx_in_peaks]
-
-					if peak_scores[best_idx_in_peaks] > best_peak_score:
-						best_peak_score = float(peak_scores[best_idx_in_peaks])
-						best_peak_time = float(scan_times[best_peak_idx])
+		best_peak_time, best_peak_score = self._scan_future_peak(
+			current_timestamp=current_timestamp,
+			base_frequency_sec=base_frequency_sec,
+			lookahead_days=lookahead_days,
+			gaussian_width=gaussian_width,
+			current_score=current_score,
+			positive_events=positive_events,
+			negative_events=negative_events,
+			dimension_weights=dimension_weights,
+			pos_lambda=pos_lambda,
+			neg_lambda=neg_lambda,
+			sigmas=sigmas,
+			resistance_coefficient=resistance_coefficient,
+		)
 
 		final_frequency_sec = base_frequency_sec
 		best_peak_threshold = 0.6
