@@ -10,7 +10,7 @@ select = [
 
 ignore = [
 	"W191", "D206", "D203", "D213", "COM812", "ISC001",
-	"D", "FBT", "PLR0912", "PLR0913", "PLR0915", "C901", "RET505", "S603"
+	"D", "FBT", "PLR0912", "PLR0913", "PLR0915", "C901", "RET505", "S603", "TRY300"
 ]
 
 [tool.ruff.lint.pydocstyle]
