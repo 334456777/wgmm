@@ -244,12 +244,11 @@ class VideoMonitor:
 							if sub_key not in config[key]:
 								config[key][sub_key] = sub_value
 				return config
-			else:
-				config_file.write_text(
-					json.dumps(default_config, indent=2, ensure_ascii=False),
-					encoding="utf-8",
-				)
-				return default_config
+			config_file.write_text(
+				json.dumps(default_config, indent=2, ensure_ascii=False),
+				encoding="utf-8",
+			)
+			return default_config
 		except (OSError, json.JSONDecodeError) as e:
 			self.log_warning(f"加载WGMM配置文件失败, 使用默认配置: {e}")
 			return default_config
@@ -278,7 +277,7 @@ class VideoMonitor:
 		sys.exit(0)
 
 	def log_message(self, message: str, level: str = "INFO") -> None:
-		timestamp = dt.now(ZoneInfo("Asia/Tokyo")).strftime("%Y-%m-%d %H:%M:%S")
+		timestamp = self._get_jst_datetime_str()
 		log_entry = f"{timestamp} - {level} - {message}\n"
 
 		if self.dev_mode:
@@ -303,11 +302,10 @@ class VideoMonitor:
 		self.log_message(message, "ERROR")
 
 		if send_bark_notification:
+			timestamp = self._get_jst_datetime_str()
 			if self.notify_error(message):
-				timestamp = dt.now(ZoneInfo("Asia/Tokyo")).strftime("%Y-%m-%d %H:%M:%S")
 				print(f"{timestamp} - INFO - 错误通知已发送")
 			else:
-				timestamp = dt.now(ZoneInfo("Asia/Tokyo")).strftime("%Y-%m-%d %H:%M:%S")
 				print(f"{timestamp} - WARNING - 错误通知发送失败")
 
 	def log_critical_error(
@@ -316,7 +314,7 @@ class VideoMonitor:
 		context: str = "",
 		send_notification: bool = True,
 	) -> None:
-		timestamp = dt.now(ZoneInfo("Asia/Tokyo")).strftime("%Y-%m-%d %H:%M:%S")
+		timestamp = self._get_jst_datetime_str()
 		full_message = f"{message}"
 		if context:
 			full_message += f" [上下文: {context}]"
@@ -413,7 +411,7 @@ class VideoMonitor:
 			response = requests.get(full_url, timeout=30)
 			success = response.status_code == http_ok
 		except requests.RequestException as e:
-			timestamp = dt.now(ZoneInfo("Asia/Tokyo")).strftime("%Y-%m-%d %H:%M:%S")
+			timestamp = self._get_jst_datetime_str()
 			print(f"{timestamp} - WARNING - Bark推送失败: {e}")
 			success = False
 
@@ -474,8 +472,7 @@ class VideoMonitor:
 				file_content = config_file.read_text(encoding="utf-8")
 				config: dict[str, Any] = json.loads(file_content)
 				return config.get("next_check_time", 0)
-			else:
-				return 0
+			return 0
 		except (OSError, json.JSONDecodeError) as e:
 			self.log_warning(f"读取next_check_time失败: {e}")
 			return 0
@@ -606,28 +603,6 @@ class VideoMonitor:
 		if not new_urls:
 			return
 
-		if self.dev_mode:
-			timestamps = []
-			current_time = int(time.time())
-
-			for url in new_urls:
-				upload_time = self.get_video_upload_time(url)
-				if upload_time:
-					timestamps.append(upload_time)
-				else:
-					timestamps.append(current_time)
-
-			if timestamps:
-				self.dev_new_videos += len(new_urls)
-
-			return
-
-		mtime_file_path = Path(self.mtime_file)
-		if not mtime_file_path.exists() and not self.generate_mtime_file(
-			"save_real_upload_timestamps"
-		):
-			self.log_warning("无法创建 mtime.txt, 仍然保存时间戳")
-
 		timestamps = []
 		current_time = int(time.time())
 
@@ -636,8 +611,20 @@ class VideoMonitor:
 			if upload_time:
 				timestamps.append(upload_time)
 			else:
-				self.log_warning(f"降级使用当前时间: {url[:50]}...")
+				if not self.dev_mode:
+					self.log_warning(f"降级使用当前时间: {url[:50]}...")
 				timestamps.append(current_time)
+
+		if self.dev_mode:
+			if timestamps:
+				self.dev_new_videos += len(new_urls)
+			return
+
+		mtime_file_path = Path(self.mtime_file)
+		if not mtime_file_path.exists() and not self.generate_mtime_file(
+			"save_real_upload_timestamps"
+		):
+			self.log_warning("无法创建 mtime.txt, 仍然保存时间戳")
 
 		if timestamps:
 			sorted_timestamps = sorted(timestamps)
@@ -1417,7 +1404,7 @@ class VideoMonitor:
 			return
 
 		# 计算间隔统计量
-		base_interval, _, _default_interval, max_interval = self._calculate_interval_stats(
+		base_interval, _, _ignored, max_interval = self._calculate_interval_stats(
 			positive_events
 		)
 
@@ -1690,16 +1677,6 @@ class VideoMonitor:
 
 		if success and stdout:
 			return [line.strip() for line in stdout.split("\n") if line.strip()]
-		_success, _stdout, _stderr = self.run_yt_dlp(
-			[
-				"--cookies",
-				self.cookies_file,
-				"--flat-playlist",
-				"--print",
-				"%(webpage_url)s",
-				video_url,
-			],
-		)
 		return []
 
 	def get_all_videos_parallel(self, video_urls: list[str]) -> list[str]:
@@ -1794,6 +1771,14 @@ class VideoMonitor:
 				time.sleep(frequency_sec)
 			else:
 				self.log_info("Dev模式下跳过异常等待")
+
+	def _get_jst_timestamp(self) -> int:
+		"""获取JST时区的当前时间戳字符串(用于日志)."""
+		return int(time.time())
+
+	def _get_jst_datetime_str(self) -> str:
+		"""获取JST时区的格式化日期时间字符串(用于日志)."""
+		return dt.now(ZoneInfo("Asia/Tokyo")).strftime("%Y-%m-%d %H:%M:%S")
 
 	def _get_local_timezone_offset(self) -> float:
 		"""获取本地时区偏移量(秒)."""
