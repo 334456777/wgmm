@@ -1,10 +1,10 @@
 # 代码逻辑流程全图
 
-> **版本**: v2.1 (2296行代码, 58个方法)
-> **更新时间**: 2026-01-24
+> **版本**: v2.2 (2345行代码, 61个方法)
+> **更新时间**: 2026-02-06
 > **适用版本**: monitor.py v2.x
 
-本文档详细描述了WGMM视频监控系统的微观和宏观逻辑结构，包括所有58个方法的执行流程和调用关系。
+本文档详细描述了WGMM视频监控系统的微观和宏观逻辑结构，包括所有61个方法的执行流程和调用关系。
 
 ---
 
@@ -1471,15 +1471,16 @@ monitor.py:1510     - quick_precheck() - 第二层: 快速 ID 检查
 monitor.py:2084     - 第三层: 完整深度扫描 (run_monitor 内)
 
 【WGMM 核心算法】
-monitor.py:1232     - adjust_check_frequency() - WGMM 主函数
-monitor.py:1849     - _calculate_point_score() - 计算单个时间点得分
-monitor.py:1969     - _batch_calculate_scores() - 批量计算得分
-monitor.py:1740     - _vectorized_time_features_numpy() - 时间特征编码
-monitor.py:1138     - _calculate_adaptive_lambda() - Lambda 自适应
-monitor.py:993      - _learn_dimension_weights() - 维度权重学习
-monitor.py:1062     - _learn_adaptive_sigmas() - Sigma 学习
-monitor.py:858      - _filter_outliers() - 过滤异常值
-monitor.py:903      - _prune_old_data() - 剪枝旧数据
+monitor.py:1326     - adjust_check_frequency() - WGMM 主函数
+monitor.py:1225     - _scan_future_peak() - 扫描未来峰值
+monitor.py:1898     - _calculate_point_score() - 计算单个时间点得分
+monitor.py:2018     - _batch_calculate_scores() - 批量计算得分
+monitor.py:1790     - _vectorized_time_features_numpy() - 时间特征编码
+monitor.py:1232     - _calculate_adaptive_lambda() - Lambda 自适应
+monitor.py:1081     - _learn_dimension_weights() - 维度权重学习
+monitor.py:1150     - _learn_adaptive_sigmas() - Sigma 学习
+monitor.py:937      - _filter_outliers() - 过滤异常值
+monitor.py:982      - _prune_old_data() - 剪枝旧数据
 
 【数据管理】
 monitor.py:501      - sync_urls_from_gist() - 同步 Gist URL
@@ -1526,8 +1527,9 @@ monitor.py:1194     - _initialize_wgmm_config() - 初始化 WGMM 配置
 monitor.py:956      - _calculate_interval_stats() - 计算间隔统计量
 
 【辅助方法】
-monitor.py:1734     - _get_local_timezone_offset() - 获取本地时区偏移
-monitor.py:1802     - _get_raw_time_components() - 提取原始时间维度
+monitor.py:1838     - _get_local_timezone_offset() - 获取本地时区偏移
+monitor.py:1779     - _get_jst_datetime_str() - 获取JST格式化时间字符串
+monitor.py:1947     - _get_raw_time_components() - 提取原始时间维度
 
 【类常量定义】
 monitor.py:71       - DEFAULT_CHECK_INTERVAL - 默认检查间隔
@@ -1535,9 +1537,9 @@ monitor.py:72       - FALLBACK_INTERVAL - 降级检查间隔
 monitor.py:73       - MAX_RETRY_ATTEMPTS - 最大重试次数
 
 【统计信息】
-• 总行数: 2296 行
+• 总行数: 2345 行
 • 类数量: 1 个 (VideoMonitor)
-• 方法数量: 58 个 (包含嵌套函数)
+• 方法数量: 61 个 (包含嵌套函数)
 • 函数数量: 3 个 (parse_arguments, load_env_file, main)
 ```
 
@@ -1545,6 +1547,7 @@ monitor.py:73       - MAX_RETRY_ATTEMPTS - 最大重试次数
 
 ## 版本历史
 
+- **v2.2** (2026-02-06): 更新方法数量统计(61个), 添加新增方法索引(_scan_future_peak, _get_jst_datetime_str等), 更新代码行号
 - **v2.1** (2026-01-24): 修正方法数量统计(58个), 添加遗漏的方法索引(_limit_critical_log_lines等)
 - **v2.0** (2026-01-24): 基于2296行代码重构，新增11个核心类方法，完整更新文档
 - **v1.0** (2026-01-23): 初始版本，基于2439行代码（包含Phase 1实验性功能）
