@@ -1569,9 +1569,6 @@ class VideoMonitor:
 
 		polling_interval_str = self._format_frequency_interval(final_frequency_sec)
 		self.log_info(f"WGMM调频 - 轮询间隔: {polling_interval_str}")
-		self.log_info(
-			f"WGMM分数校准 - raw={current_raw_score:.4f}, calibrated={current_score:.4f}",
-		)
 
 	def run_yt_dlp(
 		self,
