@@ -225,6 +225,12 @@ class VideoMonitor:
 				"month_week": 1.5,
 				"year_month": 2.0,
 			},
+			"score_calibration": {
+				"mean": 0.5,
+				"std": 0.15,
+				"sample_count": 0,
+				"last_update": 0,
+			},
 			"last_lambda": 0.0001,
 			"last_pos_variance": 0.0,
 			"last_neg_variance": 0.0,
@@ -1236,6 +1242,8 @@ class VideoMonitor:
 		neg_lambda: float,
 		sigmas: dict,
 		resistance_coefficient: float,
+		score_calibration_mean: float,
+		score_calibration_std: float,
 	) -> tuple[float | None, float]:
 		"""扫描未来时间段寻找最佳发布峰值.
 
@@ -1258,6 +1266,8 @@ class VideoMonitor:
 			neg_lambda: 负向事件衰减率
 			sigmas: Sigma 参数字典
 			resistance_coefficient: 负向事件抑制系数
+			score_calibration_mean: 分数校准均值
+			score_calibration_std: 分数校准标准差
 
 		Returns:
 			(best_peak_time, best_peak_score) - 最佳峰值时间和得分, 无峰值则返回 (None, 0.0)
@@ -1295,12 +1305,17 @@ class VideoMonitor:
 				sigmas,
 				resistance_coefficient,
 			)
+			scan_scores = self._calibrate_scores(
+				scan_scores,
+				score_calibration_mean,
+				score_calibration_std,
+			)
 
 			if len(scan_scores) > 1:
 				gradients = np.diff(scan_scores)
 				peaks_mask = (gradients[:-1] > 0) & (gradients[1:] < 0)
 
-				peak_score_threshold = 0.7
+				peak_score_threshold = 0.75
 				gradient_threshold = 0.05
 				for i in range(len(peaks_mask)):
 					if peaks_mask[i]:
@@ -1443,7 +1458,7 @@ class VideoMonitor:
 		resistance_coefficient = 0.7 + 0.2 / (1.0 + cv)
 		resistance_coefficient = float(np.clip(resistance_coefficient, 0.5, 0.95))
 
-		current_score = self._calculate_point_score(
+		current_raw_score = self._calculate_point_score(
 			current_timestamp,
 			positive_events,
 			negative_events,
@@ -1452,6 +1467,23 @@ class VideoMonitor:
 			neg_lambda,
 			sigmas,
 			resistance_coefficient,
+		)
+		calibration_mean, calibration_std, calibration_sample_count = (
+			self._compute_score_calibration(
+				current_timestamp=current_timestamp,
+				pos_events=positive_events,
+				neg_events=negative_events,
+				dimension_weights=dimension_weights,
+				pos_lambda=pos_lambda,
+				neg_lambda=neg_lambda,
+				sigmas=sigmas,
+				resistance_coefficient=resistance_coefficient,
+			)
+		)
+		current_score = self._calibrate_score(
+			current_raw_score,
+			calibration_mean,
+			calibration_std,
 		)
 
 		exponential_score = current_score**mapping_curve
@@ -1475,10 +1507,12 @@ class VideoMonitor:
 			neg_lambda=neg_lambda,
 			sigmas=sigmas,
 			resistance_coefficient=resistance_coefficient,
+			score_calibration_mean=calibration_mean,
+			score_calibration_std=calibration_std,
 		)
 
 		final_frequency_sec = base_frequency_sec
-		best_peak_threshold = 0.6
+		best_peak_threshold = 0.72
 		if best_peak_time and best_peak_score > best_peak_threshold:
 			peak_interval = best_peak_time - current_timestamp
 			if peak_interval < base_frequency_sec * 1.2:
@@ -1510,12 +1544,21 @@ class VideoMonitor:
 		self.wgmm_config["last_lambda"] = pos_lambda
 		self.wgmm_config["last_pos_variance"] = pos_current_variance
 		self.wgmm_config["last_neg_variance"] = neg_current_variance
+		self.wgmm_config["score_calibration"] = {
+			"mean": calibration_mean,
+			"std": calibration_std,
+			"sample_count": calibration_sample_count,
+			"last_update": current_timestamp,
+		}
 
 		if not self.dev_mode:
 			self._save_wgmm_config()
 
 		polling_interval_str = self._format_frequency_interval(final_frequency_sec)
 		self.log_info(f"WGMM调频 - 轮询间隔: {polling_interval_str}")
+		self.log_info(
+			f"WGMM分数校准 - raw={current_raw_score:.4f}, calibrated={current_score:.4f}",
+		)
 
 	def run_yt_dlp(
 		self,
@@ -2129,6 +2172,92 @@ class VideoMonitor:
 		pos_scores = get_source_scores_vectorized(pos_events, pos_lambda)
 		neg_scores = get_source_scores_vectorized(neg_events, neg_lambda)
 		return np.clip(pos_scores - (resistance_coefficient * neg_scores), 0.0, 1.0)
+
+	def _compute_score_calibration(
+		self,
+		current_timestamp: int,
+		pos_events: list,
+		neg_events: list,
+		dimension_weights: dict,
+		pos_lambda: float,
+		neg_lambda: float,
+		sigmas: dict,
+		resistance_coefficient: float,
+	) -> tuple[float, float, int]:
+		"""基于近期分数分布计算校准参数.
+
+		使用最近30天的分数分布作为标尺, 让不同轮次的阈值语义一致.
+
+		Returns:
+			(mean, std, sample_count)
+
+		"""
+		window_days = 30
+		step_seconds = 7200  # 2小时采样一次, 兼顾稳定性与计算成本
+		min_samples = 60
+		default_mean = 0.5
+		default_std = 0.15
+
+		scan_start = max(0, current_timestamp - window_days * 86400)
+		scan_times = np.arange(
+			float(scan_start),
+			float(current_timestamp),
+			float(step_seconds),
+			dtype=np.float64,
+		)
+
+		if len(scan_times) < min_samples:
+			return default_mean, default_std, len(scan_times)
+
+		raw_scores = self._batch_calculate_scores(
+			scan_times=scan_times,
+			pos_events=pos_events,
+			neg_events=neg_events,
+			dimension_weights=dimension_weights,
+			pos_lambda=pos_lambda,
+			neg_lambda=neg_lambda,
+			sigmas=sigmas,
+			resistance_coefficient=resistance_coefficient,
+		)
+		if len(raw_scores) < min_samples:
+			return default_mean, default_std, len(raw_scores)
+
+		# 去掉两端异常分位, 降低偶发峰谷对阈值标尺的影响
+		p5, p95 = np.percentile(raw_scores, [5, 95])
+		trimmed_scores = raw_scores[(raw_scores >= p5) & (raw_scores <= p95)]
+		if len(trimmed_scores) < (min_samples // 2):
+			trimmed_scores = raw_scores
+
+		calibration_mean = float(np.mean(trimmed_scores))
+		calibration_std = float(np.std(trimmed_scores))
+		calibration_std = max(calibration_std, 1e-3)
+
+		return calibration_mean, calibration_std, len(trimmed_scores)
+
+	def _calibrate_score(
+		self,
+		raw_score: float,
+		calibration_mean: float,
+		calibration_std: float,
+	) -> float:
+		"""将原始分数映射到稳定的0-1校准分数."""
+		z = (raw_score - calibration_mean) / max(calibration_std, 1e-6)
+		z = float(np.clip(z, -8.0, 8.0))
+		return float(1.0 / (1.0 + np.exp(-z)))
+
+	def _calibrate_scores(
+		self,
+		raw_scores: np.ndarray,
+		calibration_mean: float,
+		calibration_std: float,
+	) -> np.ndarray:
+		"""批量校准分数数组."""
+		if len(raw_scores) == 0:
+			return raw_scores
+
+		z_values = (raw_scores - calibration_mean) / max(calibration_std, 1e-6)
+		z_values = np.clip(z_values, -8.0, 8.0)
+		return 1.0 / (1.0 + np.exp(-z_values))
 
 	def run_monitor(self) -> None:
 		"""第三层检测:完整深度检查(主监控流程).
