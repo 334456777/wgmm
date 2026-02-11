@@ -905,6 +905,7 @@ class VideoMonitor:
 		last_lambda: float,
 		threshold: float,
 		current_timestamp: int,
+		target_file: str,
 	) -> list:
 		"""剪枝权重过低的历史数据.
 
@@ -916,12 +917,12 @@ class VideoMonitor:
 			last_lambda: 上次计算的lambda参数
 			threshold: 权重阈值, 低于此值的数据会被移除
 			current_timestamp: 当前时间戳
+			target_file: 要回写的目标文件路径
 
 		Returns:
 			剪枝后的事件列表
 
 		"""
-		target_file = self.mtime_file if events is not None else self.miss_history_file
 		if not events or not Path(target_file).exists():
 			return events
 
@@ -1322,8 +1323,7 @@ class VideoMonitor:
 						scan_idx = i + 1
 						score_condition = scan_scores[scan_idx] > peak_score_threshold
 						gradient_condition = abs(gradients[i]) < gradient_threshold
-						if score_condition and gradient_condition:
-							peaks_mask[i] = True
+						peaks_mask[i] = score_condition and gradient_condition
 
 				peak_indices = np.where(peaks_mask)[0]
 
@@ -1397,10 +1397,18 @@ class VideoMonitor:
 		# 只有当历史数据超过阈值时才进行剪枝, 避免数据量过小时丢失重要信息
 		if len(positive_events) >= prune_threshold:
 			positive_events = self._prune_old_data(
-				positive_events, last_lambda, weight_threshold, current_timestamp
+				positive_events,
+				last_lambda,
+				weight_threshold,
+				current_timestamp,
+				self.mtime_file,
 			)
 			negative_events = self._prune_old_data(
-				negative_events, last_lambda, weight_threshold, current_timestamp
+				negative_events,
+				last_lambda,
+				weight_threshold,
+				current_timestamp,
+				self.miss_history_file,
 			)
 
 		# 检查正向数据是否充足
@@ -1479,6 +1487,11 @@ class VideoMonitor:
 				sigmas=sigmas,
 				resistance_coefficient=resistance_coefficient,
 			)
+		)
+		calibration_mean, calibration_std = self._smooth_score_calibration(
+			calibration_mean,
+			calibration_std,
+			calibration_sample_count,
 		)
 		current_score = self._calibrate_score(
 			current_raw_score,
@@ -2186,15 +2199,28 @@ class VideoMonitor:
 	) -> tuple[float, float, int]:
 		"""基于近期分数分布计算校准参数.
 
-		使用最近30天的分数分布作为标尺, 让不同轮次的阈值语义一致.
+		根据历史事件数量自适应采样窗口和步长, 让不同阶段的校准更稳定.
 
 		Returns:
 			(mean, std, sample_count)
 
 		"""
-		window_days = 30
-		step_seconds = 7200  # 2小时采样一次, 兼顾稳定性与计算成本
-		min_samples = 60
+		low_history_threshold = 120
+		medium_history_threshold = 500
+		history_count = len(pos_events) + len(neg_events)
+		if history_count < low_history_threshold:
+			window_days = 45
+			step_seconds = 3600
+			min_samples = 72
+		elif history_count < medium_history_threshold:
+			window_days = 30
+			step_seconds = 7200
+			min_samples = 60
+		else:
+			window_days = 21
+			step_seconds = 10800
+			min_samples = 48
+
 		default_mean = 0.5
 		default_std = 0.15
 
@@ -2258,6 +2284,30 @@ class VideoMonitor:
 		z_values = (raw_scores - calibration_mean) / max(calibration_std, 1e-6)
 		z_values = np.clip(z_values, -8.0, 8.0)
 		return 1.0 / (1.0 + np.exp(-z_values))
+
+	def _smooth_score_calibration(
+		self,
+		new_mean: float,
+		new_std: float,
+		new_sample_count: int,
+	) -> tuple[float, float]:
+		"""与历史校准参数做指数平滑, 减少轮次抖动."""
+		previous = self.wgmm_config.get("score_calibration", {})
+		prev_mean = previous.get("mean")
+		prev_std = previous.get("std")
+		prev_sample_count = previous.get("sample_count", 0)
+
+		if not isinstance(prev_mean, int | float) or not isinstance(prev_std, int | float):
+			return new_mean, max(new_std, 1e-3)
+		if prev_std <= 0 or prev_sample_count <= 0:
+			return new_mean, max(new_std, 1e-3)
+
+		alpha = float(np.clip(new_sample_count / 200.0, 0.15, 0.4))
+		blended_mean = (1.0 - alpha) * float(prev_mean) + alpha * new_mean
+		blended_std = (1.0 - alpha) * float(prev_std) + alpha * new_std
+		blended_std = max(blended_std, 1e-3)
+
+		return blended_mean, blended_std
 
 	def run_monitor(self) -> None:
 		"""第三层检测:完整深度检查(主监控流程).
