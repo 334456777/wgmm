@@ -100,6 +100,11 @@ sudo journalctl -u video-monitor -f
   - 参数调优
   - 代码修改场景
 
+- **`docs/wgmm-config-params.md`**: wgmm_config.json 参数说明
+  - 各参数含义与默认值
+  - 自适应学习逻辑
+  - 参数关系总览
+
 - **`docs/code-logic-flow.md`**: 系统架构流程
   - 主监控循环
   - 三层检测架构
