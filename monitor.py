@@ -2,7 +2,6 @@
 
 import argparse
 import json
-import logging
 import os
 import shutil
 import signal
@@ -12,7 +11,7 @@ import time
 import urllib.parse
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import suppress
-from datetime import UTC, timedelta, timezone
+from datetime import UTC
 from datetime import datetime as dt
 from pathlib import Path
 from types import FrameType
@@ -23,7 +22,7 @@ import numpy as np
 import requests
 
 # 日本时区 (JST, UTC+9)
-JST = timezone(timedelta(hours=9))
+JST = ZoneInfo("Asia/Tokyo")
 
 
 def parse_arguments():
@@ -51,7 +50,7 @@ def load_env_file(env_path: str = ".env") -> None:
 				if "=" in line:
 					key, value = line.split("=", 1)
 					key = key.strip()
-					value = value.strip()
+					value = value.strip().strip('"').strip("'")
 					if key and not os.getenv(key):
 						os.environ[key] = value
 	except OSError as e:
@@ -67,10 +66,6 @@ class VideoMonitor:
 	3. Bark推送通知新视频
 	4. GitHub Gist + 本地文件双层URL管理
 	"""
-
-	DEFAULT_CHECK_INTERVAL: int = 24000  # 默认检查间隔(秒)
-	FALLBACK_INTERVAL: int = 7200  # 降级检查间隔(秒)
-	MAX_RETRY_ATTEMPTS: int = 3  # 最大重试次数
 
 	def __init__(self, dev_mode: bool = False) -> None:
 		"""初始化监控系统.
@@ -121,29 +116,21 @@ class VideoMonitor:
 		self.cookies_file: str = "cookies.txt"
 		self.tmp_outputs_dir: str = "tmp_outputs"
 
-		self._validate_cookies_file()
-
 		self.last_ytdlp_duration: float = 0.0
 		self.normal_ytdlp_duration: float = 60.0
 
 		self.yt_dlp_path: str | None = None
 
+		self._log_write_count: int = 0
+
 		self.wgmm_config: dict = self._load_wgmm_config()
 
-		self.setup_logging()
+		self._validate_cookies_file()
+
 		self.load_known_urls()
 
 		signal.signal(signal.SIGTERM, self.signal_handler)
 		signal.signal(signal.SIGINT, self.signal_handler)
-
-	def setup_logging(self) -> None:
-		"""配置日志系统格式和输出."""
-		logging.basicConfig(
-			level=logging.INFO,
-			format="%(asctime)s - %(message)s",
-			datefmt="%Y-%m-%d %H:%M:%S",
-		)
-		self.logger: logging.Logger = logging.getLogger(__name__)
 
 	def load_known_urls(self) -> None:
 		"""从本地文件加载已知URL集合."""
@@ -214,9 +201,9 @@ class VideoMonitor:
 	def _load_wgmm_config(self) -> dict:
 		default_config = {
 			"dimension_weights": {
-				"day": 0.3,
-				"week": 0.25,
-				"month_week": 0.25,
+				"day": 0.5,
+				"week": 1.0,
+				"month_week": 0.3,
 				"year_month": 0.2,
 			},
 			"sigmas": {
@@ -286,13 +273,13 @@ class VideoMonitor:
 		timestamp = self._get_jst_datetime_str()
 		log_entry = f"{timestamp} - {level} - {message}\n"
 
-		if self.dev_mode:
-			pass
-		else:
+		if not self.dev_mode:
 			log_file_path = Path(self.log_file)
 			with log_file_path.open("a", encoding="utf-8") as f:
 				f.write(log_entry)
-			self.limit_file_lines(self.log_file, 100000)
+			self._log_write_count += 1
+			if self._log_write_count % 1000 == 0:
+				self.limit_file_lines(self.log_file, 100000)
 
 		print(f"{timestamp} - {level} - {message}")
 
@@ -385,7 +372,6 @@ class VideoMonitor:
 		call: bool = False,
 		volume: int | None = None,
 	) -> bool:
-		http_ok = 200
 		success = False
 		try:
 			encoded_title = urllib.parse.quote(title)
@@ -415,7 +401,7 @@ class VideoMonitor:
 
 			full_url = f"{base_url}?{'&'.join(params)}" if params else base_url
 			response = requests.get(full_url, timeout=30)
-			success = response.status_code == http_ok
+			success = response.ok
 		except requests.RequestException as e:
 			timestamp = self._get_jst_datetime_str()
 			print(f"{timestamp} - WARNING - Bark推送失败: {e}")
@@ -599,9 +585,9 @@ class VideoMonitor:
 					pass
 
 			self.log_warning(f"无法解析视频上传时间: {stdout[:50]}")
+			return None
 		except (ValueError, subprocess.SubprocessError) as e:
 			self.log_warning(f"获取视频上传时间异常: {e}")
-		else:
 			return None
 
 	def save_real_upload_timestamps(self, new_urls: set[str]) -> None:
@@ -634,9 +620,12 @@ class VideoMonitor:
 
 		if timestamps:
 			sorted_timestamps = sorted(timestamps)
-			with mtime_file_path.open("a") as f:
-				f.writelines(f"{ts}\n" for ts in sorted_timestamps)
-			self.limit_file_lines(self.mtime_file, 100000)
+			try:
+				with mtime_file_path.open("a") as f:
+					f.writelines(f"{ts}\n" for ts in sorted_timestamps)
+				self.limit_file_lines(self.mtime_file, 100000)
+			except OSError as e:
+				self.log_warning(f"保存时间戳失败: {e}")
 
 	def create_mtime_from_info_json(self) -> bool:
 		"""通过yt-dlp获取所有视频的info.json, 提取上传时间戳生成mtime.txt."""
@@ -664,6 +653,7 @@ class VideoMonitor:
 
 			temp_timestamps_file = Path("temp_timestamps.txt")
 			timestamp_count = 0
+			collected_timestamps: list[int] = []
 
 			for info_file in temp_info_dir.glob("*.info.json"):
 				try:
@@ -683,12 +673,15 @@ class VideoMonitor:
 							pass
 
 					if upload_timestamp and upload_timestamp > 0:
-						with temp_timestamps_file.open("a", encoding="utf-8") as tf:
-							tf.write(f"{upload_timestamp}\n")
+						collected_timestamps.append(upload_timestamp)
 						timestamp_count += 1
 
 				except (OSError, json.JSONDecodeError) as e:
 					self.log_warning(f"解析 info.json 文件失败: {info_file} - {e}")
+
+			if collected_timestamps:
+				with temp_timestamps_file.open("w", encoding="utf-8") as tf:
+					tf.writelines(f"{ts}\n" for ts in collected_timestamps)
 
 			try:
 				shutil.rmtree(temp_info_dir)
@@ -854,7 +847,7 @@ class VideoMonitor:
 		else:
 			return filtered
 
-	def _filter_outliers(self, timestamps: list, current_time: int) -> list:
+	def _filter_outliers(self, timestamps: list[int], current_time: int) -> list[int]:
 		"""过滤异常值时间戳.
 
 		使用IQR(四分位距)方法检测并移除异常的时间间隔.
@@ -897,16 +890,16 @@ class VideoMonitor:
 		current_mask = filtered_ts <= current_time
 		final_ts = filtered_ts[current_mask]
 
-		return final_ts.tolist()
+		return [int(x) for x in final_ts.tolist()]
 
 	def _prune_old_data(
 		self,
-		events: list,
+		events: list[int],
 		last_lambda: float,
 		threshold: float,
 		current_timestamp: int,
 		target_file: str,
-	) -> list:
+	) -> list[int]:
 		"""剪枝权重过低的历史数据.
 
 		根据指数衰减权重移除过时的历史记录, 保持算法对最新模式的敏感度.
@@ -953,7 +946,10 @@ class VideoMonitor:
 
 		return events
 
-	def _calculate_interval_stats(self, timestamps: list) -> tuple[float, float, int, int]:
+	def _calculate_interval_stats(
+		self,
+		timestamps: list[int],
+	) -> tuple[float, float, int, int]:
 		"""计算历史间隔统计量并动态设置间隔边界.
 
 		Args:
@@ -1670,10 +1666,13 @@ class VideoMonitor:
 			base_urls = {}
 			for url in self.memory_urls:
 				if "?p=" in url:
-					base_url = url.split("?p=")[0]
-					part_str = url.split("?p=")[1]
+					parsed = urllib.parse.urlparse(url)
+					base_url = parsed._replace(query="").geturl()
+					params = urllib.parse.parse_qs(parsed.query)
+					if "p" not in params:
+						continue
 					try:
-						part_num = int(part_str)
+						part_num = int(params["p"][0])
 						if base_url not in base_urls or part_num > base_urls[base_url]:
 							base_urls[base_url] = part_num
 					except ValueError:
@@ -1825,13 +1824,9 @@ class VideoMonitor:
 			else:
 				self.log_info("Dev模式下跳过异常等待")
 
-	def _get_jst_timestamp(self) -> int:
-		"""获取JST时区的当前时间戳字符串(用于日志)."""
-		return int(time.time())
-
 	def _get_jst_datetime_str(self) -> str:
 		"""获取JST时区的格式化日期时间字符串(用于日志)."""
-		return dt.now(ZoneInfo("Asia/Tokyo")).strftime("%Y-%m-%d %H:%M:%S")
+		return dt.now(JST).strftime("%Y-%m-%d %H:%M:%S")
 
 	def _get_local_timezone_offset(self) -> float:
 		"""获取本地时区偏移量(秒)."""
