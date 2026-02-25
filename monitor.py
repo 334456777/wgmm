@@ -560,7 +560,7 @@ class VideoMonitor:
 			)
 
 			if not success or not stdout:
-				self.log_warning(f"获取视频上传时间失败: {video_url[:50]}...")
+				self.log_warning("获取视频上传时间失败")
 				return None
 
 			parts = stdout.strip().split("|")
@@ -578,7 +578,7 @@ class VideoMonitor:
 				except ValueError:
 					pass
 
-			self.log_warning(f"无法解析视频上传时间: {stdout[:50]}")
+			self.log_warning("无法解析视频上传时间")
 			return None
 		except (ValueError, subprocess.SubprocessError) as e:
 			self.log_warning(f"获取视频上传时间异常: {e}")
@@ -598,7 +598,7 @@ class VideoMonitor:
 				timestamps.append(upload_time)
 			else:
 				if not self.dev_mode:
-					self.log_warning(f"降级使用当前时间: {url[:50]}...")
+					self.log_warning("降级使用当前时间")
 				timestamps.append(current_time)
 
 		if self.dev_mode:
@@ -627,7 +627,7 @@ class VideoMonitor:
 		temp_info_dir.mkdir(exist_ok=True)
 
 		try:
-			success, _stdout, stderr = self.run_yt_dlp(
+			success, _stdout, _stderr = self.run_yt_dlp(
 				[
 					"--cookies",
 					self.cookies_file,
@@ -642,7 +642,7 @@ class VideoMonitor:
 			)
 
 			if not success:
-				self.log_warning(f"获取元信息失败: {stderr[:100]}")
+				self.log_warning("获取元信息失败")
 				return False
 
 			temp_timestamps_file = Path("temp_timestamps.txt")
@@ -1554,7 +1554,7 @@ class VideoMonitor:
 		except subprocess.TimeoutExpired:
 			elapsed = time.time() - start_time
 			self.last_ytdlp_duration = elapsed
-			self.log_warning(f"yt-dlp 命令超时: {' '.join(command_args[:3])}...")
+			self.log_warning("yt-dlp 命令超时")
 			return False, "", "命令超时"
 		except (OSError, ValueError) as e:
 			elapsed = time.time() - start_time
@@ -1697,12 +1697,11 @@ class VideoMonitor:
 				}
 
 				for future in as_completed(future_to_url):
-					url = future_to_url[future]
 					try:
 						parts = future.result()
 						all_parts.extend(parts)
 					except (ValueError, OSError) as e:
-						self.log_warning(f"处理分片出错: {str(url)[:50]}... {e}")
+						self.log_warning(f"处理分片出错: {e}")
 
 		except (ValueError, OSError) as e:
 			self.log_critical_error(
