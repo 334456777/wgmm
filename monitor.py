@@ -1296,7 +1296,7 @@ class VideoMonitor:
 				resistance_coefficient,
 			)
 
-			# 记录扫描统计, 用于相对得分计算和调试
+			# 记录扫描统计, 用于相对得分计算
 			if len(scan_scores) > 0:
 				scan_stats = {
 					"min": float(np.min(scan_scores)),
@@ -1310,7 +1310,6 @@ class VideoMonitor:
 				peaks_mask = (gradients[:-1] > 0) & (gradients[1:] < 0)
 
 				# 动态阈值: 基于扫描得分分布自适应计算
-				# 旧方法硬编码 0.7, 但得分范围通常在 0~0.3, 导致永远找不到峰值
 				score_mean = scan_stats["mean"]
 				score_std = scan_stats["std"]
 				peak_score_threshold = score_mean + 1.5 * score_std
@@ -1492,7 +1491,6 @@ class VideoMonitor:
 		)
 
 		# 相对得分: 当前时刻在未来15天得分范围中的位置
-		# 解决绝对得分始终偏低(0~0.3)导致 mapping_curve 几乎无效的问题
 		scan_min = scan_stats.get("min", 0.0)
 		scan_max = scan_stats.get("max", current_score)
 		score_range = scan_max - scan_min
@@ -2019,8 +2017,6 @@ class VideoMonitor:
 			)
 
 			# 加权平均相似度: sum(w*s) / sum(w)
-			# 旧方法用 (mean - min) / (max - min), 大量低权重老事件会将 mean 拉到 ≈ 0
-			# 改用加权平均后, 老事件在分子分母上同比贡献, 自动被忽略
 			near_zero = 1e-12  # 浮点近零阈值
 			weight_sum = np.sum(weights, dtype=np.float64)
 			if weight_sum < near_zero:
