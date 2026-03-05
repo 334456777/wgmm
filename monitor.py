@@ -1233,7 +1233,7 @@ class VideoMonitor:
 		neg_lambda: float,
 		sigmas: dict,
 		resistance_coefficient: float,
-	) -> tuple[float | None, float]:
+	) -> tuple[float | None, float, dict]:
 		"""扫描未来时间段寻找最佳发布峰值.
 
 		策略:
@@ -1257,7 +1257,9 @@ class VideoMonitor:
 			resistance_coefficient: 负向事件抑制系数
 
 		Returns:
-			(best_peak_time, best_peak_score) - 最佳峰值时间和得分, 无峰值则返回 (None, 0.0)
+			(best_peak_time, best_peak_score, scan_stats):
+			最佳峰值时间和得分(无峰值则返回 None, 0.0),
+			以及扫描统计信息(min/max/mean/std)
 
 		"""
 		seconds_in_day = 86400
@@ -1270,6 +1272,7 @@ class VideoMonitor:
 
 		best_peak_time = None
 		best_peak_score = 0.0
+		scan_stats: dict = {}
 
 		score_threshold = 0.5
 		if lookahead_end > scan_start:
@@ -1293,11 +1296,24 @@ class VideoMonitor:
 				resistance_coefficient,
 			)
 
+			# 记录扫描统计, 用于相对得分计算和调试
+			if len(scan_scores) > 0:
+				scan_stats = {
+					"min": float(np.min(scan_scores)),
+					"max": float(np.max(scan_scores)),
+					"mean": float(np.mean(scan_scores)),
+					"std": float(np.std(scan_scores)),
+				}
+
 			if len(scan_scores) > 1:
 				gradients = np.diff(scan_scores)
 				peaks_mask = (gradients[:-1] > 0) & (gradients[1:] < 0)
 
-				peak_score_threshold = 0.7
+				# 动态阈值: 基于扫描得分分布自适应计算
+				# 旧方法硬编码 0.7, 但得分范围通常在 0~0.3, 导致永远找不到峰值
+				score_mean = scan_stats["mean"]
+				score_std = scan_stats["std"]
+				peak_score_threshold = score_mean + 1.5 * score_std
 				gradient_threshold = 0.05
 				for i in range(len(peaks_mask)):
 					if peaks_mask[i]:
@@ -1317,7 +1333,7 @@ class VideoMonitor:
 						best_peak_score = float(peak_scores[best_idx_in_peaks])
 						best_peak_time = float(scan_times[best_peak_idx])
 
-		return best_peak_time, best_peak_score
+		return best_peak_time, best_peak_score, scan_stats
 
 	def adjust_check_frequency(self, found_new_content: bool = False) -> None:
 		"""WGMM算法核心函数 - 根据历史数据自适应调整检查间隔.
@@ -1458,17 +1474,11 @@ class VideoMonitor:
 			resistance_coefficient,
 		)
 
-		exponential_score = current_score**mapping_curve
-		base_interval_sec = (
-			base_interval - (base_interval - max_interval) * exponential_score
-		)
-
-		base_frequency_sec = np.clip(base_interval_sec, max_interval, base_interval * 2)
-
+		# 先执行峰值扫描, 获取未来得分分布的全局视图
 		gaussian_width = (sigmas["day"] * seconds_in_day / 24.0) * 2.0
-		best_peak_time, best_peak_score = self._scan_future_peak(
+		best_peak_time, best_peak_score, scan_stats = self._scan_future_peak(
 			current_timestamp=current_timestamp,
-			base_frequency_sec=base_frequency_sec,
+			base_frequency_sec=base_interval,
 			lookahead_days=lookahead_days,
 			gaussian_width=gaussian_width,
 			current_score=current_score,
@@ -1481,8 +1491,29 @@ class VideoMonitor:
 			resistance_coefficient=resistance_coefficient,
 		)
 
+		# 相对得分: 当前时刻在未来15天得分范围中的位置
+		# 解决绝对得分始终偏低(0~0.3)导致 mapping_curve 几乎无效的问题
+		scan_min = scan_stats.get("min", 0.0)
+		scan_max = scan_stats.get("max", current_score)
+		score_range = scan_max - scan_min
+		near_zero = 1e-9  # 浮点近零阈值
+		if score_range > near_zero:
+			relative_score = float(
+				np.clip((current_score - scan_min) / score_range, 0.0, 1.0)
+			)
+		else:
+			relative_score = 0.5
+
+		exponential_score = relative_score**mapping_curve
+		base_interval_sec = (
+			base_interval - (base_interval - max_interval) * exponential_score
+		)
+
+		base_frequency_sec = np.clip(base_interval_sec, max_interval, base_interval * 2)
+
 		final_frequency_sec = base_frequency_sec
-		best_peak_threshold = 0.6
+		# 动态峰值接受阈值: 峰值得分需高于当前得分的1.2倍
+		best_peak_threshold = max(current_score * 1.2, 0.01)
 		if best_peak_time and best_peak_score > best_peak_threshold:
 			peak_interval = best_peak_time - current_timestamp
 			if peak_interval < base_frequency_sec * 1.2:
@@ -1915,7 +1946,7 @@ class VideoMonitor:
 		2. 各维度距离经高斯核转换: exp(-dist² / (2*sigma²))
 		3. 加权求和得到相似度得分
 		4. 应用指数时间衰减: exp(-lambda * age_hours)
-		5. 归一化到[0, 1], 用负向事件抑制正向得分
+		5. 加权平均归一化到[0, 1], 用负向事件抑制正向得分
 
 		Args:
 			target_timestamp: 目标时间戳
@@ -1987,24 +2018,20 @@ class VideoMonitor:
 				)
 			)
 
-			# 时间衰减权重 * 相似度
-			scores = weights * combined
-			if len(scores) == 0:
+			# 加权平均相似度: sum(w*s) / sum(w)
+			# 旧方法用 (mean - min) / (max - min), 大量低权重老事件会将 mean 拉到 ≈ 0
+			# 改用加权平均后, 老事件在分子分母上同比贡献, 自动被忽略
+			near_zero = 1e-12  # 浮点近零阈值
+			weight_sum = np.sum(weights, dtype=np.float64)
+			if weight_sum < near_zero:
 				return 0.0
 
-			total = np.sum(scores, dtype=np.float64)
-			count = len(scores)
-
-			if count == 1:
-				return float(np.clip(scores[0], 0.0, 1.0))
-
-			# 归一化到[0, 1]:(均值 - 最小值) / (最大值 - 最小值)
-			min_val, max_val = np.min(scores), np.max(scores)
-			if max_val > min_val:
-				return float(
-					np.clip((total / count - min_val) / (max_val - min_val), 0.0, 1.0),
-				)
-			return 0.5
+			weighted_similarity = np.sum(weights * combined, dtype=np.float64) / weight_sum
+			# 归一化: 最大可能相似度 = sum(dimension_weights)
+			max_possible = sum(dimension_weights.values())
+			return float(
+				np.clip(weighted_similarity / max(max_possible, near_zero), 0.0, 1.0)
+			)
 
 		# 计算正向和负向得分
 		pos_score = calculate_source_score_vectorized(pos_events, pos_lambda)
@@ -2114,17 +2141,19 @@ class VideoMonitor:
 			# 最终得分 = 时间衰减 * 高斯相似度
 			raw_scores = weights * combined_gaussian * valid_mask
 
-			total_scores = np.sum(raw_scores, axis=1, dtype=np.float64)
-			valid_counts = np.sum(valid_mask, axis=1)
+			# 加权平均相似度(按行): sum(w*s, axis=1) / sum(w, axis=1)
+			near_zero = 1e-12  # 浮点近零阈值
+			weight_sums = np.sum(weights * valid_mask, axis=1, dtype=np.float64)
+			weighted_totals = np.sum(raw_scores, axis=1, dtype=np.float64)
 
-			# 按行归一化到[0, 1]
+			max_possible = sum(dimension_weights.values())
 			with np.errstate(divide="ignore", invalid="ignore"):
-				row_mins = np.min(np.where(valid_mask, raw_scores, np.inf), axis=1)
-				row_maxs = np.max(np.where(valid_mask, raw_scores, -np.inf), axis=1)
-				normalized_scores = (
-					total_scores / np.maximum(valid_counts, 1.0) - row_mins
-				) / (row_maxs - row_mins + 1e-9)
-				result = np.where(valid_counts > 0, normalized_scores, 0.0)
+				weighted_mean = np.where(
+					weight_sums > near_zero,
+					weighted_totals / weight_sums,
+					0.0,
+				)
+				result = weighted_mean / max(max_possible, near_zero)
 
 			return np.clip(result, 0.0, 1.0)
 
