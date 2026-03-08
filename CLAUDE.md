@@ -105,6 +105,11 @@ sudo journalctl -u video-monitor -f
   - 自适应学习逻辑
   - 参数关系总览
 
+- **`docs/wgmm-universality-analysis.md`**: WGMM 算法普适性研究
+  - 八种 UP 主发布模式分析
+  - 算法适用边界与固有局限
+  - 普适性结论
+
 - **`docs/code-logic-flow.md`**: 系统架构流程
   - 主监控循环
   - 三层检测架构
