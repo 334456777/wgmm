@@ -1514,7 +1514,9 @@ class VideoMonitor:
 		best_peak_threshold = max(current_score * 1.2, 0.01)
 		if best_peak_time and best_peak_score > best_peak_threshold:
 			peak_interval = best_peak_time - current_timestamp
-			if peak_interval < base_frequency_sec * 1.2:
+			# 峰值越强越值得等待: 窗口比例与峰值得分正相关
+			peak_window_ratio = 1.0 + best_peak_score
+			if peak_interval < base_frequency_sec * peak_window_ratio:
 				advanced_time = best_peak_time - (peak_advance_minutes * 60.0)
 				advanced_interval = advanced_time - current_timestamp
 				min_advanced_interval = 300
