@@ -1,410 +1,410 @@
-# 🎯 WGMM 智能视频监控系统
+# 🎯 WGMM Intelligent Video Monitoring System
 
-基于**加权高斯混合模型(WGMM)**机器学习算法的B站视频智能监控系统,自适应调整监控频率,在保证及时性的同时节省 **60-80%** 的网络请求。
+Bilibili video intelligent monitoring system based on **Weighted Gaussian Mixture Model (WGMM)** machine learning algorithm, adaptively adjusts monitoring frequency, ensuring timeliness while saving **60-80%** of network requests.
 
-## ✨ 核心亮点
+## ✨ Core Highlights
 
-| 🏆 特性 | 📊 指标 | 🔍 技术实现 |
-|-------|-------|-----------|
-| **🧠 智能预测精度** | 时间命中率 >95% | WGMM机器学习算法,周期性模式识别 |
-| **⚡ 资源效率提升** | 节省网络请求 60-80% | 三层检测架构,智能频率调整 |
-| **🎯 响应及时性** | 新视频检测延迟 <30分钟 | 发布高峰期提供5分钟级密集监控 |
-| **🔄 自适应能力** | 2-3次新模式即可学习 | 指数衰减权重,自动适应习惯变化 |
-| **🛡️ 系统可靠性** | 7×24小时稳定运行 | 多重故障恢复,自动数据修复机制 |
+| 🏆 Feature | 📊 Metric | 🔍 Technical Implementation |
+|-----------|-----------|---------------------------|
+| **🧠 Intelligent Prediction Accuracy** | Time hit rate >95% | WGMM ML algorithm, periodic pattern recognition |
+| **⚡ Resource Efficiency Improvement** | Save network requests 60-80% | Three-layer detection architecture, intelligent frequency adjustment |
+| **🎯 Response Timeliness** | New video detection latency <30min | 5-minute intensive monitoring during peak release periods |
+| **🔄 Adaptive Capability** | Learn new patterns in 2-3 instances | Exponential decay weights, automatically adapt to habit changes |
+| **🛡️ System Reliability** | 7×24 hours stable operation | Multiple failure recovery, automatic data repair mechanism |
 
-## 🚀 快速开始
+## 🚀 Quick Start
 
-### 1️⃣ 准备配置文件(仅需2个文件)
+### 1️⃣ Prepare Configuration Files (only 2 files needed)
 
 ```bash
-# 复制环境变量模板
+# Copy environment variable template
 cp .env.example .env
 
-# 编辑 .env 文件,填入你的配置
+# Edit .env file, fill in your configuration
 nano .env
 ```
 
-**必需配置**:
+**Required Configuration**:
 ```bash
-GITHUB_TOKEN=your_github_token          # GitHub Token (需要 gist 权限)
-BARK_DEVICE_KEY=your_bark_key          # Bark 推送设备密钥
+GITHUB_TOKEN=your_github_token          # GitHub Token (requires gist permission)
+BARK_DEVICE_KEY=your_bark_key          # Bark push device key
 GIST_ID=your_gist_id                   # GitHub Gist ID
-BILIBILI_UID=your_bilibili_uid         # 要监控的UP主UID
+BILIBILI_UID=your_bilibili_uid         # UP主 UID to monitor
 ```
 
-**获取方法**:
-- **GITHUB_TOKEN**: https://github.com/settings/tokens (勾选 `gist` 权限)
-- **BARK_DEVICE_KEY**: iOS Bark App 中复制
-- **GIST_ID**: 创建新 Gist 后从 URL 中获取
-- **BILIBILI_UID**: UP主主页 URL 中获取 (如 `space.bilibili.com/123456789`)
+**Acquisition Methods**:
+- **GITHUB_TOKEN**: https://github.com/settings/tokens (check `gist` permission)
+- **BARK_DEVICE_KEY**: Copy from iOS Bark App
+- **GIST_ID**: Get from URL after creating new Gist
+- **BILIBILI_UID**: Get from UP主 homepage URL (e.g. `space.bilibili.com/123456789`)
 
-### 2️⃣ 准备 cookies.txt
+### 2️⃣ Prepare cookies.txt
 
-从浏览器导出 B站登录凭证:
+Export Bilibili login credentials from browser:
 
-1. 登录 B站后打开开发者工具 (F12)
-2. 访问任意视频页面
-3. Application → Cookies → 复制所有 cookies
-4. 保存到项目目录的 `cookies.txt` 文件
+1. Open developer tools (F12) after logging into Bilibili
+2. Visit any video page
+3. Application → Cookies → Copy all cookies
+4. Save to `cookies.txt` file in project directory
 
-**格式示例**:
+**Format Example**:
 ```
 # Netscape HTTP Cookie File
 .bilibili.com	TRUE	/	FALSE	1234567890	cookie_name	cookie_value
 ```
 
-### 3️⃣ 启动监控
+### 3️⃣ Start Monitoring
 
 ```bash
-# 激活虚拟环境(项目已包含 .venv)
+# Activate virtual environment (project already includes .venv)
 source .venv/bin/activate
 
-# 开发模式:运行单次检查后退出(不修改配置)
+# Development mode: run single check then exit (don't modify config)
 python monitor.py --dev
 
-# 正常模式:持续监控
+# Normal mode: continuous monitoring
 python monitor.py
 
-# systemd 服务方式(推荐生产环境)
+# systemd service mode (recommended for production)
 sudo systemctl start video-monitor
-sudo systemctl enable video-monitor  # 开机自启
+sudo systemctl enable video-monitor  # Auto-start on boot
 ```
 
-### 4️⃣ 查看状态
+### 4️⃣ Check Status
 
 ```bash
-# systemd 服务状态
+# systemd service status
 sudo systemctl status video-monitor
 
-# 查看日志
-tail -f urls.log                      # 主日志
-cat critical_errors.log               # 严重错误日志
+# View logs
+tail -f urls.log                      # Main log
+cat critical_errors.log               # Critical error log
 
-# systemd 服务日志
-sudo journalctl -u video-monitor -f   # 实时查看服务日志
+# systemd service logs
+sudo journalctl -u video-monitor -f   # Real-time service log viewing
 ```
 
-## 📁 文件结构
+## 📁 File Structure
 
 ```
 wgmm/
-├── monitor.py                    # 主程序 (2296行,58个方法)
-├── requirements.txt              # 依赖包清单
-├── pyproject.toml                # Ruff 代码质量配置
-├── video-monitor.service         # systemd 服务配置
+├── monitor.py                    # Main program (2296 lines, 58 methods)
+├── requirements.txt              # Dependency list
+├── pyproject.toml                # Ruff code quality configuration
+├── video-monitor.service         # systemd service configuration
 │
-├── .env                          # 环境变量配置 ⚠️ 需手动创建
-├── cookies.txt                   # B站登录凭证 ⚠️ 需手动创建
+├── .env                          # Environment variables ⚠️ Manual creation required
+├── cookies.txt                   # Bilibili login credentials ⚠️ Manual creation required
 │
-├── local_known.txt               # 本地已知URL列表 (自动生成)
-├── wgmm_config.json              # WGMM算法状态 (自动生成)
-├── mtime.txt                     # 历史发布时间戳 (自动生成)
-├── miss_history.txt              # 失败历史记录 (自动生成)
-├── urls.log                      # 主运行日志 (自动生成)
-└── critical_errors.log           # 严重错误日志 (自动生成)
+├── local_known.txt               # Local known URL list (auto-generated)
+├── wgmm_config.json              # WGMM algorithm state (auto-generated)
+├── mtime.txt                     # Historical release timestamps (auto-generated)
+├── miss_history.txt              # Failure history records (auto-generated)
+├── urls.log                      # Main runtime log (auto-generated)
+└── critical_errors.log           # Critical error log (auto-generated)
 ```
 
-**自动生成文件说明**:
-- 程序首次运行时会自动创建所有数据文件
-- 无需手动创建或维护
-- 配置文件已加入 `.gitignore`,不会被提交
+**Auto-generated File Notes**:
+- All data files are automatically created on first run
+- No manual creation or maintenance required
+- Configuration files added to `.gitignore`, won't be committed
 
-## 🧠 WGMM 算法简介
+## 🧠 WGMM Algorithm Introduction
 
-### 设计灵感
+### Design Inspiration
 
-如果你看过《咒术回战》,可以把 WGMM 算法想象成**八握剑异戒神将·魔虚罗**——
+If you've watched "Jujutsu Kaisen", imagine the WGMM algorithm as **Eight-Handled Sword Divergent Sila Divine General Mahoraga**—
 
-魔虚罗的核心能力是**适应**:每次受到攻击后,法阵转动一格,逐渐适应对手的术式,最终完全免疫并反制。WGMM 的工作方式与此异曲同工:
+Mahoraga's core ability is **adaptation**: After each attack, the wheel turns one notch, gradually adapting to the opponent's technique, eventually becoming completely immune and countering. WGMM works similarly:
 
-| 魔虚罗 | WGMM 算法 |
-|--------|-----------|
-| 被攻击后法阵转动,逐步适应术式 | 每次检查后更新参数,逐步学习发布模式 |
-| 适应速度与攻击强度有关 | 自适应 λ:模式变化越大,遗忘越快,适应越快 |
-| 完全适应后对该术式免疫 | σ 收敛后精准匹配时间模式,几乎不做无效请求 |
-| 面对新术式需要重新适应 | UP 主改变习惯时,算法自动重新学习 |
+| Mahoraga | WGMM Algorithm |
+|----------|---------------|
+| Wheel turns after attack, gradually adapting to technique | Update parameters after each check, gradually learning release patterns |
+| Adaptation speed related to attack intensity | Adaptive λ: greater pattern change → faster forgetting → faster adaptation |
+| Complete immunity after adaptation | σ converges to precisely match time patterns, almost no无效 requests |
+| Need to readapt to new techniques | Algorithm automatically relearns when UP主 changes habits |
 
-简单来说:WGMM 就是一个不断"挨打"(观测数据)、不断"适应"(更新参数)、最终精准预判 UP 主发布时间的算法。
+Simply put: WGMM is an algorithm that constantly "takes hits" (observes data), constantly "adapts" (updates parameters), and ultimately accurately predicts UP主 release times.
 
-### 核心原理
+### Core Principles
 
-WGMM (Weighted Gaussian Mixture Model) 算法通过分析历史发布时间,预测未来发布概率:
+WGMM (Weighted Gaussian Mixture Model) algorithm predicts future release probabilities by analyzing historical release times:
 
-1. **四维时间特征编码**
-   - 日周期 (sin/cos)
-   - 周周期 (sin/cos)
-   - 月内周 (1-5)
-   - 年内月 (1-12)
+1. **Four-Dimensional Time Feature Encoding**
+   - Daily cycle (sin/cos)
+   - Weekly cycle (sin/cos)
+   - Week of month (1-5)
+   - Month of year (1-12)
 
-2. **高斯核相似度计算**
+2. **Gaussian Kernel Similarity Calculation**
    ```
-   相似度 = exp(-距离² / (2σ²))
-   ```
-
-3. **指数时间衰减权重**
-   ```
-   权重 = exp(-λ × 年龄小时数)
+   Similarity = exp(-distance² / (2σ²))
    ```
 
-4. **自适应学习**
-   - 动态调整维度权重
-   - 自适应 lambda (遗忘速度)
-   - 自适应 sigma (时间容忍度)
+3. **Exponential Time Decay Weights**
+   ```
+   Weight = exp(-λ × age_hours)
+   ```
 
-### 智能特性
+4. **Adaptive Learning**
+   - Dynamically adjust dimension weights
+   - Adaptive lambda (forgetting speed)
+   - Adaptive sigma (time tolerance)
 
-- **周期性模式识别**: 自动识别"每周三下午"、"工作日晚上"等发布模式
-- **记忆衰退模拟**: 近期事件权重更高,快速适应习惯变化
-- **低活跃期优化**: 低峰期自动延长检查间隔至30天
-- **峰值预测**: 提前15天扫描,在发布高峰期提供5分钟级密集监控
+### Intelligent Features
 
-**详细算法原理**: 参见 [docs/wgmm-algorithm.md](docs/wgmm-algorithm.md)
+- **Periodic Pattern Recognition**: Automatically identify release patterns like "every Wednesday afternoon", "weekday evenings"
+- **Memory Decay Simulation**: Higher weights for recent events, quickly adapt to habit changes
+- **Low Activity Period Optimization**: Automatically extend check interval to 30 days during low-activity periods
+- **Peak Prediction**: Scan 15 days ahead, provide 5-minute intensive monitoring during release peaks
 
-## 🔧 管理命令
+**Detailed Algorithm Principles**: See [docs/wgmm-algorithm.md](docs/wgmm-algorithm.md)
 
-### systemd 服务管理
+## 🔧 Management Commands
+
+### systemd Service Management
 
 ```bash
-# 启动/停止/重启
+# Start/Stop/Restart
 sudo systemctl start video-monitor
 sudo systemctl stop video-monitor
 sudo systemctl restart video-monitor
 
-# 开机自启
+# Auto-start on boot
 sudo systemctl enable video-monitor
 sudo systemctl disable video-monitor
 
-# 查看状态和日志
+# View status and logs
 sudo systemctl status video-monitor
 sudo journalctl -u video-monitor -f
 ```
 
-### Python 命令
+### Python Commands
 
 ```bash
-# 激活虚拟环境
+# Activate virtual environment
 source .venv/bin/activate
 
-# 开发模式: 单次检查后退出
+# Development mode: Single check then exit
 python monitor.py --dev
 
-# 正常模式: 持续监控
+# Normal mode: Continuous monitoring
 python monitor.py
 ```
 
-## ⚙️ 配置调优
+## ⚙️ Configuration Tuning
 
-### 查看算法状态
+### View Algorithm Status
 
 ```bash
-# 查看当前配置
+# View current configuration
 cat wgmm_config.json
 
-# 查看日志中的预测结果
+# View prediction results in logs
 grep "WGMM调频" urls.log | tail -20
 ```
 
-### 参数调整位置
+### Parameter Adjustment Location
 
-核心参数位于 `monitor.py` 第 466-478 行:
+Core parameters located at lines 466-478 in `monitor.py`:
 
 ```python
-SIGMA = 0.8              # 时间相似性容忍度 (0.5-1.5)
-LAMBDA = 0.0001          # 记忆遗忘速度 (0.00005-0.0005)
-DEFAULT_INTERVAL = 3600  # 默认基础间隔 (秒)
-MIN_INTERVAL = 300       # 最小检查间隔 (5分钟)
-MAX_INTERVAL = 2592000   # 最大检查间隔 (30天)
+SIGMA = 0.8              # Time similarity tolerance (0.5-1.5)
+LAMBDA = 0.0001          # Memory forgetting speed (0.00005-0.0005)
+DEFAULT_INTERVAL = 3600  # Default base interval (seconds)
+MIN_INTERVAL = 300       # Minimum check interval (5 minutes)
+MAX_INTERVAL = 2592000   # Maximum check interval (30 days)
 ```
 
-**调优指南**: 参见 [docs/wgmm-algorithm.md#参数调优](docs/wgmm-algorithm.md#参数调优)
+**Tuning Guide**: See [docs/wgmm-algorithm.md#参数调优](docs/wgmm-algorithm.md#参数调优)
 
-## 📚 文档导航
+## 📚 Documentation Navigation
 
-### 用户文档
-- **[本 README](README.md)** - 快速开始和基本使用
-- **[FAQ](#常见问题)** - 常见问题解答
+### User Documentation
+- **[This README](README.md)** - Quick start and basic usage
+- **[FAQ](#常见问题)** - Frequently asked questions
 
-### 开发文档
-- **[docs/development-guide.md](docs/development-guide.md)** - 完整开发指南
-  - 代码质量检查 (Ruff)
-  - 调试技巧
-  - 故障排查
-  - 性能监控
+### Development Documentation
+- **[docs/development-guide.md](docs/development-guide.md)** - Complete development guide
+  - Code quality checks (Ruff)
+  - Debugging techniques
+  - Troubleshooting
+  - Performance monitoring
 
-### 技术参考
-- **[docs/wgmm-algorithm.md](docs/wgmm-algorithm.md)** - WGMM 算法详解
-  - 数学原理
-  - 参数调优
-  - 代码修改场景
+### Technical References
+- **[docs/wgmm-algorithm.md](docs/wgmm-algorithm.md)** - WGMM algorithm detailed explanation
+  - Mathematical principles
+  - Parameter tuning
+  - Code modification scenarios
 
-- **[docs/code-logic-flow.md](docs/code-logic-flow.md)** - 系统架构流程
-  - 主监控循环
-  - 三层检测架构
-  - 数据流向
+- **[docs/code-logic-flow.md](docs/code-logic-flow.md)** - System architecture flow
+  - Main monitoring loop
+  - Three-layer detection architecture
+  - Data flow
 
-- **[docs/code-reference.md](docs/code-reference.md)** - 代码参考
-  - VideoMonitor 类方法分类
-  - 性能优化要点
+- **[docs/code-reference.md](docs/code-reference.md)** - Code reference
+  - VideoMonitor class method categories
+  - Performance optimization points
 
-### 架构决策记录
-- **[docs/adr/001-keep-python-implementation.md](docs/adr/001-keep-python-implementation.md)** - 保持 Python 实现的决策
-- **[docs/adr/002-do-not-adopt-x-algorithm-techniques.md](docs/adr/002-do-not-adopt-x-algorithm-techniques.md)** - 不引入推荐系统技术的决策
-- **[docs/adr/003-avoid-large-refactoring.md](docs/adr/003-avoid-large-refactoring.md)** - 采用单体架构的决策
+### Architecture Decision Records
+- **[docs/adr/001-keep-python-implementation.md](docs/adr/001-keep-python-implementation.md)** - Decision to keep Python implementation
+- **[docs/adr/002-do-not-adopt-x-algorithm-techniques.md](docs/adr/002-do-not-adopt-x-algorithm-techniques.md)** - Decision not to adopt recommendation system techniques
+- **[docs/adr/003-avoid-large-refactoring.md](docs/adr/003-avoid-large-refactoring.md)** - Decision to adopt monolithic architecture
 
-### 贡献指南
-- **[CONTRIBUTING.md](CONTRIBUTING.md)** - 贡献指南
-  - 开发环境设置
-  - 代码质量标准
-  - 提交规范
+### Contributing Guide
+- **[CONTRIBUTING.md](CONTRIBUTING.md)** - Contributing guide
+  - Development environment setup
+  - Code quality standards
+  - Commit conventions
 
-## ❓ 常见问题
+## ❓ FAQ
 
-### Q1: 为什么算法会形成3天的检查间隔?
+### Q1: Why does the algorithm form 3-day check intervals?
 
-**A**: 这是 WGMM 算法通过数学计算自然涌现的结果,而非硬编码。
+**A**: This is a natural result of WGMM algorithm's mathematical calculation, not hard-coded.
 
-算法通过以下机制自然产生3天间隔:
+The algorithm naturally produces 3-day intervals through the following mechanisms:
 
-1. **星期维度权重最高** (learned weight ≈ 0.67)
-2. **sigma_week = 1.0** 使得相邻天相似度 ≈ 0.606
-3. **3天间隔**能以较高相似度覆盖工作日和周末两个极端
+1. **Week dimension has highest weight** (learned weight ≈ 0.67)
+2. **sigma_week = 1.0** makes adjacent day similarity ≈ 0.606
+3. **3-day interval** can cover both weekday and weekend extremes with high similarity
 
-**详细数学解释**: 参见 [docs/wgmm-algorithm.md#3天间隔的数学原理](docs/wgmm-algorithm.md#3天间隔的数学原理)
+**Detailed Mathematical Explanation**: See [docs/wgmm-algorithm.md#3天间隔的数学原理](docs/wgmm-algorithm.md#3天间隔的数学原理)
 
-### Q2: WGMM 算法需要多少历史数据才能开始有效预测?
+### Q2: How much historical data does WGMM algorithm need to start effective prediction?
 
 **A**:
-- **最小10条数据**: 可以开始基础预测
-- **50条数据**: 能够识别基本的周期性模式
-- **100+条数据**: 稳定预测,准确识别复杂模式
+- **Minimum 10 data points**: Can start basic prediction
+- **50 data points**: Can identify basic periodic patterns
+- **100+ data points**: Stable prediction, accurately identify complex patterns
 
-### Q3: 如果UP主改变发布习惯,算法多久能适应?
+### Q3: If UP主 changes release habits, how long can the algorithm adapt?
 
-**A**: 由于指数衰减权重机制:
-- **2-3次新模式发布**: 开始调整预测
-- **1-2周**: 完全适应新的发布习惯
+**A**: Due to exponential decay weight mechanism:
+- **2-3 new pattern releases**: Start adjusting prediction
+- **1-2 weeks**: Completely adapt to new release habits
 
-### Q4: 如何重置算法学习?
+### Q4: How to reset algorithm learning?
 
-**A**: 删除 `wgmm_config.json` 和 `mtime.txt`,重启程序即可重新学习:
+**A**: Delete `wgmm_config.json` and `mtime.txt`, restart program to relearn:
 
 ```bash
 rm wgmm_config.json mtime.txt
 sudo systemctl restart video-monitor
 ```
 
-### Q5: 预测频率异常怎么办?
+### Q5: What to do if prediction frequency is abnormal?
 
 **A**:
-1. 查看日志了解当前热力得分: `grep "热力" urls.log | tail -5`
-2. 检查历史数据是否正常: `wc -l mtime.txt`
-3. 如需重新学习,参考 Q4 重置算法
+1. Check logs to understand current heat score: `grep "热力" urls.log | tail -5`
+2. Check if historical data is normal: `wc -l mtime.txt`
+3. To relearn, reset algorithm as in Q4
 
-### Q6: cookies.txt 过期怎么办?
+### Q6: What to do if cookies.txt expires?
 
 **A**:
-1. 重新从浏览器导出 cookies
-2. 替换 `cookies.txt` 文件
-3. 重启服务: `sudo systemctl restart video-monitor`
+1. Re-export cookies from browser
+2. Replace `cookies.txt` file
+3. Restart service: `sudo systemctl restart video-monitor`
 
-## 🔍 故障排查
+## 🔍 Troubleshooting
 
-### 系统检查
+### System Check
 
 ```bash
-# 检查服务状态
+# Check service status
 sudo systemctl status video-monitor
 
-# 查看详细日志
+# View detailed logs
 sudo journalctl -u video-monitor -n 100
 
-# 检查配置文件
+# Check configuration files
 cat .env
 ls -l cookies.txt
 ```
 
-### 常见问题
+### Common Issues
 
-**问题1: 服务无法启动**
-- 检查 `.env` 文件是否存在且配置正确
-- 检查 `cookies.txt` 是否存在
-- 查看详细错误日志: `sudo journalctl -u video-monitor -n 50`
+**Issue 1: Service cannot start**
+- Check if `.env` file exists and is configured correctly
+- Check if `cookies.txt` exists
+- View detailed error logs: `sudo journalctl -u video-monitor -n 50`
 
-**问题2: 检测不到新视频**
-- 验证 cookies.txt 是否过期
-- 手动运行 `python monitor.py --dev` 测试
-- 检查 BILIBILI_UID 是否正确
+**Issue 2: Cannot detect new videos**
+- Verify if cookies.txt has expired
+- Manually run `python monitor.py --dev` to test
+- Check if BILIBILI_UID is correct
 
-**问题3: 预测频率过长/过短**
-- 正常现象,算法会根据历史数据自适应调整
-- 低活跃期可能长达30天,高峰期可能短至5分钟
-- 可通过重置算法重新学习 (见 Q4)
+**Issue 3: Prediction frequency too long/short**
+- Normal phenomenon, algorithm adaptively adjusts based on historical data
+- Low activity periods may be up to 30 days, peak periods may be as short as 5 minutes
+- Can reset algorithm to relearn (see Q4)
 
-**详细故障排查**: 参见 [docs/development-guide.md#故障排查](docs/development-guide.md#故障排查)
+**Detailed Troubleshooting**: See [docs/development-guide.md#故障排查](docs/development-guide.md#故障排查)
 
-## 📊 性能指标
+## 📊 Performance Metrics
 
-| 指标 | 典型值 |
-|------|--------|
-| WGMM 算法计算 | ~10ms |
-| 三层检测耗时 | ~2s (主要在 yt-dlp I/O) |
-| 内存占用 | <10MB |
-| CPU 使用率 | <1% (大部分时间在睡眠) |
-| 网络请求节省率 | 60-80% (相比固定1小时间隔) |
+| Metric | Typical Value |
+|--------|--------------|
+| WGMM algorithm calculation | ~10ms |
+| Three-layer detection time | ~2s (mainly in yt-dlp I/O) |
+| Memory usage | <10MB |
+| CPU usage | <1% (mostly sleeping) |
+| Network request saving rate | 60-80% (compared to fixed 1-hour interval) |
 
-## 🛡️ 安全性
+## 🛡️ Security
 
-- `.env` 和 `cookies.txt` 已被 `.gitignore` 排除
-- 敏感文件不纳入版本控制
-- systemd 服务使用安全沙盒设置
-- 建议定期更换 GitHub Token
+- `.env` and `cookies.txt` excluded by `.gitignore`
+- Sensitive files not under version control
+- systemd service uses secure sandbox settings
+- Recommend regularly changing GitHub Token
 
-## 📝 开发规范
+## 📝 Development Standards
 
-### 代码质量检查
+### Code Quality Checks
 
-**修改代码后必须运行**:
+**Must run after modifying code**:
 
 ```bash
 source .venv/bin/activate
-ruff check monitor.py        # 必须通过
-ruff format monitor.py       # 必须通过
+ruff check monitor.py        # Must pass
+ruff format monitor.py       # Must pass
 ```
 
-### 提交规范
+### Commit Convention
 
-遵循 Conventional Commits 规范:
+Follow Conventional Commits specification:
 
 ```bash
-feat: 添加新功能
-fix: 修复Bug
-docs: 更新文档
-refactor: 代码重构
+feat: Add new feature
+fix: Fix bug
+docs: Update documentation
+refactor: Code refactoring
 ```
 
-**详细指南**: 参见 [CONTRIBUTING.md](CONTRIBUTING.md)
+**Detailed Guide**: See [CONTRIBUTING.md](CONTRIBUTING.md)
 
-## 🤝 贡献
+## 🤝 Contributing
 
-欢迎贡献! 请先阅读 [CONTRIBUTING.md](CONTRIBUTING.md) 了解:
-- 开发环境设置
-- 代码质量标准
-- 提交规范
-- 架构决策原则
+Contributions welcome! Please first read [CONTRIBUTING.md](CONTRIBUTING.md) to understand:
+- Development environment setup
+- Code quality standards
+- Commit conventions
+- Architecture decision principles
 
-## 📄 许可证
+## 📄 License
 
 MIT License
 
-## 🙏 致谢
+## 🙏 Acknowledgments
 
-- **yt-dlp** - 强大的视频元信息获取工具
-- **Bark** - 优秀的 iOS 推送服务
-- **NumPy** - 高效的数值计算库
+- **yt-dlp** - Powerful video metadata extraction tool
+- **Bark** - Excellent iOS push service
+- **NumPy** - Efficient numerical computation library
 
 ---
 
-**需要帮助?**
-- 📖 查看 [文档](#📚-文档导航)
-- 🐛 [提交 Issue](https://github.com/yourusername/wgmm/issues)
-- 💬 [查看 FAQ](#常见问题)
+**Need help?**
+- 📖 Check [Documentation](#📚-文档导航)
+- 🐛 [Submit Issue](https://github.com/yourusername/wgmm/issues)
+- 💬 [View FAQ](#常见问题)
