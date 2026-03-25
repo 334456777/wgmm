@@ -9,8 +9,8 @@
 /monitor.pid
 /temp_info_json
 /tmp_outputs
-/.env
 /.vscode
-/data/
+/data/*
+!/data/.env.example
 /.claude
 /.ruff_cache
