@@ -65,14 +65,14 @@ sudo journalctl -u video-monitor -f
 ### 必需配置文件（手动创建）
 
 - **`.env`**: 环境变量配置（GITHUB_TOKEN, BARK_DEVICE_KEY, GIST_ID, BILIBILI_UID）
-- **`cookies.txt`**: B站登录凭证
+- **`data/cookies.txt`**: B站登录凭证
 
 ### 自动生成的数据文件
 
-- **`local_known.txt`**: 本地已知URL列表
-- **`wgmm_config.json`**: WGMM算法状态持久化
-- **`mtime.txt`**: 历史发布时间戳（算法训练数据）
-- **`miss_history.txt`**: 检测失败历史记录
+- **`data/local_known.txt`**: 本地已知URL列表
+- **`data/wgmm_config.json`**: WGMM算法状态持久化
+- **`data/mtime.txt`**: 历史发布时间戳（算法训练数据）
+- **`data/miss_history.txt`**: 检测失败历史记录
 - **`urls.log`**: 主运行日志
 - **`critical_errors.log`**: 严重错误专用日志
 
@@ -156,7 +156,7 @@ sudo journalctl -u video-monitor -f
 python monitor.py --dev
 
 # 查看算法当前参数
-cat wgmm_config.json | python -m json.tool
+cat data/wgmm_config.json | python -m json.tool
 ```
 
 ## 双层 URL 管理机制
@@ -205,21 +205,21 @@ Bark 推送 + GitHub Gist 更新
 
 ### 提交说明（Description）
 
-- 使用中文书写
+- **使用英文书写**
 - 简洁描述做了什么
 - 不超过 50 个字符
 - 首字母不大写，结尾不加标点
 
 **单行示例：**
-- `fix: 修改环境变量缺失提示信息，简化错误输出`
-- `docs: 添加WGMM算法FAQ到README，解释3天间隔的数学原理`
-- `refactor: 简化代码格式，合并多行表达式为单行`
+- `fix: simplify missing env var error message`
+- `docs: add WGMM algorithm FAQ explaining 3-day interval math`
+- `refactor: merge multi-line expressions into single lines`
 
 ### 多行提交消息格式
 
 ```bash
 git commit -m "$(cat <<'EOF'
-<type>: <简短描述（不超过50字）>
+<type>: <short description (under 50 chars)>
 
 <详细说明（可选）>
 
