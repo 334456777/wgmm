@@ -15,7 +15,7 @@ WorkingDirectory=/home/yusteven/boluo/pyt
 ExecStart=/home/yusteven/.pyenv/versions/3.14.2/bin/python /home/yusteven/boluo/pyt/monitor.py
 
 # 如果 monitor.py 需要从 .env 文件读取变量，systemd 可以直接加载它
-EnvironmentFile=-/home/yusteven/boluo/pyt/.env
+EnvironmentFile=-/home/yusteven/boluo/pyt/data/.env
 
 # 确保 Python 输出直接进入 journal 日志，而不被缓存
 Environment=PYTHONUNBUFFERED=1

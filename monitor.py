@@ -2313,7 +2313,7 @@ class VideoMonitor:
 
 
 def main() -> None:
-	load_env_file()
+	load_env_file("data/.env")
 	args = parse_arguments()
 	monitor = VideoMonitor(dev_mode=args.dev)
 
