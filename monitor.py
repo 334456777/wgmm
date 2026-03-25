@@ -109,11 +109,12 @@ class VideoMonitor:
 
 		self.log_file: str = "urls.log"
 		self.critical_log_file: str = "critical_errors.log"
-		self.wgmm_config_file: str = "wgmm_config.json"
-		self.local_known_file: str = "local_known.txt"
-		self.mtime_file: str = "mtime.txt"
-		self.miss_history_file: str = "miss_history.txt"
-		self.cookies_file: str = "cookies.txt"
+		self.wgmm_config_file: str = "data/wgmm_config.json"
+		self.local_known_file: str = "data/local_known.txt"
+		self.mtime_file: str = "data/mtime.txt"
+		self.miss_history_file: str = "data/miss_history.txt"
+		self.cookies_file: str = "data/cookies.txt"
+		Path("data").mkdir(exist_ok=True)
 		self.tmp_outputs_dir: str = "tmp_outputs"
 
 		self.last_ytdlp_duration: float = 0.0
