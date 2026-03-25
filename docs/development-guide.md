@@ -62,6 +62,21 @@ python monitor.py -d
 - 运行单次检查后立即退出
 - 适合快速验证代码逻辑和算法计算
 
+### WGMM 核心模式
+
+使用 `--wgmm-core-only` 只执行一次 WGMM 调频核心并退出，跳过视频检测流程：
+
+```bash
+# WGMM 核心模式：只运行调频核心，不执行视频抓取检测
+python monitor.py --wgmm-core-only
+```
+
+**核心模式特点：**
+- 跳过分片预检查、快速检查和完整视频列表检测
+- 仅运行 `adjust_check_frequency(found_new_content=False)`
+- 写入真实 `miss_history.txt`（用于验证连续 miss 对轮询间隔的影响）
+- 运行一次后立即退出
+
 ### systemd 服务管理
 
 ```bash

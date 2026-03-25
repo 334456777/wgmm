@@ -62,6 +62,9 @@ source .venv/bin/activate
 # 开发模式:运行单次检查后退出(不修改配置)
 python monitor.py --dev
 
+# WGMM核心模式: 跳过视频检测, 仅运行一次WGMM调频后退出
+python monitor.py --wgmm-core-only
+
 # 正常模式:持续监控
 python monitor.py
 
@@ -189,6 +192,9 @@ source .venv/bin/activate
 
 # 开发模式: 单次检查后退出
 python monitor.py --dev
+
+# WGMM核心模式: 单次WGMM调频后退出(会写入真实miss历史)
+python monitor.py --wgmm-core-only
 
 # 正常模式: 持续监控
 python monitor.py
@@ -335,6 +341,7 @@ ls -l data/cookies.txt
 **问题2: 检测不到新视频**
 - 验证 data/cookies.txt 是否过期
 - 手动运行 `python monitor.py --dev` 测试
+- 运行 `python monitor.py --wgmm-core-only` 隔离验证 WGMM 行为(跳过视频检测)
 - 检查 BILIBILI_UID 是否正确
 
 **问题3: 预测频率过长/过短**

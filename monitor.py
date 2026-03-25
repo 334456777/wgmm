@@ -33,6 +33,11 @@ def parse_arguments():
 		action="store_true",
 		help="开发模式: 运行检查后立即退出, 不等待下次检查时间",
 	)
+	parser.add_argument(
+		"--wgmm-core-only",
+		action="store_true",
+		help="仅运行WGMM调频核心, 跳过视频检测流程, 执行一次后退出",
+	)
 	return parser.parse_args()
 
 
@@ -2315,7 +2320,30 @@ class VideoMonitor:
 def main() -> None:
 	load_env_file("data/.env")
 	args = parse_arguments()
+
+	if args.wgmm_core_only and args.dev:
+		print("参数冲突: --wgmm-core-only 不能与 --dev 同时使用", file=sys.stderr)
+		sys.exit(2)
+
 	monitor = VideoMonitor(dev_mode=args.dev)
+
+	if args.wgmm_core_only:
+		try:
+			# 核心模式用于真实数据验证: 强制关闭手动模式以记录 miss 历史
+			monitor.wgmm_config["is_manual_run"] = False
+			monitor.adjust_check_frequency(found_new_content=False)
+			sys.exit(0)
+		except KeyboardInterrupt:
+			monitor.log_info("程序被用户中断")
+			monitor.cleanup()
+			sys.exit(0)
+		except (OSError, json.JSONDecodeError, subprocess.SubprocessError) as e:
+			monitor.log_critical_error(
+				f"WGMM核心模式运行出错: {e}",
+				"main(wgmm_core_only)",
+				send_notification=False,
+			)
+			sys.exit(1)
 
 	if args.dev:
 		try:

@@ -62,6 +62,9 @@ source .venv/bin/activate
 # Development mode: run single check then exit (don't modify config)
 python monitor.py --dev
 
+# WGMM core-only mode: skip video detection, run one WGMM adjustment, then exit
+python monitor.py --wgmm-core-only
+
 # Normal mode: continuous monitoring
 python monitor.py
 
@@ -189,6 +192,9 @@ source .venv/bin/activate
 
 # Development mode: Single check then exit
 python monitor.py --dev
+
+# WGMM core-only mode: Single WGMM adjustment then exit (writes real miss history)
+python monitor.py --wgmm-core-only
 
 # Normal mode: Continuous monitoring
 python monitor.py
@@ -335,6 +341,7 @@ ls -l data/cookies.txt
 **Issue 2: Cannot detect new videos**
 - Verify if data/cookies.txt has expired
 - Manually run `python monitor.py --dev` to test
+- Run `python monitor.py --wgmm-core-only` to isolate WGMM behavior without video detection
 - Check if BILIBILI_UID is correct
 
 **Issue 3: Prediction frequency too long/short**
