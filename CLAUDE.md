@@ -64,7 +64,7 @@ sudo journalctl -u video-monitor -f
 
 ### 必需配置文件（手动创建）
 
-- **`.env`**: 环境变量配置（GITHUB_TOKEN, BARK_DEVICE_KEY, GIST_ID, BILIBILI_UID）
+- **`data/.env`**: 环境变量配置（GITHUB_TOKEN, BARK_DEVICE_KEY, GIST_ID, BILIBILI_UID）
 - **`data/cookies.txt`**: B站登录凭证
 
 ### 自动生成的数据文件

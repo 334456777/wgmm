@@ -18,10 +18,10 @@
 
 ```bash
 # 复制环境变量模板
-cp .env.example .env
+cp data/.env.example data/.env
 
 # 编辑 .env 文件,填入你的配置
-nano .env
+nano data/.env
 ```
 
 **必需配置**:
@@ -93,9 +93,9 @@ wgmm/
 ├── pyproject.toml                # Ruff 代码质量配置
 ├── video-monitor.service         # systemd 服务配置
 │
-├── .env                          # 环境变量配置 ⚠️ 需手动创建
-│
 ├── data/                         # 数据目录 (自动创建)
+│   ├── .env                      # 环境变量配置 ⚠️ 需手动创建
+│   ├── .env.example              # 环境变量模板 (已纳入版本控制)
 │   ├── cookies.txt               # B站登录凭证 ⚠️ 需手动创建
 │   ├── local_known.txt           # 本地已知URL列表 (自动生成)
 │   ├── wgmm_config.json          # WGMM算法状态 (自动生成)
@@ -321,14 +321,14 @@ sudo systemctl status video-monitor
 sudo journalctl -u video-monitor -n 100
 
 # 检查配置文件
-cat .env
+cat data/.env
 ls -l data/cookies.txt
 ```
 
 ### 常见问题
 
 **问题1: 服务无法启动**
-- 检查 `.env` 文件是否存在且配置正确
+- 检查 `data/.env` 文件是否存在且配置正确
 - 检查 `data/cookies.txt` 是否存在
 - 查看详细错误日志: `sudo journalctl -u video-monitor -n 50`
 
@@ -356,7 +356,7 @@ ls -l data/cookies.txt
 
 ## 🛡️ 安全性
 
-- `.env` 和 `cookies.txt` 已被 `.gitignore` 排除
+- `data/.env` 和 `data/cookies.txt` 已被 `.gitignore` 排除
 - 敏感文件不纳入版本控制
 - systemd 服务使用安全沙盒设置
 - 建议定期更换 GitHub Token

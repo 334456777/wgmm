@@ -18,10 +18,10 @@ Bilibili video intelligent monitoring system based on **Weighted Gaussian Mixtur
 
 ```bash
 # Copy environment variable template
-cp .env.example .env
+cp data/.env.example data/.env
 
 # Edit .env file, fill in your configuration
-nano .env
+nano data/.env
 ```
 
 **Required Configuration**:
@@ -93,9 +93,9 @@ wgmm/
 ├── pyproject.toml                # Ruff code quality configuration
 ├── video-monitor.service         # systemd service configuration
 │
-├── .env                          # Environment variables ⚠️ Manual creation required
-│
 ├── data/                         # Data directory (auto-created)
+│   ├── .env                      # Environment variables ⚠️ Manual creation required
+│   ├── .env.example              # Environment variable template (committed)
 │   ├── cookies.txt               # Bilibili login credentials ⚠️ Manual creation required
 │   ├── local_known.txt           # Local known URL list (auto-generated)
 │   ├── wgmm_config.json          # WGMM algorithm state (auto-generated)
@@ -321,14 +321,14 @@ sudo systemctl status video-monitor
 sudo journalctl -u video-monitor -n 100
 
 # Check configuration files
-cat .env
+cat data/.env
 ls -l data/cookies.txt
 ```
 
 ### Common Issues
 
 **Issue 1: Service cannot start**
-- Check if `.env` file exists and is configured correctly
+- Check if `data/.env` file exists and is configured correctly
 - Check if `data/cookies.txt` exists
 - View detailed error logs: `sudo journalctl -u video-monitor -n 50`
 
@@ -356,7 +356,7 @@ ls -l data/cookies.txt
 
 ## 🛡️ Security
 
-- `.env` and `cookies.txt` excluded by `.gitignore`
+- `data/.env` and `data/cookies.txt` excluded by `.gitignore`
 - Sensitive files not under version control
 - systemd service uses secure sandbox settings
 - Recommend regularly changing GitHub Token

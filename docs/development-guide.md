@@ -429,10 +429,10 @@ sudo journalctl -u video-monitor -f
 
 ```bash
 # 检查必需文件是否存在
-ls -la .env data/cookies.txt data/local_known.txt data/wgmm_config.json
+ls -la data/.env data/cookies.txt data/local_known.txt data/wgmm_config.json
 
 # 验证环境变量
-cat .env
+cat data/.env
 
 # 验证 cookies.txt 格式（应该是 Netscape 格式）
 head -5 data/cookies.txt
@@ -539,7 +539,7 @@ cp data/local_known.txt backups/$(date +%Y%m%d)/
 cp data/wgmm_config.json backups/$(date +%Y%m%d)/
 cp data/mtime.txt backups/$(date +%Y%m%d)/
 cp data/miss_history.txt backups/$(date +%Y%m%d)/
-cp .env backups/$(date +%Y%m%d)/  # 注意：敏感文件，妥善保管
+cp data/.env backups/$(date +%Y%m%d)/  # 注意：敏感文件，妥善保管
 
 # 压缩备份
 cd backups
