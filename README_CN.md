@@ -45,7 +45,7 @@ BILIBILI_UID=your_bilibili_uid         # 要监控的UP主UID
 1. 登录 B站后打开开发者工具 (F12)
 2. 访问任意视频页面
 3. Application → Cookies → 复制所有 cookies
-4. 保存到项目目录的 `cookies.txt` 文件
+4. 保存到项目目录的 `data/cookies.txt` 文件
 
 **格式示例**:
 ```
@@ -94,12 +94,14 @@ wgmm/
 ├── video-monitor.service         # systemd 服务配置
 │
 ├── .env                          # 环境变量配置 ⚠️ 需手动创建
-├── cookies.txt                   # B站登录凭证 ⚠️ 需手动创建
 │
-├── local_known.txt               # 本地已知URL列表 (自动生成)
-├── wgmm_config.json              # WGMM算法状态 (自动生成)
-├── mtime.txt                     # 历史发布时间戳 (自动生成)
-├── miss_history.txt              # 失败历史记录 (自动生成)
+├── data/                         # 数据目录 (自动创建)
+│   ├── cookies.txt               # B站登录凭证 ⚠️ 需手动创建
+│   ├── local_known.txt           # 本地已知URL列表 (自动生成)
+│   ├── wgmm_config.json          # WGMM算法状态 (自动生成)
+│   ├── mtime.txt                 # 历史发布时间戳 (自动生成)
+│   └── miss_history.txt          # 失败历史记录 (自动生成)
+│
 ├── urls.log                      # 主运行日志 (自动生成)
 └── critical_errors.log           # 严重错误日志 (自动生成)
 ```
@@ -198,7 +200,7 @@ python monitor.py
 
 ```bash
 # 查看当前配置
-cat wgmm_config.json
+cat data/wgmm_config.json
 
 # 查看日志中的预测结果
 grep "WGMM调频" urls.log | tail -20
@@ -286,10 +288,10 @@ MAX_INTERVAL = 2592000   # 最大检查间隔 (30天)
 
 ### Q4: 如何重置算法学习?
 
-**A**: 删除 `wgmm_config.json` 和 `mtime.txt`,重启程序即可重新学习:
+**A**: 删除 `data/wgmm_config.json` 和 `data/mtime.txt`,重启程序即可重新学习:
 
 ```bash
-rm wgmm_config.json mtime.txt
+rm data/wgmm_config.json data/mtime.txt
 sudo systemctl restart video-monitor
 ```
 
@@ -297,14 +299,14 @@ sudo systemctl restart video-monitor
 
 **A**:
 1. 查看日志了解当前热力得分: `grep "热力" urls.log | tail -5`
-2. 检查历史数据是否正常: `wc -l mtime.txt`
+2. 检查历史数据是否正常: `wc -l data/mtime.txt`
 3. 如需重新学习,参考 Q4 重置算法
 
 ### Q6: cookies.txt 过期怎么办?
 
 **A**:
 1. 重新从浏览器导出 cookies
-2. 替换 `cookies.txt` 文件
+2. 替换 `data/cookies.txt` 文件
 3. 重启服务: `sudo systemctl restart video-monitor`
 
 ## 🔍 故障排查
@@ -320,18 +322,18 @@ sudo journalctl -u video-monitor -n 100
 
 # 检查配置文件
 cat .env
-ls -l cookies.txt
+ls -l data/cookies.txt
 ```
 
 ### 常见问题
 
 **问题1: 服务无法启动**
 - 检查 `.env` 文件是否存在且配置正确
-- 检查 `cookies.txt` 是否存在
+- 检查 `data/cookies.txt` 是否存在
 - 查看详细错误日志: `sudo journalctl -u video-monitor -n 50`
 
 **问题2: 检测不到新视频**
-- 验证 cookies.txt 是否过期
+- 验证 data/cookies.txt 是否过期
 - 手动运行 `python monitor.py --dev` 测试
 - 检查 BILIBILI_UID 是否正确
 

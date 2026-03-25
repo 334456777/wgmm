@@ -45,7 +45,7 @@ Export Bilibili login credentials from browser:
 1. Open developer tools (F12) after logging into Bilibili
 2. Visit any video page
 3. Application → Cookies → Copy all cookies
-4. Save to `cookies.txt` file in project directory
+4. Save to `data/cookies.txt` file in project directory
 
 **Format Example**:
 ```
@@ -94,12 +94,14 @@ wgmm/
 ├── video-monitor.service         # systemd service configuration
 │
 ├── .env                          # Environment variables ⚠️ Manual creation required
-├── cookies.txt                   # Bilibili login credentials ⚠️ Manual creation required
 │
-├── local_known.txt               # Local known URL list (auto-generated)
-├── wgmm_config.json              # WGMM algorithm state (auto-generated)
-├── mtime.txt                     # Historical release timestamps (auto-generated)
-├── miss_history.txt              # Failure history records (auto-generated)
+├── data/                         # Data directory (auto-created)
+│   ├── cookies.txt               # Bilibili login credentials ⚠️ Manual creation required
+│   ├── local_known.txt           # Local known URL list (auto-generated)
+│   ├── wgmm_config.json          # WGMM algorithm state (auto-generated)
+│   ├── mtime.txt                 # Historical release timestamps (auto-generated)
+│   └── miss_history.txt          # Failure history records (auto-generated)
+│
 ├── urls.log                      # Main runtime log (auto-generated)
 └── critical_errors.log           # Critical error log (auto-generated)
 ```
@@ -198,7 +200,7 @@ python monitor.py
 
 ```bash
 # View current configuration
-cat wgmm_config.json
+cat data/wgmm_config.json
 
 # View prediction results in logs
 grep "WGMM调频" urls.log | tail -20
@@ -286,10 +288,10 @@ The algorithm naturally produces 3-day intervals through the following mechanism
 
 ### Q4: How to reset algorithm learning?
 
-**A**: Delete `wgmm_config.json` and `mtime.txt`, restart program to relearn:
+**A**: Delete `data/wgmm_config.json` and `data/mtime.txt`, restart program to relearn:
 
 ```bash
-rm wgmm_config.json mtime.txt
+rm data/wgmm_config.json data/mtime.txt
 sudo systemctl restart video-monitor
 ```
 
@@ -297,14 +299,14 @@ sudo systemctl restart video-monitor
 
 **A**:
 1. Check logs to understand current heat score: `grep "热力" urls.log | tail -5`
-2. Check if historical data is normal: `wc -l mtime.txt`
+2. Check if historical data is normal: `wc -l data/mtime.txt`
 3. To relearn, reset algorithm as in Q4
 
 ### Q6: What to do if cookies.txt expires?
 
 **A**:
 1. Re-export cookies from browser
-2. Replace `cookies.txt` file
+2. Replace `data/cookies.txt` file
 3. Restart service: `sudo systemctl restart video-monitor`
 
 ## 🔍 Troubleshooting
@@ -320,18 +322,18 @@ sudo journalctl -u video-monitor -n 100
 
 # Check configuration files
 cat .env
-ls -l cookies.txt
+ls -l data/cookies.txt
 ```
 
 ### Common Issues
 
 **Issue 1: Service cannot start**
 - Check if `.env` file exists and is configured correctly
-- Check if `cookies.txt` exists
+- Check if `data/cookies.txt` exists
 - View detailed error logs: `sudo journalctl -u video-monitor -n 50`
 
 **Issue 2: Cannot detect new videos**
-- Verify if cookies.txt has expired
+- Verify if data/cookies.txt has expired
 - Manually run `python monitor.py --dev` to test
 - Check if BILIBILI_UID is correct
 

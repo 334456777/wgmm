@@ -304,16 +304,16 @@ sudo journalctl -u video-monitor -n 100
 
 ### 检查算法状态
 
-查看 `wgmm_config.json` 了解当前算法参数：
+查看 `data/wgmm_config.json` 了解当前算法参数：
 ```bash
 # 查看原始 JSON
-cat wgmm_config.json
+cat data/wgmm_config.json
 
 # 格式化输出
-cat wgmm_config.json | python -m json.tool
+cat data/wgmm_config.json | python -m json.tool
 
 # 查看历史数据分布（按小时统计）
-awk '{print strftime("%Y-%m-%d %H:%M:%S", $1)}' mtime.txt | \
+awk '{print strftime("%Y-%m-%d %H:%M:%S", $1)}' data/mtime.txt | \
     awk '{print $2}' | cut -d: -f1 | sort | uniq -c
 ```
 
@@ -332,7 +332,7 @@ python monitor.py --dev
 
 ```bash
 # 备份配置
-cp wgmm_config.json wgmm_config.json.bak
+cp data/wgmm_config.json data/wgmm_config.json.bak
 
 # 修改参数（使用 jq 或手动编辑）
 # ...
@@ -341,7 +341,7 @@ cp wgmm_config.json wgmm_config.json.bak
 python monitor.py --dev
 
 # 恢复配置
-cp wgmm_config.json.bak wgmm_config.json
+cp data/wgmm_config.json.bak data/wgmm_config.json
 ```
 
 ## 常规维护任务
@@ -370,7 +370,7 @@ sudo journalctl -u video-monitor -n 50 -f
 cat critical_errors.log
 
 # 查看算法学习状态
-cat wgmm_config.json | python -m json.tool
+cat data/wgmm_config.json | python -m json.tool
 
 # 检查磁盘空间
 df -h
@@ -429,13 +429,13 @@ sudo journalctl -u video-monitor -f
 
 ```bash
 # 检查必需文件是否存在
-ls -la .env cookies.txt local_known.txt wgmm_config.json
+ls -la .env data/cookies.txt data/local_known.txt data/wgmm_config.json
 
 # 验证环境变量
 cat .env
 
 # 验证 cookies.txt 格式（应该是 Netscape 格式）
-head -5 cookies.txt
+head -5 data/cookies.txt
 
 # 测试环境变量加载
 source .venv/bin/activate
@@ -497,7 +497,7 @@ sudo systemctl status video-monitor
 1. **检查历史数据量**
    ```bash
    # 查看 mtime.txt 行数
-   wc -l mtime.txt
+   wc -l data/mtime.txt
 
    # 如果超过 1000 行，可能需要考虑数据剪枝
    ```
@@ -535,10 +535,10 @@ sudo systemctl status video-monitor
 mkdir -p backups/$(date +%Y%m%d)
 
 # 备份关键文件
-cp local_known.txt backups/$(date +%Y%m%d)/
-cp wgmm_config.json backups/$(date +%Y%m%d)/
-cp mtime.txt backups/$(date +%Y%m%d)/
-cp miss_history.txt backups/$(date +%Y%m%d)/
+cp data/local_known.txt backups/$(date +%Y%m%d)/
+cp data/wgmm_config.json backups/$(date +%Y%m%d)/
+cp data/mtime.txt backups/$(date +%Y%m%d)/
+cp data/miss_history.txt backups/$(date +%Y%m%d)/
 cp .env backups/$(date +%Y%m%d)/  # 注意：敏感文件，妥善保管
 
 # 压缩备份
@@ -562,7 +562,7 @@ BACKUP_DIR="backups/$(date +%Y%m%d)"
 mkdir -p "$BACKUP_DIR"
 
 # 备份关键文件
-cp local_known.txt wgmm_config.json mtime.txt miss_history.txt "$BACKUP_DIR/"
+cp data/local_known.txt data/wgmm_config.json data/mtime.txt data/miss_history.txt "$BACKUP_DIR/"
 
 # 压缩备份
 tar czf "backups/wgmm_backup_$(date +%Y%m%d).tar.gz" "$BACKUP_DIR/"
