@@ -1209,11 +1209,12 @@ class VideoMonitor:
 
 		算法:
 		1. 数据不足(< MIN_SAMPLES)时直接返回空列表, 保持原有行为
-		2. 将时间戳投影到小时级二值信号(有发布=1, 无=0)
-		3. FFT计算频谱幅度, 找超过能量阈值的峰值
-		4. 过滤已有4个维度覆盖的周期(±20%容忍窗口)
-		5. 过滤谐波(整数倍关系±20%容忍)
-		6. 按能量强度返回前MAX_PERIODS个新周期(秒)
+		2. 根据 last_lambda 计算有效窗口(weight<0.05截止), 上限8760h, 窗口随lambda伸缩
+		3. 将时间戳投影到小时级衰减权重信号(权重 = exp(-lambda * age_hours))
+		4. FFT计算频谱幅度, 找超过能量阈值的峰值
+		5. 过滤已有4个维度覆盖的周期(±20%容忍窗口)
+		6. 过滤谐波(整数倍关系±20%容忍)
+		7. 按能量强度返回前MAX_PERIODS个新周期(秒)
 
 		Args:
 			timestamps: 历史时间戳列表(Unix秒)
@@ -1235,20 +1236,27 @@ class VideoMonitor:
 			return []
 
 		ts_arr = np.array(sorted(timestamps), dtype=np.float64)
-		min_span_hours = 72  # 至少3天跨度才有意义
-		max_span_hours = 24 * 180  # 最多取最近180天, 避免大数组开销
-		# 只取最近 max_span_hours 范围内的时间戳
-		cutoff = ts_arr[-1] - max_span_hours * 3600
+		now_ts = ts_arr[-1]
+
+		# 用遗忘函数确定有效窗口: weight = exp(-lambda * age_hours) < 0.05 的部分忽略
+		# 上限 8760h(1年)防止 lambda 极小时数组过大
+		last_lambda = self.wgmm_config.get("last_lambda", 0.0001)
+		min_weight = 0.05
+		effective_hours = min(int(-np.log(min_weight) / last_lambda), 8760)
+		cutoff = now_ts - effective_hours * 3600
 		ts_arr = ts_arr[ts_arr >= cutoff]
+
+		min_span_hours = 72  # 至少3天跨度才有意义
 		span_hours = int((ts_arr[-1] - ts_arr[0]) / 3600) + 1
 		if span_hours < min_span_hours:
 			return []
 
-		# 构建小时级二值信号
+		# 构建小时级衰减权重信号: 近期事件贡献大, 远期事件自然淡出
 		signal = np.zeros(span_hours, dtype=np.float64)
 		for ts in ts_arr:
 			bucket = min(int((ts - ts_arr[0]) / 3600), span_hours - 1)
-			signal[bucket] += 1.0
+			age_hours = (now_ts - ts) / 3600.0
+			signal[bucket] += float(np.exp(-last_lambda * age_hours))
 
 		# FFT频谱分析
 		fft_mag = np.abs(np.fft.rfft(signal))
