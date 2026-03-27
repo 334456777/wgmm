@@ -1307,7 +1307,8 @@ class VideoMonitor:
 	def _sync_discovered_periods(self, new_periods: list[float]) -> None:
 		"""将新发现周期与配置中已有周期对比, 稳定映射到custom_N索引.
 
-		使用±10%容忍窗口复用已有周期的权重历史, 避免每次运行重置学习结果.
+		以stored为锚保持已有索引位置不变, 消失的周期直接丢弃, 新周期追加到末尾,
+		确保已学习的 dimension_weights/sigmas 不会因排序变化而错误套用到其他周期.
 
 		Args:
 			new_periods: 本次FFT发现的周期列表(秒)
@@ -1315,14 +1316,18 @@ class VideoMonitor:
 		"""
 		match_tol = 0.1
 		stored = self.wgmm_config.get("discovered_periods", [])
-		matched: list[float] = []
-		for np_ in new_periods:
-			reuse = next(
-				(s for s in stored if abs(np_ - s) / max(s, 1.0) < match_tol),
+		unmatched_new = list(new_periods)
+		result: list[float] = []
+		for s in stored:
+			match = next(
+				(p for p in unmatched_new if abs(p - s) / max(s, 1.0) < match_tol),
 				None,
 			)
-			matched.append(reuse if reuse is not None else np_)
-		self.wgmm_config["discovered_periods"] = matched
+			if match is not None:
+				result.append(s)  # 保持stored值, 索引不漂移
+				unmatched_new.remove(match)
+		result.extend(unmatched_new)  # 未匹配的新周期追加到末尾
+		self.wgmm_config["discovered_periods"] = result
 
 	def _initialize_wgmm_config(self) -> tuple[dict, dict, bool]:
 		"""初始化 WGMM 配置参数.
