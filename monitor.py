@@ -1235,8 +1235,12 @@ class VideoMonitor:
 			return []
 
 		ts_arr = np.array(sorted(timestamps), dtype=np.float64)
-		span_hours = int((ts_arr[-1] - ts_arr[0]) / 3600) + 1
 		min_span_hours = 72  # 至少3天跨度才有意义
+		max_span_hours = 24 * 180  # 最多取最近180天, 避免大数组开销
+		# 只取最近 max_span_hours 范围内的时间戳
+		cutoff = ts_arr[-1] - max_span_hours * 3600
+		ts_arr = ts_arr[ts_arr >= cutoff]
+		span_hours = int((ts_arr[-1] - ts_arr[0]) / 3600) + 1
 		if span_hours < min_span_hours:
 			return []
 
@@ -1362,8 +1366,11 @@ class VideoMonitor:
 		discovered = config.get("discovered_periods", [])
 		# 删除已不在发现列表中的 custom_N key
 		for k in [k for k in list(dimension_weights) if k.startswith("custom_")]:
-			idx = int(k.split("_")[1])
-			if idx >= len(discovered):
+			suffix = k[len("custom_") :]
+			if not suffix.isdigit():
+				self.log_warning(f"wgmm_config 包含格式异常的 key '{k}', 已跳过清理")
+				continue
+			if int(suffix) >= len(discovered):
 				dimension_weights.pop(k, None)
 				sigmas.pop(k, None)
 		# 为新发现的周期添加初始 weight/sigma
