@@ -1628,9 +1628,6 @@ class VideoMonitor:
 		discovered_periods = self._discover_periods(positive_events)
 		self._sync_discovered_periods(discovered_periods)
 		extra_periods: list[float] = self.wgmm_config.get("discovered_periods", [])
-		if extra_periods:
-			hours_str = [round(p / 3600, 1) for p in extra_periods]
-			self.log_info(f"FFT发现附加周期: {hours_str} 小时")
 
 		# 学习维度权重和 Sigma 参数(含附加自定义周期)
 		dimension_weights = self._learn_dimension_weights(
