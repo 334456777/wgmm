@@ -61,9 +61,10 @@
 **用途**: 从 `wgmm_config.json` 加载 WGMM 算法配置
 
 **加载的参数**:
-- 维度权重 (day, week, month_week, year_month)
+- 维度权重 (day, week, month_week, year_month, 以及 custom_N 附加维度)
 - 自适应 lambda 值
 - 每个维度的 Sigma 值
+- `discovered_periods`：FFT 自动发现的附加周期列表（秒）
 - 历史统计数据
 
 ---
@@ -89,9 +90,10 @@
 2. 使用 IQR 方法过滤异常值
 3. 剪枝低权重的旧数据
 4. 根据发布方差计算自适应 lambda
-5. 为每个时间维度学习维度权重
-6. 调用 `_scan_future_peak()` 扫描未来 15 天找峰值
-7. 将得分映射到检查间隔
+5. FFT 自动发现附加周期（`_discover_periods` + `_sync_discovered_periods`），更新 `discovered_periods`
+6. 为每个时间维度学习维度权重（含 custom_N 附加维度）
+7. 调用 `_scan_future_peak()` 扫描未来 15 天找峰值
+8. 将得分映射到检查间隔
 
 **另见**: `_scan_future_peak()`
 
@@ -146,6 +148,32 @@
 
 ---
 
+#### `_discover_periods(timestamps)`
+**用途**: FFT 频谱分析，从历史时间戳中发现非日历周期，作为附加维度候选
+
+**算法**:
+1. 数据不足（< 50 条或跨度 < 72 小时）时返回空列表
+2. 将时间戳投影到小时级二值信号
+3. FFT 计算频谱幅度，筛选超过平均能量 3 倍的峰值
+4. 过滤已有 4 维覆盖的周期（±20% 容忍）
+5. 过滤谐波（整数分频关系，±20% 容忍）
+6. 按周期从长到短选取最多 3 个新周期
+
+**返回值**: `list[float]` - 发现的新周期（秒），数据不足时返回 `[]`
+
+**注意**: 返回空列表时对算法完全无影响（向后兼容）
+
+---
+
+#### `_sync_discovered_periods(new_periods)`
+**用途**: 将本次 FFT 发现的周期与配置中已存储的周期对比，稳定映射到 `custom_N` 索引
+
+**算法**: 对每个新发现周期，在已存储周期中寻找 ±10% 内的匹配。匹配成功则复用已有条目（保留学习到的权重），否则使用新周期值（权重重置为 0.1）
+
+**副作用**: 更新 `self.wgmm_config["discovered_periods"]`
+
+---
+
 #### `learn_dimension_weights()`
 **用途**: 为每个时间维度学习重要性权重
 
@@ -154,6 +182,7 @@
 - `week`: 一周中的天数 (7 天周期)
 - `month_week`: 月中的周
 - `year_month`: 年中的月份
+- `custom_0` ~ `custom_2`: FFT 自动发现的非日历周期（可选，最多 3 个）
 
 **方法**:
 - 计算每个维度的得分方差
@@ -761,13 +790,15 @@ run_monitor() 主循环
 ```
 adjust_check_frequency()
 ├── 加载正向事件 (mtime.txt) 和负向事件 (miss_history.txt)
-├── filter_outliers()           # 过滤异常值
-├── prune_old_data()            # 剪枝低权重历史数据
-├── _calculate_adaptive_lambda() # 自适应计算遗忘速度
-├── learn_dimension_weights()   # 学习维度重要性
-├── learn_adaptive_sigmas()      # 学习时间容忍度
-├── _calculate_point_score()    # 计算当前时间发布概率
-├── _batch_calculate_scores()   # 扫描未来 15 天找峰值
+├── filter_outliers()              # 过滤异常值
+├── prune_old_data()               # 剪枝低权重历史数据
+├── _calculate_adaptive_lambda()   # 自适应计算遗忘速度
+├── _discover_periods()            # FFT 发现非日历周期（数据不足时跳过）
+├── _sync_discovered_periods()     # 与配置已有周期对比，稳定 custom_N 映射
+├── learn_dimension_weights()      # 学习所有维度权重（固定4维 + custom_N）
+├── learn_adaptive_sigmas()        # 学习所有维度容忍度
+├── _calculate_point_score()       # 计算当前时间发布概率
+├── _batch_calculate_scores()      # 扫描未来 15 天找峰值
 └── 映射得分 → 检查间隔
 ```
 
@@ -860,11 +891,11 @@ ruff check --fix monitor.py
 
 ## 文件位置
 
-- **核心代码**: `/Users/yusteven/Documents/wgmm/monitor.py`
-- **配置文件**: `/Users/yusteven/Documents/wgmm/.env`
-- **WGMM 配置**: `/Users/yusteven/Documents/wgmm/wgmm_config.json`
-- **已知 URL**: `/Users/yusteven/Documents/wgmm/local_known.txt`
-- **发布历史**: `/Users/yusteven/Documents/wgmm/mtime.txt`
-- **失误历史**: `/Users/yusteven/Documents/wgmm/miss_history.txt`
-- **主日志**: `/Users/yusteven/Documents/wgmm/urls.log`
-- **严重错误**: `/Users/yusteven/Documents/wgmm/critical_errors.log`
+- **核心代码**: `/home/user/wgmm/monitor.py`
+- **配置文件**: `/home/user/wgmm/.env`
+- **WGMM 配置**: `/home/user/wgmm/wgmm_config.json`
+- **已知 URL**: `/home/user/wgmm/local_known.txt`
+- **发布历史**: `/home/user/wgmm/mtime.txt`
+- **失误历史**: `/home/user/wgmm/miss_history.txt`
+- **主日志**: `/home/user/wgmm/urls.log`
+- **严重错误**: `/home/user/wgmm/critical_errors.log`

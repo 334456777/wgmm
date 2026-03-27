@@ -224,6 +224,7 @@ class VideoMonitor:
 			"last_update": 0,
 			"next_check_time": 0,
 			"is_manual_run": True,
+			"discovered_periods": [],
 		}
 		config_file = Path(self.wgmm_config_file)
 		try:
@@ -987,7 +988,11 @@ class VideoMonitor:
 		)
 
 	def _learn_dimension_weights(
-		self, timestamps: list, old_weights: dict, learning_rate: float
+		self,
+		timestamps: list,
+		old_weights: dict,
+		learning_rate: float,
+		extra_periods: list | None = None,
 	) -> dict:
 		"""动态学习各时间维度的权重.
 
@@ -998,6 +1003,7 @@ class VideoMonitor:
 			timestamps: 历史时间戳列表
 			old_weights: 当前维度权重字典
 			learning_rate: 学习率(控制新旧权重的混合比例)
+			extra_periods: FFT发现的附加周期列表(秒), None时仅学习固定4维权重
 
 		Returns:
 			平滑后的新权重字典
@@ -1007,14 +1013,15 @@ class VideoMonitor:
 		if len(timestamps) < min_count_for_learning:
 			return old_weights
 
-		# 提取原始时间维度值(小时、星期几、第几周、月份)
+		# 提取原始时间维度值(小时、星期几、第几周、月份, 以及附加自定义周期)
 		raw_components = self._get_raw_time_components(
 			np.array(timestamps, dtype=np.float64),
+			extra_periods,
 		)
 
 		# 计算各维度得分:均值/标准差(反映分布集中度)
 		dimension_scores = {}
-		for dim in ["day", "week", "month_week", "year_month"]:
+		for dim in raw_components:
 			keys = raw_components.get(dim, np.array([], dtype=np.int64))
 			if len(keys) == 0:
 				dimension_scores[dim] = 0.0
@@ -1046,16 +1053,22 @@ class VideoMonitor:
 			new_weights = old_weights
 
 		# 指数平滑更新权重:新权重 * 学习率 + 旧权重 * (1 - 学习率)
+		# 对新维度(custom_N)使用 old_weights.get() 提供初始值0.1
 		smoothed_weights = {}
 		for key in dimension_scores:
-			old_weight = old_weights[key]
-			new_weight = new_weights[key]
+			old_weight = old_weights.get(key, 0.1)
+			new_weight = new_weights.get(key, 0.1)
 			smoothed = old_weight * (1 - learning_rate) + new_weight * learning_rate
 			smoothed_weights[key] = float(smoothed)
 
 		return smoothed_weights
 
-	def _learn_adaptive_sigmas(self, timestamps: list, old_sigmas: dict) -> dict:
+	def _learn_adaptive_sigmas(
+		self,
+		timestamps: list,
+		old_sigmas: dict,
+		extra_periods: list | None = None,
+	) -> dict:
 		"""根据数据离散度动态学习 Sigma 参数.
 
 		数学原理:
@@ -1066,9 +1079,10 @@ class VideoMonitor:
 		Args:
 			timestamps: 历史时间戳列表
 			old_sigmas: 当前的 sigma 字典
+			extra_periods: FFT发现的附加周期列表(秒), None时仅学习固定4维sigma
 
 		Returns:
-			学习后的 sigma 字典
+			学习后的 sigma 字典(包含附加custom_N维度)
 
 		"""
 		min_learn_count = 20
@@ -1077,11 +1091,12 @@ class VideoMonitor:
 			return old_sigmas
 
 		raw_components = self._get_raw_time_components(
-			np.array(timestamps, dtype=np.float64)
+			np.array(timestamps, dtype=np.float64),
+			extra_periods,
 		)
 
 		new_sigmas = {}
-		for dim in ["day", "week", "month_week", "year_month"]:
+		for dim in raw_components:
 			values = raw_components.get(dim, np.array([], dtype=np.int64))
 			if len(values) >= min_sigma_samples:
 				value_range = float(np.max(values) - np.min(values))
@@ -1187,6 +1202,145 @@ class VideoMonitor:
 
 		return float(final_lambda), float(current_variance)
 
+	def _discover_periods(self, timestamps: list) -> list[float]:
+		"""FFT自相关发现隐含发布周期.
+
+		从历史时间戳中自动识别非日历周期性规律, 作为附加维度候选.
+
+		算法:
+		1. 数据不足(< MIN_SAMPLES)时直接返回空列表, 保持原有行为
+		2. 根据 last_lambda 计算有效窗口(weight<0.05截止), 上限8760h, 窗口随lambda伸缩
+		3. 将时间戳投影到小时级衰减权重信号(权重 = exp(-lambda * age_hours))
+		4. FFT计算频谱幅度, 找超过能量阈值的峰值
+		5. 过滤已有4个维度覆盖的周期(±20%容忍窗口)
+		6. 过滤谐波(整数倍关系±20%容忍)
+		7. 按能量强度返回前MAX_PERIODS个新周期(秒)
+
+		Args:
+			timestamps: 历史时间戳列表(Unix秒)
+
+		Returns:
+			发现的新周期列表(秒), 最多MAX_PERIODS个, 数据不足时返回空列表
+
+		"""
+		min_samples = 50
+		max_periods = 3
+		energy_ratio = 3.0  # 峰值能量/平均能量的最小倍数
+		tolerance = 0.2  # 周期匹配容忍窗口(±20%)
+		min_period_sec = 7200.0  # 最短候选周期: 2小时
+		max_period_sec = 86400.0 * 90  # 最长候选周期: 90天
+		# 已有4个维度对应的代表周期(秒)
+		existing_periods = [86400.0, 604800.0, 2592000.0, 31536000.0]
+
+		if len(timestamps) < min_samples:
+			return []
+
+		ts_arr = np.array(sorted(timestamps), dtype=np.float64)
+		now_ts = ts_arr[-1]
+
+		# 用遗忘函数确定有效窗口: weight = exp(-lambda * age_hours) < 0.05 的部分忽略
+		# 上限 8760h(1年)防止 lambda 极小时数组过大
+		last_lambda = self.wgmm_config.get("last_lambda", 0.0001)
+		min_weight = 0.05
+		effective_hours = min(int(-np.log(min_weight) / last_lambda), 8760)
+		cutoff = now_ts - effective_hours * 3600
+		ts_arr = ts_arr[ts_arr >= cutoff]
+
+		min_span_hours = 72  # 至少3天跨度才有意义
+		span_hours = int((ts_arr[-1] - ts_arr[0]) / 3600) + 1
+		if span_hours < min_span_hours:
+			return []
+
+		# 构建小时级衰减权重信号: 近期事件贡献大, 远期事件自然淡出
+		signal = np.zeros(span_hours, dtype=np.float64)
+		for ts in ts_arr:
+			bucket = min(int((ts - ts_arr[0]) / 3600), span_hours - 1)
+			age_hours = (now_ts - ts) / 3600.0
+			signal[bucket] += float(np.exp(-last_lambda * age_hours))
+
+		# FFT频谱分析
+		fft_mag = np.abs(np.fft.rfft(signal))
+		freqs = np.fft.rfftfreq(span_hours, d=1.0)  # 单位: cycles/hour
+
+		# 转换为周期(秒), 排除DC分量(freq=0)
+		with np.errstate(divide="ignore"):
+			period_sec = np.where(freqs > 0, 3600.0 / freqs, np.inf)
+
+		range_mask = (period_sec >= min_period_sec) & (period_sec <= max_period_sec)
+		if not np.any(range_mask):
+			return []
+
+		# 计算非DC频率的平均能量, 只保留超过阈值的候选
+		mean_mag = float(np.mean(fft_mag[freqs > 0]))
+		if mean_mag == 0:
+			return []
+
+		candidate_idx = np.where(range_mask & (fft_mag > energy_ratio * mean_mag))[0]
+		if len(candidate_idx) == 0:
+			return []
+
+		# 按周期降序排列(最长周期=最低频率=最基波优先), 过滤其高频泛音.
+		# 谐波信号各阶幅度相近, 按能量排序无法区分基波与泛音, 必须用频率排序.
+		candidate_idx = candidate_idx[np.argsort(-period_sec[candidate_idx])]
+		candidate_periods = period_sec[candidate_idx]
+
+		# 过滤策略:
+		# 1. 直接匹配已有4个维度周期(±20%容忍) → 过滤
+		# 2. 比已选锚点更短且成整数倍关系(泛音) → 过滤
+		# 月/年周期不用作泛音锚点(过于粗略会误杀3d/10d等真实周期)
+		direct_anchors = list(existing_periods)  # 用于直接匹配
+		subharmonic_anchors: list[float] = [86400.0, 604800.0]  # 仅日/周用于泛音过滤
+		novel: list[float] = []
+		for p in candidate_periods:
+			skip = False
+			# 直接匹配已有维度
+			for anchor in direct_anchors:
+				if abs(p / anchor - 1.0) < tolerance:
+					skip = True
+					break
+			if skip:
+				continue
+			# 泛音过滤: 比锚点更短且整数比≤6阶
+			for anchor in subharmonic_anchors:
+				if p < anchor:
+					ratio = anchor / p
+					if abs(ratio - round(ratio)) < tolerance:
+						skip = True
+						break
+			if skip:
+				continue
+			novel.append(float(p))
+			subharmonic_anchors.append(float(p))  # 已选周期也作为后续泛音过滤的锚点
+			if len(novel) >= max_periods:
+				break
+
+		return novel
+
+	def _sync_discovered_periods(self, new_periods: list[float]) -> None:
+		"""将新发现周期与配置中已有周期对比, 稳定映射到custom_N索引.
+
+		以stored为锚保持已有索引位置不变, 消失的周期直接丢弃, 新周期追加到末尾,
+		确保已学习的 dimension_weights/sigmas 不会因排序变化而错误套用到其他周期.
+
+		Args:
+			new_periods: 本次FFT发现的周期列表(秒)
+
+		"""
+		match_tol = 0.1
+		stored = self.wgmm_config.get("discovered_periods", [])
+		unmatched_new = list(new_periods)
+		result: list[float] = []
+		for s in stored:
+			match = next(
+				(p for p in unmatched_new if abs(p - s) / max(s, 1.0) < match_tol),
+				None,
+			)
+			if match is not None:
+				result.append(s)  # 保持stored值, 索引不漂移
+				unmatched_new.remove(match)
+		result.extend(unmatched_new)  # 未匹配的新周期追加到末尾
+		self.wgmm_config["discovered_periods"] = result
+
 	def _initialize_wgmm_config(self) -> tuple[dict, dict, bool]:
 		"""初始化 WGMM 配置参数.
 
@@ -1216,6 +1370,25 @@ class VideoMonitor:
 
 		sigmas = config["sigmas"]
 
+		# 同步 custom_N 维度的 weight/sigma 与 discovered_periods 保持一致
+		discovered = config.get("discovered_periods", [])
+		# 删除已不在发现列表中的 custom_N key
+		for k in [k for k in list(dimension_weights) if k.startswith("custom_")]:
+			suffix = k[len("custom_") :]
+			if not suffix.isdigit():
+				self.log_warning(f"wgmm_config 包含格式异常的 key '{k}', 已跳过清理")
+				continue
+			if int(suffix) >= len(discovered):
+				dimension_weights.pop(k, None)
+				sigmas.pop(k, None)
+		# 为新发现的周期添加初始 weight/sigma
+		for i in range(len(discovered)):
+			key = f"custom_{i}"
+			if key not in dimension_weights:
+				dimension_weights[key] = 0.1
+			if key not in sigmas:
+				sigmas[key] = 1.0
+
 		if self.dev_mode:
 			is_manual_run = True
 		else:
@@ -1239,6 +1412,7 @@ class VideoMonitor:
 		neg_lambda: float,
 		sigmas: dict,
 		resistance_coefficient: float,
+		extra_periods: list | None = None,
 	) -> tuple[float | None, float, dict]:
 		"""扫描未来时间段寻找最佳发布峰值.
 
@@ -1261,6 +1435,7 @@ class VideoMonitor:
 			neg_lambda: 负向事件衰减率
 			sigmas: Sigma 参数字典
 			resistance_coefficient: 负向事件抑制系数
+			extra_periods: FFT发现的附加周期列表(秒), 透传给批量计算函数
 
 		Returns:
 			(best_peak_time, best_peak_score, scan_stats):
@@ -1300,6 +1475,7 @@ class VideoMonitor:
 				neg_lambda,
 				sigmas,
 				resistance_coefficient,
+				extra_periods,
 			)
 
 			# 记录扫描统计, 用于相对得分计算
@@ -1448,20 +1624,23 @@ class VideoMonitor:
 			lambda_base,
 		)
 
-		# 学习维度权重和 Sigma 参数
+		# FFT自动发现附加周期, 更新配置, 获取本次生效的周期列表
+		discovered_periods = self._discover_periods(positive_events)
+		self._sync_discovered_periods(discovered_periods)
+		extra_periods: list[float] = self.wgmm_config.get("discovered_periods", [])
+
+		# 学习维度权重和 Sigma 参数(含附加自定义周期)
 		dimension_weights = self._learn_dimension_weights(
 			positive_events,
 			dimension_weights_from_config,
 			learning_rate,
+			extra_periods,
 		)
 
-		learned_sigmas = self._learn_adaptive_sigmas(positive_events, sigmas_from_config)
-		sigmas = {
-			"day": float(learned_sigmas["day"]),
-			"week": float(learned_sigmas["week"]),
-			"month_week": float(learned_sigmas["month_week"]),
-			"year_month": float(learned_sigmas["year_month"]),
-		}
+		learned_sigmas = self._learn_adaptive_sigmas(
+			positive_events, sigmas_from_config, extra_periods
+		)
+		sigmas = {k: float(v) for k, v in learned_sigmas.items()}
 
 		intervals = np.diff(np.array(sorted(positive_events), dtype=np.float64))
 		cv = float(np.std(intervals) / np.mean(intervals)) if len(intervals) > 0 else 1.0
@@ -1477,6 +1656,7 @@ class VideoMonitor:
 			neg_lambda,
 			sigmas,
 			resistance_coefficient,
+			extra_periods,
 		)
 
 		# 先执行峰值扫描, 获取未来得分分布的全局视图
@@ -1494,6 +1674,7 @@ class VideoMonitor:
 			neg_lambda=neg_lambda,
 			sigmas=sigmas,
 			resistance_coefficient=resistance_coefficient,
+			extra_periods=extra_periods,
 		)
 
 		# 相对得分: 当前时刻在未来15天得分范围中的位置
@@ -1825,7 +2006,11 @@ class VideoMonitor:
 			return -time.altzone
 		return -time.timezone
 
-	def _vectorized_time_features_numpy(self, timestamps_array: np.ndarray) -> dict:
+	def _vectorized_time_features_numpy(
+		self,
+		timestamps_array: np.ndarray,
+		extra_periods: list | None = None,
+	) -> dict:
 		"""向量化提取时间特征(NumPy优化版).
 
 		使用sin/cos编码将周期性时间转换为连续特征, 解决23:00和00:00距离远的问题.
@@ -1833,22 +2018,27 @@ class VideoMonitor:
 
 		Args:
 			timestamps_array: Unix时间戳数组
+			extra_periods: FFT发现的附加周期列表(秒), None或空列表时仅返回固定4维特征
 
 		Returns:
-			包含8个特征的字典:day/cos, week/cos, month_week/cos, year_month/cos
+			特征字典, 固定8个key + 每个附加周期2个key(custom_N_sin/cos)
 
 		"""
+		empty: dict = {
+			"day_sin": np.array([], dtype=np.float64),
+			"day_cos": np.array([], dtype=np.float64),
+			"week_sin": np.array([], dtype=np.float64),
+			"week_cos": np.array([], dtype=np.float64),
+			"month_week_sin": np.array([], dtype=np.float64),
+			"month_week_cos": np.array([], dtype=np.float64),
+			"year_month_sin": np.array([], dtype=np.float64),
+			"year_month_cos": np.array([], dtype=np.float64),
+		}
 		if len(timestamps_array) == 0:
-			return {
-				"day_sin": np.array([], dtype=np.float64),
-				"day_cos": np.array([], dtype=np.float64),
-				"week_sin": np.array([], dtype=np.float64),
-				"week_cos": np.array([], dtype=np.float64),
-				"month_week_sin": np.array([], dtype=np.float64),
-				"month_week_cos": np.array([], dtype=np.float64),
-				"year_month_sin": np.array([], dtype=np.float64),
-				"year_month_cos": np.array([], dtype=np.float64),
-			}
+			for k, _period in enumerate(extra_periods or []):
+				empty[f"custom_{k}_sin"] = np.array([], dtype=np.float64)
+				empty[f"custom_{k}_cos"] = np.array([], dtype=np.float64)
+			return empty
 
 		ts_arr = np.array(timestamps_array, dtype=np.float64)
 		offset = self._get_local_timezone_offset()
@@ -1885,27 +2075,41 @@ class VideoMonitor:
 		features["year_month_sin"] = np.sin(const_2pi * months / 12.0)
 		features["year_month_cos"] = np.cos(const_2pi * months / 12.0)
 
+		# 附加FFT发现的自定义周期特征(直接用Unix时间戳做相位, 无需时区)
+		for k, period in enumerate(extra_periods or []):
+			phase = const_2pi * ts_arr / period
+			features[f"custom_{k}_sin"] = np.sin(phase)
+			features[f"custom_{k}_cos"] = np.cos(phase)
+
 		return features
 
-	def _get_raw_time_components(self, timestamps_array: np.ndarray) -> dict:
+	def _get_raw_time_components(
+		self,
+		timestamps_array: np.ndarray,
+		extra_periods: list | None = None,
+	) -> dict:
 		"""提取原始时间维度值(用于权重学习).
 
 		返回离散的整数值, 用于统计各维度的分布集中度.
 
 		Args:
 			timestamps_array: Unix时间戳数组
+			extra_periods: FFT发现的附加周期列表(秒), 每个周期生成24桶相位离散值
 
 		Returns:
-			包含4个维度的字典:day(0-23), week(0-6), month_week(1-6), year_month(1-12)
+			固定4个维度 + 每个附加周期1个custom_N维度的字典
 
 		"""
+		empty: dict = {
+			"day": np.array([], dtype=np.int64),
+			"week": np.array([], dtype=np.int64),
+			"month_week": np.array([], dtype=np.int64),
+			"year_month": np.array([], dtype=np.int64),
+		}
 		if len(timestamps_array) == 0:
-			return {
-				"day": np.array([], dtype=np.int64),
-				"week": np.array([], dtype=np.int64),
-				"month_week": np.array([], dtype=np.int64),
-				"year_month": np.array([], dtype=np.int64),
-			}
+			for k in range(len(extra_periods or [])):
+				empty[f"custom_{k}"] = np.array([], dtype=np.int64)
+			return empty
 
 		ts_arr = np.array(timestamps_array, dtype=np.float64)
 		offset = self._get_local_timezone_offset()
@@ -1927,12 +2131,23 @@ class VideoMonitor:
 		first_weekday = (first_day_epoch + 3) % 7
 		month_week = (day_of_month - 1 + first_weekday) // 7 + 1  # 1-6
 
-		return {
+		raw_components: dict = {
 			"day": hours,
 			"week": weekday,
 			"month_week": month_week,
 			"year_month": months,
 		}
+
+		# 附加自定义周期: 将时间戳映射到24桶相位离散值(与day维度粒度一致)
+		n_buckets = 24
+		ts_arr_raw = np.array(timestamps_array, dtype=np.float64)
+		for k, period in enumerate(extra_periods or []):
+			phase_bucket = (ts_arr_raw % period) / period * n_buckets
+			raw_components[f"custom_{k}"] = np.clip(
+				phase_bucket.astype(np.int64), 0, n_buckets - 1
+			)
+
+		return raw_components
 
 	def _calculate_point_score(
 		self,
@@ -1944,13 +2159,14 @@ class VideoMonitor:
 		neg_lambda: float,
 		sigmas: dict,
 		resistance_coefficient: float,
+		extra_periods: list | None = None,
 	) -> float:
 		"""计算单个时间点的发布概率得分(WGMM核心).
 
 		算法步骤:
-		1. 计算目标时间与历史事件的四维时间距离(sin/cos编码的欧氏距离)
+		1. 计算目标时间与历史事件的多维时间距离(sin/cos编码的欧氏距离)
 		2. 各维度距离经高斯核转换: exp(-dist² / (2*sigma²))
-		3. 加权求和得到相似度得分
+		3. 加权求和得到相似度得分(动态维度, 含FFT发现的附加周期)
 		4. 应用指数时间衰减: exp(-lambda * age_hours)
 		5. 加权平均归一化到[0, 1], 用负向事件抑制正向得分
 
@@ -1968,7 +2184,9 @@ class VideoMonitor:
 			0-1之间的概率得分, 越高越可能发布新内容
 
 		"""
-		target_feat = self._vectorized_time_features_numpy(np.array([target_timestamp]))
+		target_feat = self._vectorized_time_features_numpy(
+			np.array([target_timestamp]), extra_periods
+		)
 		current_features = {k: v[0] for k, v in target_feat.items()}
 
 		def calculate_source_score_vectorized(events_array, lambda_decay):
@@ -1986,7 +2204,7 @@ class VideoMonitor:
 				return 0.0
 
 			events_arr = np.array(events_array, dtype=np.float64)
-			events_feat = self._vectorized_time_features_numpy(events_arr)
+			events_feat = self._vectorized_time_features_numpy(events_arr, extra_periods)
 
 			# 计算时间年龄并过滤未来事件
 			ages_hours = (target_timestamp - events_arr) / 3600.0
@@ -2006,23 +2224,15 @@ class VideoMonitor:
 					current_features[f"{key}_cos"] - events_feat[f"{key}_cos"][valid_mask]
 				) ** 2
 
-			# 多维高斯核加权求和: 相似度 = sum(weight * exp(-dist² / (2*sigma²)))
-			combined = (
-				dimension_weights["day"]
-				* np.exp(-dist_sq("day") / (2 * sigmas["day"] ** 2), dtype=np.float64)
-				+ dimension_weights["week"]
-				* np.exp(-dist_sq("week") / (2 * sigmas["week"] ** 2), dtype=np.float64)
-				+ dimension_weights["month_week"]
-				* np.exp(
-					-dist_sq("month_week") / (2 * sigmas["month_week"] ** 2),
-					dtype=np.float64,
+			# 多维高斯核加权求和(动态遍历全部维度, 含附加自定义周期):
+			# 相似度 = sum(weight * exp(-dist² / (2*sigma²)))
+			n_valid = int(np.sum(valid_mask))
+			combined = np.zeros(n_valid, dtype=np.float64)
+			for dim, weight in dimension_weights.items():
+				sigma = sigmas[dim]
+				combined += weight * np.exp(
+					-dist_sq(dim) / (2 * sigma**2), dtype=np.float64
 				)
-				+ dimension_weights["year_month"]
-				* np.exp(
-					-dist_sq("year_month") / (2 * sigmas["year_month"] ** 2),
-					dtype=np.float64,
-				)
-			)
 
 			# 加权平均相似度: sum(w*s) / sum(w)
 			near_zero = 1e-12  # 浮点近零阈值
@@ -2058,15 +2268,17 @@ class VideoMonitor:
 		neg_lambda: float,
 		sigmas: dict,
 		resistance_coefficient: float,
+		extra_periods: list | None = None,
 	) -> np.ndarray:
 		"""批量计算多个时间点的得分(向量化实现).
 
 		用于峰值预测扫描, 一次性计算未来数百个时间点的得分.
-		优化策略:使用广播机制避免显式循环.
+		优化策略:使用广播机制避免显式循环, 动态支持附加自定义周期维度.
 
 		Args:
 			scan_times: 要扫描的时间点数组
 			其他参数同 _calculate_point_score
+			extra_periods: FFT发现的附加周期列表(秒)
 
 		Returns:
 			与scan_times等长的得分数组
@@ -2075,7 +2287,7 @@ class VideoMonitor:
 		if len(scan_times) == 0:
 			return np.array([], dtype=np.float64)
 
-		targets_feat = self._vectorized_time_features_numpy(scan_times)
+		targets_feat = self._vectorized_time_features_numpy(scan_times, extra_periods)
 
 		def get_source_scores_vectorized(events, lambda_decay):
 			"""向量化计算事件集对所有扫描点的得分矩阵.
@@ -2086,7 +2298,7 @@ class VideoMonitor:
 				return np.zeros(len(scan_times), dtype=np.float64)
 
 			events_arr = np.array(events, dtype=np.float64)
-			events_feat = self._vectorized_time_features_numpy(events_arr)
+			events_feat = self._vectorized_time_features_numpy(events_arr, extra_periods)
 
 			# 广播计算:ages[scan_count, event_count]
 			ages = (scan_times[:, np.newaxis] - events_arr[np.newaxis, :]) / 3600.0
@@ -2094,53 +2306,20 @@ class VideoMonitor:
 			weights = np.zeros_like(ages, dtype=np.float64)
 			weights[valid_mask] = np.exp(-lambda_decay * ages[valid_mask])
 
-			# 计算各维度距离矩阵(广播机制)
-			day_dist_sq = (
-				targets_feat["day_sin"][:, np.newaxis]
-				- events_feat["day_sin"][np.newaxis, :]
-			) ** 2 + (
-				targets_feat["day_cos"][:, np.newaxis]
-				- events_feat["day_cos"][np.newaxis, :]
-			) ** 2
-			week_dist_sq = (
-				targets_feat["week_sin"][:, np.newaxis]
-				- events_feat["week_sin"][np.newaxis, :]
-			) ** 2 + (
-				targets_feat["week_cos"][:, np.newaxis]
-				- events_feat["week_cos"][np.newaxis, :]
-			) ** 2
-			month_week_dist_sq = (
-				targets_feat["month_week_sin"][:, np.newaxis]
-				- events_feat["month_week_sin"][np.newaxis, :]
-			) ** 2 + (
-				targets_feat["month_week_cos"][:, np.newaxis]
-				- events_feat["month_week_cos"][np.newaxis, :]
-			) ** 2
-			year_month_dist_sq = (
-				targets_feat["year_month_sin"][:, np.newaxis]
-				- events_feat["year_month_sin"][np.newaxis, :]
-			) ** 2 + (
-				targets_feat["year_month_cos"][:, np.newaxis]
-				- events_feat["year_month_cos"][np.newaxis, :]
-			) ** 2
-
-			combined_gaussian = np.zeros_like(day_dist_sq, dtype=np.float64)
-
-			dist_sq_dict = {
-				"day": day_dist_sq,
-				"week": week_dist_sq,
-				"month_week": month_week_dist_sq,
-				"year_month": year_month_dist_sq,
-			}
-
-			# 加权求和各维度的高斯核得分
-			for dim, dist_sq in dist_sq_dict.items():
-				weight = dimension_weights[dim]
-				sigma = sigmas[dim]
-
-				coeff = -0.5 / (sigma**2)
-
-				combined_gaussian += weight * np.exp(dist_sq * coeff, dtype=np.float64)
+			# 动态计算各维度距离矩阵并加权求和高斯核得分(含附加自定义周期)
+			n_scan = len(scan_times)
+			n_events = len(events_arr)
+			combined_gaussian = np.zeros((n_scan, n_events), dtype=np.float64)
+			for dim, weight in dimension_weights.items():
+				s_k = f"{dim}_sin"
+				c_k = f"{dim}_cos"
+				d_sq = (
+					targets_feat[s_k][:, np.newaxis] - events_feat[s_k][np.newaxis, :]
+				) ** 2 + (
+					targets_feat[c_k][:, np.newaxis] - events_feat[c_k][np.newaxis, :]
+				) ** 2
+				coeff = -0.5 / (sigmas[dim] ** 2)
+				combined_gaussian += weight * np.exp(d_sq * coeff, dtype=np.float64)
 
 			# 最终得分 = 时间衰减 * 高斯相似度
 			raw_scores = weights * combined_gaussian * valid_mask
