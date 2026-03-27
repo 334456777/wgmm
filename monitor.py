@@ -1209,12 +1209,15 @@ class VideoMonitor:
 
 		算法:
 		1. 数据不足(< MIN_SAMPLES)时直接返回空列表, 保持原有行为
-		2. 根据 last_lambda 计算有效窗口(weight<0.05截止), 上限8760h, 窗口随lambda伸缩
-		3. 将时间戳投影到小时级衰减权重信号(权重 = exp(-lambda * age_hours))
-		4. FFT计算频谱幅度, 找超过能量阈值的峰值
+		2. 将全量时间戳投影到小时级信号(每桶计事件数)
+		3. Wiener-Khinchin定理计算自相关: FFT → |FFT|² → IFFT
+		4. 在2天~90天范围内找自相关局部峰值(超过阈值)
 		5. 过滤已有4个维度覆盖的周期(±20%容忍窗口)
-		6. 过滤谐波(整数倍关系±20%容忍)
-		7. 按能量强度返回前MAX_PERIODS个新周期(秒)
+		6. 过滤已选周期的整数倍/约数(自相关谐波伪峰)
+		7. 按自相关强度返回前MAX_PERIODS个新周期(秒)
+
+		稀疏事件信号的FFT频谱近乎平坦, 无法通过频域能量阈值发现周期.
+		自相关(时域)直接度量"间隔T后事件再现的可能性", 对稀疏数据更稳健.
 
 		Args:
 			timestamps: 历史时间戳列表(Unix秒)
@@ -1225,10 +1228,12 @@ class VideoMonitor:
 		"""
 		min_samples = 50
 		max_periods = 3
-		energy_ratio = 3.0  # 峰值能量/平均能量的最小倍数
+		min_autocorr = 0.02  # 归一化自相关峰值最低阈值
 		tolerance = 0.2  # 周期匹配容忍窗口(±20%)
-		min_period_sec = 7200.0  # 最短候选周期: 2小时
-		max_period_sec = 86400.0 * 90  # 最长候选周期: 90天
+		min_harmonic_ratio = 2  # 谐波过滤最小整数倍
+		min_lag_hours = 48  # 最短候选lag: 2天
+		max_lag_days = 90  # 最长候选lag: 90天
+		min_span_hours = 168  # 至少7天跨度才有意义
 		# 已有4个维度对应的代表周期(秒)
 		existing_periods = [86400.0, 604800.0, 2592000.0, 31536000.0]
 
@@ -1236,81 +1241,66 @@ class VideoMonitor:
 			return []
 
 		ts_arr = np.array(sorted(timestamps), dtype=np.float64)
-		now_ts = ts_arr[-1]
-
-		# 用遗忘函数确定有效窗口: weight = exp(-lambda * age_hours) < 0.05 的部分忽略
-		# 上限 8760h(1年)防止 lambda 极小时数组过大
-		last_lambda = self.wgmm_config.get("last_lambda", 0.0001)
-		min_weight = 0.05
-		effective_hours = min(int(-np.log(min_weight) / last_lambda), 8760)
-		cutoff = now_ts - effective_hours * 3600
-		ts_arr = ts_arr[ts_arr >= cutoff]
-
-		min_span_hours = 72  # 至少3天跨度才有意义
 		span_hours = int((ts_arr[-1] - ts_arr[0]) / 3600) + 1
 		if span_hours < min_span_hours:
 			return []
 
-		# 构建小时级衰减权重信号: 近期事件贡献大, 远期事件自然淡出
+		# 构建小时级信号(每桶计事件数, 不加衰减——自相关假设平稳性)
 		signal = np.zeros(span_hours, dtype=np.float64)
 		for ts in ts_arr:
-			bucket = min(int((ts - ts_arr[0]) / 3600), span_hours - 1)
-			age_hours = (now_ts - ts) / 3600.0
-			signal[bucket] += float(np.exp(-last_lambda * age_hours))
+			idx = min(int((ts - ts_arr[0]) / 3600), span_hours - 1)
+			signal[idx] += 1.0
 
-		# FFT频谱分析
-		fft_mag = np.abs(np.fft.rfft(signal))
-		freqs = np.fft.rfftfreq(span_hours, d=1.0)  # 单位: cycles/hour
+		# Wiener-Khinchin: autocorr = IFFT(|FFT(signal)|²)
+		fft_signal = np.fft.rfft(signal)
+		power = np.abs(fft_signal) ** 2
+		autocorr = np.fft.irfft(power, n=span_hours)
+		if autocorr[0] == 0:
+			return []
+		autocorr = autocorr / autocorr[0]  # 归一化到 [0, 1]
 
-		# 转换为周期(秒), 排除DC分量(freq=0)
-		with np.errstate(divide="ignore"):
-			period_sec = np.where(freqs > 0, 3600.0 / freqs, np.inf)
-
-		range_mask = (period_sec >= min_period_sec) & (period_sec <= max_period_sec)
-		if not np.any(range_mask):
+		# 在有效lag范围内找局部极大值
+		max_lag = min(max_lag_days * 24, span_hours // 2)
+		if max_lag <= min_lag_hours:
 			return []
 
-		# 计算非DC频率的平均能量, 只保留超过阈值的候选
-		mean_mag = float(np.mean(fft_mag[freqs > 0]))
-		if mean_mag == 0:
+		seg = autocorr[min_lag_hours:max_lag]
+		peaks: list[tuple[int, float]] = [
+			(i + min_lag_hours, float(seg[i]))
+			for i in range(1, len(seg) - 1)
+			if seg[i] > seg[i - 1] and seg[i] > seg[i + 1] and seg[i] > min_autocorr
+		]
+
+		if not peaks:
 			return []
 
-		candidate_idx = np.where(range_mask & (fft_mag > energy_ratio * mean_mag))[0]
-		if len(candidate_idx) == 0:
-			return []
-
-		# 按周期降序排列(最长周期=最低频率=最基波优先), 过滤其高频泛音.
-		# 谐波信号各阶幅度相近, 按能量排序无法区分基波与泛音, 必须用频率排序.
-		candidate_idx = candidate_idx[np.argsort(-period_sec[candidate_idx])]
-		candidate_periods = period_sec[candidate_idx]
+		# 按自相关强度降序: 最强相关 = 最可信的周期
+		peaks.sort(key=lambda x: -x[1])
 
 		# 过滤策略:
 		# 1. 直接匹配已有4个维度周期(±20%容忍) → 过滤
-		# 2. 比已选锚点更短且成整数倍关系(泛音) → 过滤
-		# 月/年周期不用作泛音锚点(过于粗略会误杀3d/10d等真实周期)
-		direct_anchors = list(existing_periods)  # 用于直接匹配
-		subharmonic_anchors: list[float] = [86400.0, 604800.0]  # 仅日/周用于泛音过滤
+		# 2. 与已选周期成整数倍/约数(自相关谐波伪峰) → 过滤
 		novel: list[float] = []
-		for p in candidate_periods:
+		for lag, _val in peaks:
+			p = lag * 3600.0  # lag(小时) → 周期(秒)
 			skip = False
 			# 直接匹配已有维度
-			for anchor in direct_anchors:
+			for anchor in existing_periods:
 				if abs(p / anchor - 1.0) < tolerance:
 					skip = True
 					break
 			if skip:
 				continue
-			# 泛音过滤: 比锚点更短且整数比≤6阶
-			for anchor in subharmonic_anchors:
-				if p < anchor:
-					ratio = anchor / p
-					if abs(ratio - round(ratio)) < tolerance:
-						skip = True
-						break
+			# 自相关谐波过滤: 与已选周期的整数倍/约数关系
+			for sel in novel:
+				ratio = max(p, sel) / min(p, sel)
+				nearest = round(ratio)
+				if nearest >= min_harmonic_ratio and abs(ratio - nearest) < tolerance:
+					skip = True
+					break
 			if skip:
 				continue
 			novel.append(float(p))
-			subharmonic_anchors.append(float(p))  # 已选周期也作为后续泛音过滤的锚点
 			if len(novel) >= max_periods:
 				break
 
