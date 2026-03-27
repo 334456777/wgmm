@@ -18,6 +18,7 @@
 
 **关键特性：**
 - **周期性模式识别**：自动识别"每周三下午"、"工作日晚上"等复杂发布模式
+- **非日历周期自动发现**：通过 FFT 频谱分析从历史数据中识别"每3天"、"每10天"等不规则周期，作为附加维度动态加入模型
 - **时间特征编码**：使用 sin/cos 变换处理周期性时间数据，避免边界跳跃问题
 - **记忆衰退模拟**：近期事件权重更高，远期事件逐渐被"遗忘"，适应习惯变化
 - **相似度计算**：高斯核函数精确测量时间点相似性，实现精准预测
@@ -35,6 +36,12 @@
     ├── 周周期编码（sin/cos, 7天）
     ├── 月周编码（每月第几周）
     └── 年月编码（月份特征）
+         ↓
+非日历周期发现层（可选，数据充足时启用）
+    ├── FFT 频谱分析（小时级二值信号）
+    ├── 能量峰值筛选（≥ 3× 平均能量）
+    ├── 谐波过滤（排除整数分频噪声）
+    └── custom_N sin/cos 附加特征（最多3个新周期）
          ↓
 相似性计算层
     ├── 高斯核相似性计算
@@ -123,9 +130,24 @@ year_month_sin = sin(radians)
 year_month_cos = cos(radians)
 ```
 
+**FFT 自动发现的附加周期特征（custom_N）：**
+
+当 FFT 发现非日历周期 T（秒）时，使用 Unix 时间戳直接计算相位：
+
+```python
+# 任意周期 T（秒），如 259200.0 表示 3 天
+phase = 2π × unix_timestamp / T
+
+custom_N_sin = sin(phase)
+custom_N_cos = cos(phase)
+```
+
+与固定四维不同，custom_N 特征基于绝对时间戳而非日历字段，能够捕捉跨越日历边界的任意周期规律。
+
 **编码优势：**
 - 23:59 和 00:01 在单位圆上非常接近
 - 周日和周一的坐标相邻，符合周期性直觉
+- custom_N 可表示任意非日历周期，突破固定四维的约束
 - 机器学习算法可以正确理解时间相似性
 
 ### 2.2 高斯核相似性计算
@@ -200,8 +222,8 @@ weight = exp(-λ × age_hours)
 # 1. 计算当前得分
 current_score = calculate_heat_score(current_time, dimension_weights)
 
-# 2. 评估每个维度的贡献
-for dimension in ["day", "week", "month_week", "year_month"]:
+# 2. 评估每个维度的贡献（动态遍历所有维度，含 FFT 发现的 custom_N）
+for dimension in dimension_weights:  # day, week, month_week, year_month, custom_0, ...
     original_weight = dimension_weights[dimension]
 
     # 临时移除该维度
@@ -230,7 +252,8 @@ for dimension in ["day", "week", "month_week", "year_month"]:
     "day": 0.402,        // 日周期不太重要
     "week": 0.672,       // 周周期最重要（如工作日/周末模式）
     "month_week": 0.590, // 月周模式中等重要
-    "year_month": 0.336  // 年月模式不太重要
+    "year_month": 0.336, // 年月模式不太重要
+    "custom_0": 0.08     // FFT 发现的 3 天周期（权重较低，影响有限）
   }
 }
 ```
