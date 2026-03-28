@@ -64,7 +64,7 @@
 - 维度权重 (day, week, month_week, year_month, 以及 custom_N 附加维度)
 - 自适应 lambda 值
 - 每个维度的 Sigma 值
-- `discovered_periods`：FFT 自动发现的附加周期列表（秒）
+- `discovered_periods`：自相关自动发现的附加周期列表（秒）
 - 历史统计数据
 
 ---
@@ -90,7 +90,7 @@
 2. 使用 IQR 方法过滤异常值
 3. 剪枝低权重的旧数据
 4. 根据发布方差计算自适应 lambda
-5. FFT 自动发现附加周期（`_discover_periods` + `_sync_discovered_periods`），更新 `discovered_periods`
+5. 自相关自动发现附加周期（`_discover_periods` + `_sync_discovered_periods`），更新 `discovered_periods`
 6. 为每个时间维度学习维度权重（含 custom_N 附加维度）
 7. 调用 `_scan_future_peak()` 扫描未来 15 天找峰值
 8. 将得分映射到检查间隔
@@ -149,15 +149,16 @@
 ---
 
 #### `_discover_periods(timestamps)`
-**用途**: FFT 频谱分析，从历史时间戳中发现非日历周期，作为附加维度候选
+**用途**: 自相关分析，从历史时间戳中发现非日历周期，作为附加维度候选
 
 **算法**:
-1. 数据不足（< 50 条或跨度 < 72 小时）时返回空列表
-2. 将时间戳投影到小时级二值信号
-3. FFT 计算频谱幅度，筛选超过平均能量 3 倍的峰值
-4. 过滤已有 4 维覆盖的周期（±20% 容忍）
-5. 过滤谐波（整数分频关系，±20% 容忍）
-6. 按周期从长到短选取最多 3 个新周期
+1. 数据不足（< 50 条或跨度 < 168 小时）时返回空列表
+2. 将时间戳投影到小时级信号（每桶计事件数）
+3. Wiener-Khinchin 定理计算自相关：FFT → |FFT|² → IFFT，归一化到 [0,1]
+4. 在 2天~90天 范围内找自相关局部极大值（阈值 0.02）
+5. 过滤已有 4 维覆盖的周期（±20% 容忍）
+6. 过滤与已选周期成整数倍/约数关系的谐波伪峰（±20% 容忍）
+7. 按自相关强度降序选取最多 3 个新周期
 
 **返回值**: `list[float]` - 发现的新周期（秒），数据不足时返回 `[]`
 
@@ -166,7 +167,7 @@
 ---
 
 #### `_sync_discovered_periods(new_periods)`
-**用途**: 将本次 FFT 发现的周期与配置中已存储的周期对比，稳定映射到 `custom_N` 索引
+**用途**: 将本次自相关发现的周期与配置中已存储的周期对比，稳定映射到 `custom_N` 索引
 
 **算法**: 对每个新发现周期，在已存储周期中寻找 ±10% 内的匹配。匹配成功则复用已有条目（保留学习到的权重），否则使用新周期值（权重重置为 0.1）
 
@@ -182,7 +183,7 @@
 - `week`: 一周中的天数 (7 天周期)
 - `month_week`: 月中的周
 - `year_month`: 年中的月份
-- `custom_0` ~ `custom_2`: FFT 自动发现的非日历周期（可选，最多 3 个）
+- `custom_0` ~ `custom_2`: 自相关自动发现的非日历周期（可选，最多 3 个）
 
 **方法**:
 - 计算每个维度的得分方差
@@ -793,7 +794,7 @@ adjust_check_frequency()
 ├── filter_outliers()              # 过滤异常值
 ├── prune_old_data()               # 剪枝低权重历史数据
 ├── _calculate_adaptive_lambda()   # 自适应计算遗忘速度
-├── _discover_periods()            # FFT 发现非日历周期（数据不足时跳过）
+├── _discover_periods()            # 自相关发现非日历周期（数据不足时跳过）
 ├── _sync_discovered_periods()     # 与配置已有周期对比，稳定 custom_N 映射
 ├── learn_dimension_weights()      # 学习所有维度权重（固定4维 + custom_N）
 ├── learn_adaptive_sigmas()        # 学习所有维度容忍度

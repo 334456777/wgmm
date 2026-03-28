@@ -14,7 +14,7 @@
 | `week` | 0.25 | **周周期**权重 — 一周中的哪一天。值越高表示 UP 主有明显的周几发布偏好 |
 | `month_week` | 0.25 | **月周周期**权重 — 每月第几周。值越高表示 UP 主在月内的发布分布有规律 |
 | `year_month` | 0.2 | **年月周期**权重 — 一年中的哪个月。值越高表示 UP 主的发布有月份/季节性规律 |
-| `custom_0` ~ `custom_2` | 0.1 | **FFT 发现的附加周期**权重（可选，最多 3 个）— 由 `_discover_periods` 自动识别的非日历周期（如"每3天"、"每10天"）。初始值 0.1，若该周期对预测无贡献，权重会自然收敛至最小值 |
+| `custom_0` ~ `custom_2` | 0.1 | **自相关发现的附加周期**权重（可选，最多 3 个）— 由 `_discover_periods` 自动识别的非日历周期（如"每3天"、"每10天"）。初始值 0.1，若该周期对预测无贡献，权重会自然收敛至最小值 |
 
 **解读示例**：若 `week` 权重最高（如 0.68），说明 UP 主有明显的"周几发布"模式。`custom_N` 键仅在 `discovered_periods` 非空时出现。
 
@@ -98,7 +98,7 @@ $$\text{similarity} = e^{-d^2 / (2\sigma^2)}$$
 | `week` | 1.0 | 周周期容忍度 |
 | `month_week` | 1.5 | 月周周期容忍度 |
 | `year_month` | 2.0 | 年月周期容忍度 |
-| `custom_0` ~ `custom_2` | 1.0 | FFT 发现的附加周期容忍度（可选）— 随数据离散度自适应调整 |
+| `custom_0` ~ `custom_2` | 1.0 | 自相关发现的附加周期容忍度（可选）— 随数据离散度自适应调整 |
 
 **σ 的作用**：
 - σ **越小** → 匹配越严格，只有非常接近的时间点才被认为"相似"
@@ -142,7 +142,7 @@ $$\text{calibrated\_score} = \frac{\text{raw\_score} - \text{mean}}{\text{std}}$
 - **格式**: Unix 秒数的浮点数列表，最多 3 个元素
 - **示例**: `[259200.0]` 表示发现了 3 天（72 小时）的周期
 
-由 `_discover_periods` 通过 FFT 频谱分析从历史时间戳中自动识别的非日历周期，用于捕捉"每3天"、"每10天"等不符合日/周/月/年节律的发布规律。
+由 `_discover_periods` 通过自相关分析（Wiener-Khinchin 定理）从历史时间戳中自动识别的非日历周期，用于捕捉"每3天"、"每10天"等不符合日/周/月/年节律的发布规律。
 
 **触发条件**：
 - 历史发布记录 ≥ 50 条
@@ -165,7 +165,7 @@ $$\text{calibrated\_score} = \frac{\text{raw\_score} - \text{mean}}{\text{std}}$
     │
     ├──→ last_pos_variance / last_neg_variance ──→ last_lambda (遗忘速度)
     │
-    ├──→ [FFT 频谱分析] ──→ discovered_periods ──→ custom_N keys
+    ├──→ [自相关分析] ──→ discovered_periods ──→ custom_N keys
     │                                                      │
     ├──→ dimension_weights (固定4维 + custom_N 动态维度) ←──┘
     │

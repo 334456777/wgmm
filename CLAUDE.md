@@ -355,9 +355,9 @@ ruff format monitor.py       # 必须通过
 - `adjust_check_frequency()`: WGMM 算法主函数
 - `generate_mtime_file()`: 生成历史发布时间戳文件
 - `_calculate_adaptive_lambda()`: 自适应计算 lambda 参数
-- `_discover_periods()`: FFT 频谱分析，自动发现非日历周期
+- `_discover_periods()`: 自相关分析，自动发现非日历周期
 - `_sync_discovered_periods()`: 将发现周期同步到配置，稳定 custom_N 映射
-- `learn_dimension_weights()`: 学习各维度权重（含 FFT 发现的 custom_N 维度）
+- `learn_dimension_weights()`: 学习各维度权重（含自相关发现的 custom_N 维度）
 
 **三层检测架构**
 - `check_potential_new_parts()`: 第一层 - 分片预检查
@@ -395,7 +395,7 @@ adjust_check_frequency()
 ├── filter_outliers()              # 过滤异常值
 ├── prune_old_data()               # 剪枝低权重历史数据
 ├── _calculate_adaptive_lambda()   # 自适应计算遗忘速度
-├── _discover_periods()            # FFT 自动发现附加周期（数据不足时跳过）
+├── _discover_periods()            # 自相关自动发现附加周期（数据不足时跳过）
 ├── _sync_discovered_periods()     # 稳定 custom_N 索引映射
 ├── learn_dimension_weights()      # 学习所有维度重要性（含 custom_N）
 ├── learn_adaptive_sigmas()        # 学习时间容忍度（含 custom_N）
