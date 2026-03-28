@@ -385,13 +385,14 @@ monitor.py:1232
     │       └─ 限制范围
     │           └─> final_lambda = clip(adaptive_lambda, lambda_min, lambda_max)
     │
-    ├─ FFT 自动发现附加周期（数据不足时跳过）
+    ├─ 自相关自动发现附加周期（数据不足时跳过）
     │   └─> discovered = _discover_periods(positive_events)
-    │       • 最小样本: 50 条 / 最短跨度: 72 小时
-    │       • 构建小时级二值信号 → FFT 频谱分析
-    │       • 筛选 > 3× 平均能量的峰值
-    │       • 过滤已有4维周期（±20%）及谐波
-    │       • 返回最多3个新周期（秒）
+    │       • 最小样本: 50 条 / 最短跨度: 168 小时（7天）
+    │       • 构建小时级信号（每桶计事件数）
+    │       • Wiener-Khinchin: FFT → |FFT|² → IFFT → 归一化自相关
+    │       • 时域局部极大值筛选（阈值 0.02，范围 2天~90天）
+    │       • 过滤已有4维周期（±20%）及整数倍/约数谐波
+    │       • 按自相关强度降序返回最多3个新周期（秒）
     │
     ├─ 同步发现周期到配置
     │   └─> _sync_discovered_periods(discovered)
@@ -1490,7 +1491,7 @@ monitor.py:1898     - _calculate_point_score() - 计算单个时间点得分
 monitor.py:2018     - _batch_calculate_scores() - 批量计算得分
 monitor.py:1790     - _vectorized_time_features_numpy() - 时间特征编码
 monitor.py:1232     - _calculate_adaptive_lambda() - Lambda 自适应
-monitor.py:1204     - _discover_periods() - FFT 发现非日历周期
+monitor.py:1204     - _discover_periods() - 自相关发现非日历周期
 monitor.py:1315     - _sync_discovered_periods() - 同步发现周期到配置
 monitor.py:1081     - _learn_dimension_weights() - 维度权重学习（含 custom_N）
 monitor.py:1150     - _learn_adaptive_sigmas() - Sigma 学习（含 custom_N）
