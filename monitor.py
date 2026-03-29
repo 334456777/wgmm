@@ -2490,16 +2490,10 @@ def main() -> None:
 	load_env_file("data/.env")
 	args = parse_arguments()
 
-	if args.wgmm_core_only and args.dev:
-		print("参数冲突: --wgmm-core-only 不能与 --dev 同时使用", file=sys.stderr)
-		sys.exit(2)
-
-	monitor = VideoMonitor(dev_mode=args.dev)
+	monitor = VideoMonitor(dev_mode=args.dev or args.wgmm_core_only)
 
 	if args.wgmm_core_only:
 		try:
-			# 核心模式用于真实数据验证: 强制关闭手动模式以记录 miss 历史
-			monitor.wgmm_config["is_manual_run"] = False
 			monitor.adjust_check_frequency(found_new_content=False)
 			sys.exit(0)
 		except KeyboardInterrupt:
