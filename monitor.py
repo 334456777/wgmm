@@ -947,46 +947,6 @@ class VideoMonitor:
 
 		return events
 
-	def _calculate_interval_stats(
-		self,
-		timestamps: list[int],
-	) -> tuple[float, float, int, int]:
-		"""计算历史间隔统计量并动态设置间隔边界.
-
-		Args:
-			timestamps: 历史时间戳列表
-
-		Returns:
-			(mean_interval, variance, default_interval, max_interval)
-
-		"""
-		min_interval_samples = 5
-		min_count_for_stats = 2
-
-		if len(timestamps) < min_count_for_stats:
-			return 3600.0, 0.0, 3600, 300
-
-		timestamps_arr = np.array(sorted(timestamps), dtype=np.float64)
-		intervals = np.diff(timestamps_arr)
-		mean_interval = np.mean(intervals, dtype=np.float64)
-		variance = np.var(intervals, dtype=np.float64)
-
-		if len(timestamps) >= min_interval_samples:
-			default_interval = float(np.median(intervals) * 0.8)
-			min_5th = float(np.percentile(intervals, 5))
-			max_interval = max(300, min_5th * 0.5)
-			max_interval = min(max_interval, 3600)
-		else:
-			default_interval = 3600
-			max_interval = 300
-
-		return (
-			float(mean_interval),
-			float(variance),
-			int(default_interval),
-			int(max_interval),
-		)
-
 	def _learn_dimension_weights(
 		self,
 		timestamps: list,
@@ -1435,7 +1395,7 @@ class VideoMonitor:
 		lookahead_end = current_timestamp + lookahead_seconds
 
 		min_step = float(gaussian_width * 0.25)
-		scan_start = float(current_timestamp + 600.0)
+		scan_start = float(current_timestamp)
 
 		best_peak_time = float(scan_start)
 		best_peak_score = 0.0
@@ -1691,7 +1651,7 @@ class VideoMonitor:
 
 		final_frequency_sec = check_interval
 		# 动态峰值接受阈值: 峰值得分需高于当前得分的1.2倍
-		best_peak_threshold = max(current_score * 1.2, 0.01)
+		best_peak_threshold = current_score * 1.2
 		if best_peak_score > best_peak_threshold:
 			peak_interval = best_peak_time - current_timestamp
 			# 峰值越强越值得等待: 窗口比例与峰值得分正相关
@@ -1699,9 +1659,7 @@ class VideoMonitor:
 			if peak_interval < check_interval * peak_window_ratio:
 				advanced_time = best_peak_time - (peak_advance_minutes * 60.0)
 				advanced_interval = advanced_time - current_timestamp
-				min_advanced_interval = 300
-				if advanced_interval > min_advanced_interval:
-					final_frequency_sec = float(advanced_interval)
+				final_frequency_sec = float(advanced_interval)
 
 		impedance_factor = 1.0
 		last_duration = self.last_ytdlp_duration
