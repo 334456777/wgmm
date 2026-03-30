@@ -1003,7 +1003,7 @@ class VideoMonitor:
 			timestamps: 历史时间戳列表
 			old_weights: 当前维度权重字典
 			learning_rate: 学习率(控制新旧权重的混合比例)
-			extra_periods: FFT发现的附加周期列表(秒), None时仅学习固定4维权重
+			extra_periods: 自相关发现的附加周期列表(秒), None时仅学习固定4维权重
 
 		Returns:
 			平滑后的新权重字典
@@ -1079,7 +1079,7 @@ class VideoMonitor:
 		Args:
 			timestamps: 历史时间戳列表
 			old_sigmas: 当前的 sigma 字典
-			extra_periods: FFT发现的附加周期列表(秒), None时仅学习固定4维sigma
+			extra_periods: 自相关发现的附加周期列表(秒), None时仅学习固定4维sigma
 
 		Returns:
 			学习后的 sigma 字典(包含附加custom_N维度)
@@ -1203,7 +1203,7 @@ class VideoMonitor:
 		return float(final_lambda), float(current_variance)
 
 	def _discover_periods(self, timestamps: list) -> list[float]:
-		"""FFT自相关发现隐含发布周期.
+		"""自相关发现隐含发布周期.
 
 		从历史时间戳中自动识别非日历周期性规律, 作为附加维度候选.
 
@@ -1216,7 +1216,7 @@ class VideoMonitor:
 		6. 过滤已选周期的整数倍/约数(自相关谐波伪峰)
 		7. 按自相关强度返回前MAX_PERIODS个新周期(秒)
 
-		稀疏事件信号的FFT频谱近乎平坦, 无法通过频域能量阈值发现周期.
+		稀疏事件信号的频谱近乎平坦, 无法通过频域能量阈值发现周期.
 		自相关(时域)直接度量"间隔T后事件再现的可能性", 对稀疏数据更稳健.
 
 		Args:
@@ -1313,7 +1313,7 @@ class VideoMonitor:
 		确保已学习的 dimension_weights/sigmas 不会因排序变化而错误套用到其他周期.
 
 		Args:
-			new_periods: 本次FFT发现的周期列表(秒)
+			new_periods: 本次自相关发现的周期列表(秒)
 
 		"""
 		match_tol = 0.1
@@ -1391,7 +1391,6 @@ class VideoMonitor:
 	def _scan_future_peak(
 		self,
 		current_timestamp: int,
-		base_frequency_sec: float,
 		lookahead_days: int,
 		gaussian_width: float,
 		current_score: float,
@@ -1414,7 +1413,6 @@ class VideoMonitor:
 
 		Args:
 			current_timestamp: 当前时间戳
-			base_frequency_sec: 基础检查间隔(秒)
 			lookahead_days: 向前预测天数
 			gaussian_width: 高斯核宽度(秒)
 			current_score: 当前时间点的得分
@@ -1425,7 +1423,7 @@ class VideoMonitor:
 			neg_lambda: 负向事件衰减率
 			sigmas: Sigma 参数字典
 			resistance_coefficient: 负向事件抑制系数
-			extra_periods: FFT发现的附加周期列表(秒), 透传给批量计算函数
+			extra_periods: 自相关发现的附加周期列表(秒), 透传给批量计算函数
 
 		Returns:
 			(best_peak_time, best_peak_score, scan_stats):
@@ -1435,11 +1433,10 @@ class VideoMonitor:
 		"""
 		seconds_in_day = 86400
 		lookahead_seconds = lookahead_days * seconds_in_day
-		lookahead_start = current_timestamp + base_frequency_sec
 		lookahead_end = current_timestamp + lookahead_seconds
 
 		min_step = float(gaussian_width * 0.25)
-		scan_start = float(np.maximum(lookahead_start, current_timestamp + 600.0))
+		scan_start = float(current_timestamp + 600.0)
 
 		best_peak_time = None
 		best_peak_score = 0.0
@@ -1595,10 +1592,6 @@ class VideoMonitor:
 			return
 
 		# 计算间隔统计量
-		base_interval, _, _ignored, max_interval = self._calculate_interval_stats(
-			positive_events
-		)
-
 		# 自适应计算 Lambda 参数
 		last_pos_variance = self.wgmm_config.get("last_pos_variance", 0.0)
 		pos_lambda, pos_current_variance = self._calculate_adaptive_lambda(
@@ -1614,7 +1607,7 @@ class VideoMonitor:
 			lambda_base,
 		)
 
-		# FFT自动发现附加周期, 更新配置, 获取本次生效的周期列表
+		# 自相关自动发现附加周期, 更新配置, 获取本次生效的周期列表
 		discovered_periods = self._discover_periods(positive_events)
 		self._sync_discovered_periods(discovered_periods)
 		extra_periods: list[float] = self.wgmm_config.get("discovered_periods", [])
@@ -1653,7 +1646,6 @@ class VideoMonitor:
 		gaussian_width = (sigmas["day"] * seconds_in_day / 24.0) * 2.0
 		best_peak_time, best_peak_score, scan_stats = self._scan_future_peak(
 			current_timestamp=current_timestamp,
-			base_frequency_sec=base_interval,
 			lookahead_days=lookahead_days,
 			gaussian_width=gaussian_width,
 			current_score=current_score,
@@ -1667,6 +1659,18 @@ class VideoMonitor:
 			extra_periods=extra_periods,
 		)
 
+		# 基于峰值预测计算检查间隔边界
+		min_check_interval = 3600.0  # 得分最高时的检查间隔(1小时)
+		if best_peak_time:
+			peak_distance = best_peak_time - current_timestamp
+			# 峰值前至少检查3次, 上限24小时
+			max_check_interval = float(
+				np.clip(peak_distance / 3, min_check_interval, 86400)
+			)
+		else:
+			# 预测窗口内无峰值: 默认6小时
+			max_check_interval = 21600.0
+
 		# 相对得分: 当前时刻在未来15天得分范围中的位置
 		scan_min = scan_stats.get("min", 0.0)
 		scan_max = scan_stats.get("max", current_score)
@@ -1679,21 +1683,21 @@ class VideoMonitor:
 		else:
 			relative_score = 0.5
 
+		# 得分→间隔映射: 高分→min_check_interval, 低分→max_check_interval
 		exponential_score = relative_score**mapping_curve
-		base_interval_sec = (
-			base_interval - (base_interval - max_interval) * exponential_score
+		check_interval = (
+			max_check_interval
+			- (max_check_interval - min_check_interval) * exponential_score
 		)
 
-		base_frequency_sec = base_interval_sec
-
-		final_frequency_sec = base_frequency_sec
+		final_frequency_sec = check_interval
 		# 动态峰值接受阈值: 峰值得分需高于当前得分的1.2倍
 		best_peak_threshold = max(current_score * 1.2, 0.01)
 		if best_peak_time and best_peak_score > best_peak_threshold:
 			peak_interval = best_peak_time - current_timestamp
 			# 峰值越强越值得等待: 窗口比例与峰值得分正相关
 			peak_window_ratio = 1.0 + best_peak_score
-			if peak_interval < base_frequency_sec * peak_window_ratio:
+			if peak_interval < check_interval * peak_window_ratio:
 				advanced_time = best_peak_time - (peak_advance_minutes * 60.0)
 				advanced_interval = advanced_time - current_timestamp
 				min_advanced_interval = 300
@@ -2008,7 +2012,7 @@ class VideoMonitor:
 
 		Args:
 			timestamps_array: Unix时间戳数组
-			extra_periods: FFT发现的附加周期列表(秒), None或空列表时仅返回固定4维特征
+			extra_periods: 自相关发现的附加周期列表(秒), None或空列表时仅返回固定4维特征
 
 		Returns:
 			特征字典, 固定8个key + 每个附加周期2个key(custom_N_sin/cos)
@@ -2065,7 +2069,7 @@ class VideoMonitor:
 		features["year_month_sin"] = np.sin(const_2pi * months / 12.0)
 		features["year_month_cos"] = np.cos(const_2pi * months / 12.0)
 
-		# 附加FFT发现的自定义周期特征(直接用Unix时间戳做相位, 无需时区)
+		# 附加自相关发现的自定义周期特征(直接用Unix时间戳做相位, 无需时区)
 		for k, period in enumerate(extra_periods or []):
 			phase = const_2pi * ts_arr / period
 			features[f"custom_{k}_sin"] = np.sin(phase)
@@ -2084,7 +2088,7 @@ class VideoMonitor:
 
 		Args:
 			timestamps_array: Unix时间戳数组
-			extra_periods: FFT发现的附加周期列表(秒), 每个周期生成24桶相位离散值
+			extra_periods: 自相关发现的附加周期列表(秒), 每个周期生成24桶相位离散值
 
 		Returns:
 			固定4个维度 + 每个附加周期1个custom_N维度的字典
@@ -2156,7 +2160,7 @@ class VideoMonitor:
 		算法步骤:
 		1. 计算目标时间与历史事件的多维时间距离(sin/cos编码的欧氏距离)
 		2. 各维度距离经高斯核转换: exp(-dist² / (2*sigma²))
-		3. 加权求和得到相似度得分(动态维度, 含FFT发现的附加周期)
+		3. 加权求和得到相似度得分(动态维度, 含自相关发现的附加周期)
 		4. 应用指数时间衰减: exp(-lambda * age_hours)
 		5. 加权平均归一化到[0, 1], 用负向事件抑制正向得分
 
@@ -2268,7 +2272,7 @@ class VideoMonitor:
 		Args:
 			scan_times: 要扫描的时间点数组
 			其他参数同 _calculate_point_score
-			extra_periods: FFT发现的附加周期列表(秒)
+			extra_periods: 自相关发现的附加周期列表(秒)
 
 		Returns:
 			与scan_times等长的得分数组
