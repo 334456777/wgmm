@@ -223,7 +223,7 @@ weight = exp(-λ × age_hours)
 # 1. 计算当前得分
 current_score = calculate_heat_score(current_time, dimension_weights)
 
-# 2. 评估每个维度的贡献（动态遍历所有维度，含 FFT 发现的 custom_N）
+# 2. 评估每个维度的贡献（动态遍历所有维度，含自相关发现的 custom_N）
 for dimension in dimension_weights:  # day, week, month_week, year_month, custom_0, ...
     original_weight = dimension_weights[dimension]
 

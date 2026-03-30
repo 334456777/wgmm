@@ -136,7 +136,7 @@ $$\text{calibrated\_score} = \frac{\text{raw\_score} - \text{mean}}{\text{std}}$
 
 ---
 
-## 9. `discovered_periods` — FFT 自动发现的附加周期
+## 9. `discovered_periods` — 自相关自动发现的附加周期
 
 - **默认值**: `[]`（空列表）
 - **格式**: Unix 秒数的浮点数列表，最多 3 个元素
