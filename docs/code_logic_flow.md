@@ -520,7 +520,7 @@ monitor.py:1232
     │   └─> min_check_interval = 3600  # 固定1小时(得分最高时)
     │   └─> if best_peak_time:
     │       • peak_distance = best_peak_time - current_timestamp
-    │       • max_check_interval = clip(peak_distance / 3, 3600, 86400)
+    │       • max_check_interval = max(peak_distance, min_check_interval)
     │       else:
     │       • max_check_interval = 21600  # 无峰值时默认6小时
     │
@@ -528,7 +528,7 @@ monitor.py:1232
     │   └─> exponential_score = relative_score ** mapping_curve  # mapping_curve = 2.0
     │   └─> check_interval = max_check_interval - (max_check_interval - min_check_interval) × exponential_score
     │       • score = 1.0 → interval = min_check_interval (1小时)
-    │       • score = 0.0 → interval = max_check_interval (峰值距离/3)
+    │       • score = 0.0 → interval = max_check_interval (直接睡到预测峰值)
 
 ┌─────────────────────────────────────────────────────────────────────┐
 │ 【步骤6】峰值预测 - 扫描未来15天                                    │
