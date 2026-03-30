@@ -1684,7 +1684,7 @@ class VideoMonitor:
 			base_interval - (base_interval - max_interval) * exponential_score
 		)
 
-		base_frequency_sec = np.clip(base_interval_sec, max_interval, base_interval * 2)
+		base_frequency_sec = base_interval_sec
 
 		final_frequency_sec = base_frequency_sec
 		# 动态峰值接受阈值: 峰值得分需高于当前得分的1.2倍
