@@ -1660,13 +1660,10 @@ class VideoMonitor:
 		)
 
 		# 基于峰值预测计算检查间隔边界
-		min_check_interval = 3600.0  # 得分最高时的检查间隔(1小时)
+		min_check_interval = 3600.0
 		if best_peak_time:
 			peak_distance = best_peak_time - current_timestamp
-			# 峰值前至少检查3次, 上限24小时
-			max_check_interval = float(
-				np.clip(peak_distance / 3, min_check_interval, 86400)
-			)
+			max_check_interval = max(peak_distance, min_check_interval)
 		else:
 			# 预测窗口内无峰值: 默认6小时
 			max_check_interval = 21600.0
