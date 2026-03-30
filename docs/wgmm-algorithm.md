@@ -727,7 +727,7 @@ similarity = exp(-week_distance² / (2 × sigma_week²))
 ```
 1. 当前得分很低 → 基础间隔延长
 2. 没有找到明确的峰值（best_peak_score <= 0.6）
-3. 使用 base_frequency_sec 作为间隔
+3. 使用 check_interval 作为间隔
 4. 经过低活跃期调整 → 最终约3天
 ```
 

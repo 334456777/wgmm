@@ -516,22 +516,19 @@ monitor.py:1232
 │ 【步骤5】非线性映射到检查间隔                                        │
 └─────────────────────────────────────────────────────────────────────┘
     │
-    ├─ 计算间隔统计量
-    │   └─> mean_interval, variance, default_interval, max_interval =
-            _calculate_interval_stats(positive_events)
-    │       • mean_interval: 平均间隔
-    │       • default_interval: 中位数 × 0.8
-    │       • max_interval: 5th percentile × 0.5
+    ├─ 基于峰值预测计算检查间隔边界
+    │   └─> min_check_interval = 3600  # 固定1小时(得分最高时)
+    │   └─> if best_peak_time:
+    │       • peak_distance = best_peak_time - current_timestamp
+    │       • max_check_interval = clip(peak_distance / 3, 3600, 86400)
+    │       else:
+    │       • max_check_interval = 21600  # 无峰值时默认6小时
     │
     ├─ 非线性映射
-    │   └─> exponential_score = current_score ** mapping_curve  # mapping_curve = 2.0
-    │   └─> base_interval_sec = mean_interval - (mean_interval - max_interval) × exponential_score
-    │       • score = 1.0 → interval = max_interval (最小间隔)
-    │       • score = 0.5 → interval = mean_interval
-    │       • score = 0.0 → interval = mean_interval × 2 (最大间隔)
-    │
-    └─ 限制范围
-        └─> base_frequency_sec = clip(base_interval_sec, max_interval, mean_interval × 2)
+    │   └─> exponential_score = relative_score ** mapping_curve  # mapping_curve = 2.0
+    │   └─> check_interval = max_check_interval - (max_check_interval - min_check_interval) × exponential_score
+    │       • score = 1.0 → interval = min_check_interval (1小时)
+    │       • score = 0.0 → interval = max_check_interval (峰值距离/3)
 
 ┌─────────────────────────────────────────────────────────────────────┐
 │ 【步骤6】峰值预测 - 扫描未来15天                                    │
@@ -574,7 +571,7 @@ monitor.py:1232
     └─ 峰值提前量调整
         └─> if best_peak_score > 0.6:
             • peak_interval = best_peak_time - current_timestamp
-            • if peak_interval < base_frequency_sec × 1.2:
+            • if peak_interval < check_interval × peak_window_ratio:
                 • advanced_time = best_peak_time - 5分钟
                 • advanced_interval = advanced_time - current_timestamp
                 • if advanced_interval > 300秒:
@@ -597,7 +594,7 @@ monitor.py:1232
 └─────────────────────────────────────────────────────────────────────┘
     │
     ├─ 应用最终的检查间隔
-    │   └─> final_frequency_sec = base_frequency_sec × impedance_factor
+    │   └─> final_frequency_sec = check_interval × impedance_factor
     │
     ├─ 记录负向事件
     │   └─> if not found_new_content and not is_manual_run:
