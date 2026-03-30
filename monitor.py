@@ -1402,7 +1402,7 @@ class VideoMonitor:
 		sigmas: dict,
 		resistance_coefficient: float,
 		extra_periods: list | None = None,
-	) -> tuple[float | None, float, dict]:
+	) -> tuple[float, float, dict]:
 		"""扫描未来时间段寻找最佳发布峰值.
 
 		策略:
@@ -1427,8 +1427,7 @@ class VideoMonitor:
 
 		Returns:
 			(best_peak_time, best_peak_score, scan_stats):
-			最佳峰值时间和得分(无峰值则返回 None, 0.0),
-			以及扫描统计信息(min/max/mean/std)
+			最佳峰值时间和得分, 以及扫描统计信息(min/max/mean/std)
 
 		"""
 		seconds_in_day = 86400
@@ -1438,7 +1437,7 @@ class VideoMonitor:
 		min_step = float(gaussian_width * 0.25)
 		scan_start = float(current_timestamp + 600.0)
 
-		best_peak_time = None
+		best_peak_time = float(scan_start)
 		best_peak_score = 0.0
 		scan_stats: dict = {}
 
@@ -1476,30 +1475,37 @@ class VideoMonitor:
 
 			if len(scan_scores) > 1:
 				gradients = np.diff(scan_scores)
-				peaks_mask = (gradients[:-1] > 0) & (gradients[1:] < 0)
+				raw_peaks_mask = (gradients[:-1] > 0) & (gradients[1:] < 0)
 
 				# 动态阈值: 基于扫描得分分布自适应计算
 				score_mean = scan_stats["mean"]
 				score_std = scan_stats["std"]
 				peak_score_threshold = score_mean + 1.5 * score_std
 				gradient_threshold = 0.05
-				for i in range(len(peaks_mask)):
-					if peaks_mask[i]:
+				filtered_mask = raw_peaks_mask.copy()
+				for i in range(len(filtered_mask)):
+					if filtered_mask[i]:
 						scan_idx = i + 1
 						score_condition = scan_scores[scan_idx] > peak_score_threshold
 						gradient_condition = abs(gradients[i]) < gradient_threshold
-						peaks_mask[i] = score_condition and gradient_condition
+						filtered_mask[i] = score_condition and gradient_condition
 
-				peak_indices = np.where(peaks_mask)[0]
+				peak_indices = np.where(filtered_mask)[0]
+				# 严格过滤无结果时, 回退到所有局部峰值
+				if len(peak_indices) == 0:
+					peak_indices = np.where(raw_peaks_mask)[0]
 
 				if len(peak_indices) > 0:
 					peak_scores = scan_scores[peak_indices]
 					best_idx_in_peaks = np.argmax(peak_scores)
 					best_peak_idx = peak_indices[best_idx_in_peaks]
-
-					if peak_scores[best_idx_in_peaks] > best_peak_score:
-						best_peak_score = float(peak_scores[best_idx_in_peaks])
-						best_peak_time = float(scan_times[best_peak_idx])
+					best_peak_score = float(peak_scores[best_idx_in_peaks])
+					best_peak_time = float(scan_times[best_peak_idx])
+				else:
+					# 完全单调(无局部峰值): 取全局最高分时间点
+					global_best_idx = int(np.argmax(scan_scores))
+					best_peak_score = float(scan_scores[global_best_idx])
+					best_peak_time = float(scan_times[global_best_idx])
 
 		return best_peak_time, best_peak_score, scan_stats
 
@@ -1661,12 +1667,8 @@ class VideoMonitor:
 
 		# 基于峰值预测计算检查间隔边界
 		min_check_interval = 3600.0
-		if best_peak_time:
-			peak_distance = best_peak_time - current_timestamp
-			max_check_interval = max(peak_distance, min_check_interval)
-		else:
-			# 预测窗口内无峰值: 默认6小时
-			max_check_interval = 21600.0
+		peak_distance = best_peak_time - current_timestamp
+		max_check_interval = max(peak_distance, min_check_interval)
 
 		# 相对得分: 当前时刻在未来15天得分范围中的位置
 		scan_min = scan_stats.get("min", 0.0)
@@ -1690,7 +1692,7 @@ class VideoMonitor:
 		final_frequency_sec = check_interval
 		# 动态峰值接受阈值: 峰值得分需高于当前得分的1.2倍
 		best_peak_threshold = max(current_score * 1.2, 0.01)
-		if best_peak_time and best_peak_score > best_peak_threshold:
+		if best_peak_score > best_peak_threshold:
 			peak_interval = best_peak_time - current_timestamp
 			# 峰值越强越值得等待: 窗口比例与峰值得分正相关
 			peak_window_ratio = 1.0 + best_peak_score
