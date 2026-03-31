@@ -1384,7 +1384,7 @@ class VideoMonitor:
 
 		Returns:
 			(best_peak_time, best_peak_score, scan_stats):
-			最佳峰值时间和得分, 以及扫描统计信息(min/max/mean/std)
+			最佳峰值时间和得分, 以及扫描统计信息(min/max)
 
 		"""
 		seconds_in_day = 86400
