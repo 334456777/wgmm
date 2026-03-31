@@ -866,18 +866,12 @@ class VideoMonitor:
 
 		"""
 		min_count_for_filter = 3  # 最小样本数才进行过滤
-		min_count_for_variance = 2  # 最小样本数才计算方差
 
 		if len(timestamps) < min_count_for_filter:
 			return [ts for ts in timestamps if ts <= current_time]
 
 		sorted_ts = np.array(sorted(timestamps), dtype=np.float64)
-		if len(sorted_ts) < min_count_for_variance:
-			return timestamps
-
 		intervals = np.diff(sorted_ts)
-		if len(intervals) == 0:
-			return timestamps
 
 		q1 = np.percentile(intervals, 25)
 		q3 = np.percentile(intervals, 75)
@@ -1436,7 +1430,11 @@ class VideoMonitor:
 					"max": float(np.max(scan_scores)),
 				}
 
-			if len(scan_scores) > 1:
+			if len(scan_scores) == 1:
+				best_peak_score = float(scan_scores[0])
+				best_peak_time = float(scan_times[0])
+
+			elif len(scan_scores) > 1:
 				gradients = np.diff(scan_scores)
 				raw_peaks_mask = (gradients[:-1] > 0) & (gradients[1:] < 0)
 
@@ -2116,9 +2114,8 @@ class VideoMonitor:
 
 		# 附加自定义周期: 将时间戳映射到24桶相位离散值(与day维度粒度一致)
 		n_buckets = 24
-		ts_arr_raw = np.array(timestamps_array, dtype=np.float64)
 		for k, period in enumerate(extra_periods or []):
-			phase_bucket = (ts_arr_raw % period) / period * n_buckets
+			phase_bucket = (ts_arr % period) / period * n_buckets
 			raw_components[f"custom_{k}"] = np.clip(
 				phase_bucket.astype(np.int64), 0, n_buckets - 1
 			)
@@ -2150,7 +2147,7 @@ class VideoMonitor:
 			target_timestamp: 目标时间戳
 			pos_events: 正向事件列表(历史发布时间)
 			neg_events: 负向事件列表(历史检测失败时间)
-			dimension_weights: 四个维度的权重字典
+			dimension_weights: 各维度的权重字典(含动态custom_N维度)
 			pos_lambda: 正向事件的衰减率
 			neg_lambda: 负向事件的衰减率
 			sigmas: 各维度的高斯核标准差
