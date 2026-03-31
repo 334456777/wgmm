@@ -34,6 +34,9 @@ python monitor.py
 
 # 开发模式：运行单次检查后立即退出，不修改配置文件
 python monitor.py --dev
+
+# 仅运行 WGMM 调频核心，跳过视频检测流程，执行一次后退出
+python monitor.py --wgmm-core-only
 ```
 
 ### systemd 服务管理
