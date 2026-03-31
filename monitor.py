@@ -1641,8 +1641,12 @@ class VideoMonitor:
 		)
 
 		# 基于峰值预测计算检查间隔边界
-		min_check_interval = 3600.0
-		peak_distance = best_peak_time - current_timestamp
+		positive_intervals = intervals[intervals > 0]
+		if len(positive_intervals) > 0:
+			min_check_interval = float(np.percentile(positive_intervals, 20))
+		else:
+			min_check_interval = 3600.0
+		peak_distance = max(best_peak_time - current_timestamp, 0.0)
 		max_check_interval = max(peak_distance, min_check_interval)
 
 		# 相对得分: 当前时刻在未来15天得分范围中的位置
@@ -1688,7 +1692,9 @@ class VideoMonitor:
 			impedance_ratio = last_duration / max(normal_duration, 1.0)
 			impedance_factor = 1.0 + min(0.5, (impedance_ratio - 2.0) * 0.1)
 
-		final_frequency_sec = float(final_frequency_sec * impedance_factor)
+		final_frequency_sec = float(
+			max(final_frequency_sec * impedance_factor, min_check_interval)
+		)
 		if not found_new_content and not is_manual_run:
 			self._save_miss_history(current_timestamp, is_manual_run)
 
