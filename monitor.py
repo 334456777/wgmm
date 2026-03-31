@@ -15,7 +15,6 @@ from datetime import UTC
 from datetime import datetime as dt
 from pathlib import Path
 from types import FrameType
-from typing import Any
 from zoneinfo import ZoneInfo
 
 import numpy as np
@@ -106,11 +105,9 @@ class VideoMonitor:
 		self.known_urls: set[str] = set()
 
 		if self.dev_mode:
-			self.sandbox_config: dict = {}
 			self.sandbox_known_urls: set[str] = set()
 			self.sandbox_miss_history: list[int] = []
 			self.sandbox_next_check_time: int = 0
-			self.dev_new_videos: int = 0
 
 		self.log_file: str = "urls.log"
 		self.critical_log_file: str = "critical_errors.log"
@@ -120,7 +117,6 @@ class VideoMonitor:
 		self.miss_history_file: str = "data/miss_history.txt"
 		self.cookies_file: str = "data/cookies.txt"
 		Path("data").mkdir(exist_ok=True)
-		self.tmp_outputs_dir: str = "tmp_outputs"
 
 		self.last_ytdlp_duration: float = 0.0
 		self.normal_ytdlp_duration: float = 60.0
@@ -448,54 +444,11 @@ class VideoMonitor:
 			group="严重错误",
 		)
 
-	def notify_service_issue(self, message: str) -> bool:
-		"""发送服务异常通知到Bark."""
-		return self.send_bark_push(
-			title=f"{self.bark_app_title} - 服务异常",
-			body=message,
-			level="timeSensitive",
-			group="服务异常",
-		)
-
 	def get_next_check_time(self) -> int:
-		"""从配置文件读取下次检查时间戳."""
+		"""从内存配置读取下次检查时间戳."""
 		if self.dev_mode:
 			return self.sandbox_next_check_time
-
-		config_file = Path(self.wgmm_config_file)
-		try:
-			if config_file.exists():
-				file_content = config_file.read_text(encoding="utf-8")
-				config: dict[str, Any] = json.loads(file_content)
-				return config.get("next_check_time", 0)
-			return 0
-		except (OSError, json.JSONDecodeError) as e:
-			self.log_warning(f"读取next_check_time失败: {e}")
-			return 0
-
-	def save_next_check_time(self, next_check_timestamp: int) -> None:
-		"""保存下次检查时间戳到配置文件."""
-		if self.dev_mode:
-			self.sandbox_next_check_time = next_check_timestamp
-			return
-
-		config_file = Path(self.wgmm_config_file)
-		try:
-			config: dict[str, Any] = {}
-			if config_file.exists():
-				config = json.loads(config_file.read_text(encoding="utf-8"))
-
-			config["next_check_time"] = next_check_timestamp
-			config_file.write_text(
-				json.dumps(config, indent=2, ensure_ascii=False),
-				encoding="utf-8",
-			)
-		except (OSError, json.JSONDecodeError) as e:
-			self.log_critical_error(
-				f"保存next_check_time失败: {e}",
-				"save_next_check_time 方法",
-				send_notification=False,
-			)
+		return self.wgmm_config.get("next_check_time", 0)
 
 	def sync_urls_from_gist(self) -> bool:
 		success = False
@@ -612,8 +565,6 @@ class VideoMonitor:
 				timestamps.append(current_time)
 
 		if self.dev_mode:
-			if timestamps:
-				self.dev_new_videos += len(new_urls)
 			return
 
 		mtime_file_path = Path(self.mtime_file)
@@ -1509,7 +1460,8 @@ class VideoMonitor:
 		):
 			if not self.dev_mode:
 				fallback_interval = 3600  # 无历史数据时的回退间隔
-				self.save_next_check_time(int(time.time()) + fallback_interval)
+				self.wgmm_config["next_check_time"] = int(time.time()) + fallback_interval
+				self._save_wgmm_config()
 			return
 
 		# 加载正向和负向事件历史
@@ -1564,9 +1516,11 @@ class VideoMonitor:
 			else:
 				learning_interval = 3600.0
 			if not self.dev_mode:
-				self.save_next_check_time(int(time.time()) + int(learning_interval))
-			if is_manual_run:
-				self.wgmm_config["is_manual_run"] = False
+				self.wgmm_config["next_check_time"] = int(time.time()) + int(
+					learning_interval
+				)
+				if is_manual_run:
+					self.wgmm_config["is_manual_run"] = False
 				self._save_wgmm_config()
 			return
 
@@ -1699,7 +1653,6 @@ class VideoMonitor:
 			self._save_miss_history(current_timestamp, is_manual_run)
 
 		next_check_timestamp = int(time.time()) + int(final_frequency_sec)
-		self.save_next_check_time(next_check_timestamp)
 
 		self.wgmm_config["last_update"] = current_timestamp
 		self.wgmm_config["next_check_time"] = next_check_timestamp
@@ -1882,7 +1835,6 @@ class VideoMonitor:
 
 	def get_all_videos_parallel(self, video_urls: list[str]) -> list[str]:
 		all_parts = []
-		Path(self.tmp_outputs_dir).mkdir(exist_ok=True)
 
 		try:
 			with ThreadPoolExecutor(max_workers=5) as executor:
@@ -1907,17 +1859,6 @@ class VideoMonitor:
 		return all_parts
 
 	def cleanup(self) -> None:
-		tmp_outputs_path = Path(self.tmp_outputs_dir)
-		try:
-			if tmp_outputs_path.exists():
-				shutil.rmtree(tmp_outputs_path)
-		except OSError as e:
-			self.log_critical_error(
-				f"清理临时文件失败: {e}",
-				"cleanup 方法",
-				send_notification=False,
-			)
-
 		if self.dev_mode:
 			try:
 				temp_dirs = ["temp_info_json"]
@@ -2440,7 +2381,7 @@ class VideoMonitor:
 				self.save_known_urls()
 
 				if self.dev_mode:
-					self.dev_new_videos += len(gist_missing_urls)
+					pass
 				elif not self.notify_new_videos(
 					len(gist_missing_urls),
 					has_new_parts=found_new_parts,
