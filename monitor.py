@@ -107,7 +107,6 @@ class VideoMonitor:
 		if self.dev_mode:
 			self.sandbox_known_urls: set[str] = set()
 			self.sandbox_miss_history: list[int] = []
-			self.sandbox_next_check_time: int = 0
 
 		self.log_file: str = "urls.log"
 		self.critical_log_file: str = "critical_errors.log"
@@ -446,8 +445,6 @@ class VideoMonitor:
 
 	def get_next_check_time(self) -> int:
 		"""从内存配置读取下次检查时间戳."""
-		if self.dev_mode:
-			return self.sandbox_next_check_time
 		return self.wgmm_config.get("next_check_time", 0)
 
 	def sync_urls_from_gist(self) -> bool:
@@ -1458,9 +1455,9 @@ class VideoMonitor:
 		if not mtime_file_path.exists() and not self.generate_mtime_file(
 			"adjust_check_frequency"
 		):
+			fallback_interval = 3600  # 无历史数据时的回退间隔
+			self.wgmm_config["next_check_time"] = int(time.time()) + fallback_interval
 			if not self.dev_mode:
-				fallback_interval = 3600  # 无历史数据时的回退间隔
-				self.wgmm_config["next_check_time"] = int(time.time()) + fallback_interval
 				self._save_wgmm_config()
 			return
 
@@ -1515,10 +1512,8 @@ class VideoMonitor:
 					learning_interval = 3600.0
 			else:
 				learning_interval = 3600.0
+			self.wgmm_config["next_check_time"] = int(time.time()) + int(learning_interval)
 			if not self.dev_mode:
-				self.wgmm_config["next_check_time"] = int(time.time()) + int(
-					learning_interval
-				)
 				if is_manual_run:
 					self.wgmm_config["is_manual_run"] = False
 				self._save_wgmm_config()
