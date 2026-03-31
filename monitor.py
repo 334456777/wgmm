@@ -307,11 +307,14 @@ class VideoMonitor:
 		message: str,
 		context: str = "",
 		send_notification: bool = True,
+		detail: str = "",
 	) -> None:
 		timestamp = self._get_jst_datetime_str()
 		full_message = f"{message}"
 		if context:
 			full_message += f" [上下文: {context}]"
+		if detail:
+			full_message += f" [详情: {detail}]"
 
 		if not self.dev_mode:
 			try:
@@ -2343,22 +2346,29 @@ class VideoMonitor:
 				return
 
 			# 第三层:完整深度检查(获取所有视频URL)
-			success, stdout, _stderr = self.run_yt_dlp(
-				[
-					"--cookies",
-					self.cookies_file,
-					"--flat-playlist",
-					"--print",
-					"%(webpage_url)s",
-					f"https://space.bilibili.com/{self.BILIBILI_UID}/video",
-				],
-			)
+			full_check_args = [
+				"--cookies",
+				self.cookies_file,
+				"--flat-playlist",
+				"--print",
+				"%(webpage_url)s",
+				f"https://space.bilibili.com/{self.BILIBILI_UID}/video",
+			]
+			success, stdout, stderr = self.run_yt_dlp(full_check_args)
+
+			if not success or not stdout:
+				self.log_warning(
+					f"完整检查首次尝试失败, 30秒后重试 [stderr: {stderr}]",
+				)
+				time.sleep(30)
+				success, stdout, stderr = self.run_yt_dlp(full_check_args)
 
 			if not success or not stdout:
 				self.log_critical_error(
 					"无法获取视频列表",
 					"完整检查阶段",
 					send_notification=True,
+					detail=stderr,
 				)
 				self.adjust_check_frequency(found_new_content=False)
 				self.cleanup()
