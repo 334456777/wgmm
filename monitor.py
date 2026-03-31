@@ -1429,11 +1429,11 @@ class VideoMonitor:
 
 			# 记录扫描统计, 用于相对得分计算
 			if len(scan_scores) > 0:
+				score_mean = float(np.mean(scan_scores))
+				score_std = float(np.std(scan_scores))
 				scan_stats = {
 					"min": float(np.min(scan_scores)),
 					"max": float(np.max(scan_scores)),
-					"mean": float(np.mean(scan_scores)),
-					"std": float(np.std(scan_scores)),
 				}
 
 			if len(scan_scores) > 1:
@@ -1441,8 +1441,6 @@ class VideoMonitor:
 				raw_peaks_mask = (gradients[:-1] > 0) & (gradients[1:] < 0)
 
 				# 动态阈值: 基于扫描得分分布自适应计算
-				score_mean = scan_stats["mean"]
-				score_std = scan_stats["std"]
 				peak_score_threshold = score_mean + 1.5 * score_std
 				gradient_threshold = 0.05
 				filtered_mask = raw_peaks_mask.copy()
@@ -1510,7 +1508,8 @@ class VideoMonitor:
 			"adjust_check_frequency"
 		):
 			if not self.dev_mode:
-				self.save_next_check_time(int(time.time()) + 7200)
+				fallback_interval = 3600  # 无历史数据时的回退间隔
+				self.save_next_check_time(int(time.time()) + fallback_interval)
 			return
 
 		# 加载正向和负向事件历史
@@ -1549,7 +1548,6 @@ class VideoMonitor:
 
 		if not pos_sufficient:
 			self.log_info(f"正向数据不足({len(positive_events)}条), 进入学习期模式")
-			mtime_file_path = Path(self.mtime_file)
 			if not mtime_file_path.exists():
 				self.generate_mtime_file("学习期数据不足")
 			combined_events = np.array(
@@ -1669,6 +1667,7 @@ class VideoMonitor:
 		)
 
 		final_frequency_sec = check_interval
+		in_peak_response = False
 		# 动态峰值接受阈值: 峰值得分需高于当前得分的1.2倍
 		best_peak_threshold = current_score * 1.2
 		if best_peak_score > best_peak_threshold:
@@ -1683,6 +1682,7 @@ class VideoMonitor:
 				advanced_time = best_peak_time - peak_advance_sec
 				advanced_interval = advanced_time - current_timestamp
 				final_frequency_sec = float(max(advanced_interval, 0.0))
+				in_peak_response = True
 
 		impedance_factor = 1.0
 		last_duration = self.last_ytdlp_duration
@@ -1692,9 +1692,9 @@ class VideoMonitor:
 			impedance_ratio = last_duration / max(normal_duration, 1.0)
 			impedance_factor = 1.0 + min(0.5, (impedance_ratio - 2.0) * 0.1)
 
-		final_frequency_sec = float(
-			max(final_frequency_sec * impedance_factor, min_check_interval)
-		)
+		final_frequency_sec = float(final_frequency_sec * impedance_factor)
+		if not in_peak_response:
+			final_frequency_sec = max(final_frequency_sec, min_check_interval)
 		if not found_new_content and not is_manual_run:
 			self._save_miss_history(current_timestamp, is_manual_run)
 
