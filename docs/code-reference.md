@@ -618,13 +618,13 @@ sigma = base_sigma × (1 + dispersion_factor)
 ```python
 # 更频繁检查
 mapping_curve = 2.0  # → 改为 3.0 或更高
-peak_advance_minutes = 5  # → 改为 10 (更早检查)
 ```
 
 **效果**:
 - 更短的检查间隔
-- 更早的峰值检测
 - 更多的网络请求
+
+> 注：峰值提前量现已自动使用 yt-dlp 实际执行耗时，无需手动调整。
 
 ---
 

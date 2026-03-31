@@ -392,10 +392,8 @@ activity_multiplier = ACTIVITY_BASELINE - LINEAR_SLOPE * clamped_activity
 |---------|--------|----------|---------|
 | **SIGMA** | 0.8 | 高斯核标准差，控制时间相似性容忍度 | monitor.py:466 |
 | **LAMBDA** | 0.0001/小时 | 指数衰减率，控制历史记忆遗忘速度 | monitor.py:467 |
-| **DEFAULT_INTERVAL** | 3600秒 | 默认基础轮询间隔（1小时） | monitor.py:468 |
-| **MIN_INTERVAL** | 300秒 | 最小检查间隔（5分钟），防止过度请求 | monitor.py:472 |
-| **MAX_INTERVAL_LOW** | 259200秒 | 常规最大间隔（3天） | monitor.py:473 |
-| **MAX_INTERVAL_HIGH** | 2592000秒 | 低活跃期最大间隔（30天） | monitor.py:474 |
+| **MIN_CHECK_INTERVAL** | 数据驱动 | 最小检查间隔，取正向事件间隔的 P20（无数据时回退 3600 秒） | monitor.py adjust_check_frequency |
+| **MAX_CHECK_INTERVAL** | 数据驱动 | 最大检查间隔，取 peak_distance 与 min_check_interval 的较大值 | monitor.py adjust_check_frequency |
 
 #### 低活跃期调整参数
 

@@ -516,18 +516,17 @@ monitor.py:1232
 │ 【步骤5】非线性映射到检查间隔                                        │
 └─────────────────────────────────────────────────────────────────────┘
     │
-    ├─ 基于峰值预测计算检查间隔边界
-    │   └─> min_check_interval = 3600  # 固定1小时(得分最高时)
-    │   └─> if best_peak_time:
-    │       • peak_distance = best_peak_time - current_timestamp
-    │       • max_check_interval = max(peak_distance, min_check_interval)
-    │       else:
-    │       • max_check_interval = 21600  # 无峰值时默认6小时
+    ├─ 基于峰值预测计算检查间隔边界(数据驱动)
+    │   └─> positive_intervals = intervals[intervals > 0]
+    │   └─> min_check_interval = percentile(positive_intervals, 20)  # 发布间隔的P20
+    │       • 无数据时回退到 3600s
+    │   └─> peak_distance = max(best_peak_time - current_timestamp, 0)
+    │   └─> max_check_interval = max(peak_distance, min_check_interval)
     │
     ├─ 非线性映射
     │   └─> exponential_score = relative_score ** mapping_curve  # mapping_curve = 2.0
     │   └─> check_interval = max_check_interval - (max_check_interval - min_check_interval) × exponential_score
-    │       • score = 1.0 → interval = min_check_interval (1小时)
+    │       • score = 1.0 → interval = min_check_interval (P20间隔)
     │       • score = 0.0 → interval = max_check_interval (直接睡到预测峰值)
 
 ┌─────────────────────────────────────────────────────────────────────┐
@@ -569,13 +568,12 @@ monitor.py:1232
     │       • 选择最佳峰值: argmax(peak_scores)
     │
     └─ 峰值提前量调整
-        └─> if best_peak_score > 0.6:
+        └─> if best_peak_score > current_score × 1.2:
             • peak_interval = best_peak_time - current_timestamp
             • if peak_interval < check_interval × peak_window_ratio:
-                • advanced_time = best_peak_time - 5分钟
-                • advanced_interval = advanced_time - current_timestamp
-                • if advanced_interval > 300秒:
-                    • final_frequency_sec = advanced_interval
+                • peak_advance_sec = max(last_ytdlp_duration, normal_ytdlp_duration)
+                • advanced_time = best_peak_time - peak_advance_sec
+                • final_frequency_sec = max(advanced_interval, min_check_interval)
 
 ┌─────────────────────────────────────────────────────────────────────┐
 │ 【步骤7】yt-dlp 阻抗因子 (原始机制)                                  │
@@ -594,7 +592,7 @@ monitor.py:1232
 └─────────────────────────────────────────────────────────────────────┘
     │
     ├─ 应用最终的检查间隔
-    │   └─> final_frequency_sec = check_interval × impedance_factor
+    │   └─> final_frequency_sec = max(check_interval × impedance_factor, min_check_interval)
     │
     ├─ 记录负向事件
     │   └─> if not found_new_content and not is_manual_run:

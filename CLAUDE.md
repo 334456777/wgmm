@@ -415,10 +415,11 @@ adjust_check_frequency()
 ```python
 # 更激进：更频繁检查
 mapping_curve = 2.0  # → 改为 3.0
-peak_advance_minutes = 5  # → 改为 10
 
 # 更保守：减少请求
 mapping_curve = 2.0  # → 改为 1.5
+
+# 注：峰值提前量自动使用 yt-dlp 实际执行耗时，无需手动调整
 ```
 
 **修改时间容忍度**:
