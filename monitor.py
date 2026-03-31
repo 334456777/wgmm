@@ -1553,8 +1553,21 @@ class VideoMonitor:
 			mtime_file_path = Path(self.mtime_file)
 			if not mtime_file_path.exists():
 				self.generate_mtime_file("学习期数据不足")
+			combined_events = np.array(
+				sorted(positive_events + negative_events),
+				dtype=np.float64,
+			)
+			if len(combined_events) > 1:
+				combined_intervals = np.diff(combined_events)
+				combined_intervals = combined_intervals[combined_intervals > 0]
+				if len(combined_intervals) > 0:
+					learning_interval = float(np.percentile(combined_intervals, 50))
+				else:
+					learning_interval = 3600.0
+			else:
+				learning_interval = 3600.0
 			if not self.dev_mode:
-				self.save_next_check_time(int(time.time()) + 3600)
+				self.save_next_check_time(int(time.time()) + int(learning_interval))
 			if is_manual_run:
 				self.wgmm_config["is_manual_run"] = False
 				self._save_wgmm_config()
