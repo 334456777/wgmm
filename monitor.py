@@ -1480,7 +1480,7 @@ class VideoMonitor:
 		2. 使用四维时间特征(日/周/月周/年月)计算时间相似性
 		3. 高斯核函数评估当前时间点的发布概率
 		4. 指数衰减权重赋予新数据更高优先级
-		5. 预测未来15天内的发布峰值, 提前5分钟检查
+		5. 预测未来15天内的发布峰值, 提前yt-dlp执行耗时检查
 		6. 根据yt-dlp执行时间动态调整检查间隔
 
 		Args:
@@ -1495,7 +1495,6 @@ class VideoMonitor:
 		min_history_count = 10  # 最小历史数据量, 少于此时进入学习期模式
 		prune_threshold = 1000  # 数据剪枝阈值, 超过此数量才进行剪枝
 		lookahead_days = 15  # 峰值预测窗口(天)
-		peak_advance_minutes = 5  # 峰值提前检查时间(分钟)
 		seconds_in_day = 86400  # 一天的秒数
 
 		# 初始化配置
@@ -1673,9 +1672,13 @@ class VideoMonitor:
 			# 峰值越强越值得等待: 窗口比例与峰值得分正相关
 			peak_window_ratio = 1.0 + best_peak_score
 			if peak_interval < check_interval * peak_window_ratio:
-				advanced_time = best_peak_time - (peak_advance_minutes * 60.0)
+				peak_advance_sec = max(
+					float(self.last_ytdlp_duration),
+					float(self.normal_ytdlp_duration),
+				)
+				advanced_time = best_peak_time - peak_advance_sec
 				advanced_interval = advanced_time - current_timestamp
-				final_frequency_sec = float(advanced_interval)
+				final_frequency_sec = float(max(advanced_interval, min_check_interval))
 
 		impedance_factor = 1.0
 		last_duration = self.last_ytdlp_duration
