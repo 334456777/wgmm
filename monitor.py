@@ -1453,15 +1453,15 @@ class VideoMonitor:
 						gradient_condition = abs(gradients[i]) < gradient_threshold
 						filtered_mask[i] = score_condition and gradient_condition
 
-				peak_indices = np.where(filtered_mask)[0]
+				peak_indices = np.where(filtered_mask)[0] + 1
 				# 严格过滤无结果时, 回退到所有局部峰值
 				if len(peak_indices) == 0:
-					peak_indices = np.where(raw_peaks_mask)[0]
+					peak_indices = np.where(raw_peaks_mask)[0] + 1
 
 				if len(peak_indices) > 0:
 					peak_scores = scan_scores[peak_indices]
 					best_idx_in_peaks = np.argmax(peak_scores)
-					best_peak_idx = peak_indices[best_idx_in_peaks]
+					best_peak_idx = int(peak_indices[best_idx_in_peaks])
 					best_peak_score = float(peak_scores[best_idx_in_peaks])
 					best_peak_time = float(scan_times[best_peak_idx])
 				else:
