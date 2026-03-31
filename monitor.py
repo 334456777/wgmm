@@ -1397,6 +1397,8 @@ class VideoMonitor:
 		best_peak_time = float(scan_start)
 		best_peak_score = 0.0
 		scan_stats: dict = {}
+		score_mean = 0.0
+		score_std = 0.0
 
 		score_threshold = 0.5
 		if lookahead_end > scan_start:
