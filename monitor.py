@@ -1682,7 +1682,7 @@ class VideoMonitor:
 				)
 				advanced_time = best_peak_time - peak_advance_sec
 				advanced_interval = advanced_time - current_timestamp
-				final_frequency_sec = float(max(advanced_interval, min_check_interval))
+				final_frequency_sec = float(max(advanced_interval, 0.0))
 
 		impedance_factor = 1.0
 		last_duration = self.last_ytdlp_duration
