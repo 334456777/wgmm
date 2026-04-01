@@ -550,16 +550,13 @@ class VideoMonitor:
 			return
 
 		timestamps = []
-		current_time = int(time.time())
 
 		for url in new_urls:
 			upload_time = self.get_video_upload_time(url)
 			if upload_time:
 				timestamps.append(upload_time)
 			else:
-				if not self.dev_mode:
-					self.log_warning("降级使用当前时间")
-				timestamps.append(current_time)
+				self.log_warning(f"跳过时间戳保存(获取失败): {url}")
 
 		if self.dev_mode:
 			return
@@ -1707,7 +1704,7 @@ class VideoMonitor:
 	def quick_precheck(self) -> bool:
 		"""第二层检测:快速ID检查(轻量级检查).
 
-		策略:只获取最新视频的ID, 与已知URL对比, 判断是否需要完整扫描.
+		策略:只获取最新视频的ID, 与Gist和本地已知URL对比, 判断是否需要完整扫描.
 		优势:相比完整扫描节省90%以上的流量和时间.
 
 		Returns:
@@ -1738,7 +1735,8 @@ class VideoMonitor:
 
 		latest_id = stdout.strip()
 		# 检查最新ID是否在已知URL中
-		video_exists = any(latest_id in url for url in self.memory_urls)
+		all_known = set(self.memory_urls) | self.known_urls
+		video_exists = any(latest_id in url for url in all_known)
 
 		return not video_exists
 
@@ -2347,8 +2345,10 @@ class VideoMonitor:
 			all_parts = self.get_all_videos_parallel(video_urls)
 
 			if not all_parts:
-				self.log_info("处理分片时出错, 错误已处理")
-				all_parts = video_urls
+				self.log_warning("分片扩展失败(可能被限流), 跳过本次检测")
+				self.adjust_check_frequency(found_new_content=False)
+				self.cleanup()
+				return
 
 			# 双层URL对比逻辑
 			existing_urls_set = set(self.memory_urls)
