@@ -1,10 +1,10 @@
 # 代码逻辑流程全图
 
-> **版本**: v2.2 (2345行代码, 61个方法)
-> **更新时间**: 2026-02-06
+> **版本**: v2.3 (2527行代码, 60个方法)
+> **更新时间**: 2026-04-01
 > **适用版本**: monitor.py v2.x
 
-本文档详细描述了WGMM视频监控系统的微观和宏观逻辑结构，包括所有61个方法的执行流程和调用关系。
+本文档详细描述了WGMM视频监控系统的微观和宏观逻辑结构，包括所有60个方法的执行流程和调用关系。
 
 ---
 
@@ -522,6 +522,7 @@ monitor.py:1232
     │       • 无数据时回退到 3600s
     │   └─> peak_distance = max(best_peak_time - current_timestamp, 0)
     │   └─> max_check_interval = max(peak_distance, min_check_interval)
+    │       # _scan_future_peak 三段式回退保证始终返回有效峰值，无需6小时fallback
     │
     ├─ 非线性映射
     │   └─> exponential_score = relative_score ** mapping_curve  # mapping_curve = 2.0
@@ -1535,7 +1536,6 @@ monitor.py:342      - limit_file_lines() - 限制日志文件行数
 
 【配置管理】
 monitor.py:1194     - _initialize_wgmm_config() - 初始化 WGMM 配置
-monitor.py:956      - _calculate_interval_stats() - 计算间隔统计量
 
 【辅助方法】
 monitor.py:1838     - _get_local_timezone_offset() - 获取本地时区偏移
@@ -1548,9 +1548,9 @@ monitor.py:72       - FALLBACK_INTERVAL - 降级检查间隔
 monitor.py:73       - MAX_RETRY_ATTEMPTS - 最大重试次数
 
 【统计信息】
-• 总行数: 2345 行
+• 总行数: 2527 行
 • 类数量: 1 个 (VideoMonitor)
-• 方法数量: 61 个 (包含嵌套函数)
+• 方法数量: 60 个 (包含嵌套函数)
 • 函数数量: 3 个 (parse_arguments, load_env_file, main)
 ```
 
@@ -1558,6 +1558,7 @@ monitor.py:73       - MAX_RETRY_ATTEMPTS - 最大重试次数
 
 ## 版本历史
 
+- **v2.3** (2026-04-01): 删除 _calculate_interval_stats 引用，移除6小时fallback描述，更新行数/方法数统计
 - **v2.2** (2026-02-06): 更新方法数量统计(61个), 添加新增方法索引(_scan_future_peak, _get_jst_datetime_str等), 更新代码行号
 - **v2.1** (2026-01-24): 修正方法数量统计(58个), 添加遗漏的方法索引(_limit_critical_log_lines等)
 - **v2.0** (2026-01-24): 基于2296行代码重构，新增11个核心类方法，完整更新文档
