@@ -471,15 +471,15 @@ class VideoMonitor:
 			data = response.json()
 			files = data.get("files", {})
 
-			if len(files) != 1:
+			if "urls.txt" not in files:
 				self.log_critical_error(
-					f"Gist 文件数量错误: 期望 1 个, 实际 {len(files)} 个",
+					"Gist 中未找到 urls.txt 文件",
 					"Gist 同步验证",
 					send_notification=True,
 				)
 				return success
 
-			content = next(iter(files.values())).get("content", "")
+			content = files["urls.txt"].get("content", "")
 			self.memory_urls = [
 				line.strip() for line in content.splitlines() if line.strip()
 			]
@@ -503,6 +503,41 @@ class VideoMonitor:
 			)
 
 		return success
+
+	def write_new_urls_to_gist(self, urls: set[str]) -> bool:
+		"""将新增URL写入Gist的new.txt文件(覆盖模式)."""
+		if not urls:
+			return True
+		headers = {
+			"Authorization": f"Bearer {self.GITHUB_TOKEN}",
+			"Accept": "application/vnd.github.v3+json",
+		}
+		api_url = f"{self.GIST_BASE_URL}/{self.GIST_ID}"
+		payload = {
+			"files": {
+				"new.txt": {
+					"content": "\n".join(sorted(urls)) + "\n",
+				}
+			}
+		}
+		try:
+			response = requests.patch(api_url, headers=headers, json=payload, timeout=30)
+			response.raise_for_status()
+			self.log_info(f"已将 {len(urls)} 个URL写入 Gist new.txt")
+			return True
+		except requests.exceptions.HTTPError as e:
+			self.log_critical_error(
+				f"写入 new.txt 失败: HTTP {e.response.status_code}",
+				"Gist new.txt 更新",
+				send_notification=True,
+			)
+		except requests.RequestException as e:
+			self.log_critical_error(
+				f"写入 new.txt 请求失败: {e!s}",
+				"Gist new.txt 更新",
+				send_notification=True,
+			)
+		return False
 
 	def get_video_upload_time(self, video_url: str) -> int | None:
 		"""获取视频的上传时间戳."""
@@ -2374,6 +2409,10 @@ class VideoMonitor:
 				# 更新已知URL列表
 				self.known_urls.update(gist_missing_urls)
 				self.save_known_urls()
+
+				# 将新增URL写入Gist的new.txt
+				if not self.dev_mode and not self.write_new_urls_to_gist(gist_missing_urls):
+					self.log_warning("写入 new.txt 失败, 不影响主流程")
 
 				if self.dev_mode:
 					pass
