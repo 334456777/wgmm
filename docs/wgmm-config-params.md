@@ -1,178 +1,173 @@
 # wgmm_config.json 参数说明
 
-这是 WGMM 算法的**自适应学习状态快照**，所有参数都在每次检查后由算法自动更新。
+`data/wgmm_config.json` 是 WGMM 调频状态快照，由 `WgmmConfig`、`ConfigStore` 和 `wgmm_monitor/wgmm/scheduler.py` 共同维护。未知字段会保存在 `WgmmConfig.extra`，写回时原样保留，便于兼容旧配置或未来扩展。
 
----
+## 当前字段
 
-## 1. `dimension_weights` — 时间维度权重
-
-控制各时间周期维度在热力得分计算中的重要性（范围 0.1 ~ 1.0）。算法通过评估每个维度对预测的贡献度来自动调整权重。
-
-| 参数 | 默认值 | 含义 |
-|------|--------|------|
-| `day` | 0.3 | **日周期**权重 — 一天中的哪个小时。值越高表示 UP 主在固定时段发布的模式越明显 |
-| `week` | 0.25 | **周周期**权重 — 一周中的哪一天。值越高表示 UP 主有明显的周几发布偏好 |
-| `month_week` | 0.25 | **月周周期**权重 — 每月第几周。值越高表示 UP 主在月内的发布分布有规律 |
-| `year_month` | 0.2 | **年月周期**权重 — 一年中的哪个月。值越高表示 UP 主的发布有月份/季节性规律 |
-| `custom_0` ~ `custom_2` | 0.1 | **自相关发现的附加周期**权重（可选，最多 3 个）— 由 `_discover_periods` 自动识别的非日历周期（如"每3天"、"每10天"）。初始值 0.1，若该周期对预测无贡献，权重会自然收敛至最小值 |
-
-**解读示例**：若 `week` 权重最高（如 0.68），说明 UP 主有明显的"周几发布"模式。`custom_N` 键仅在 `discovered_periods` 非空时出现。
-
----
-
-## 2. `last_lambda` — 时间衰减率 (λ)
-
-- **默认值**: `0.0001` / 小时
-- **取值范围**: `0.00005`（长期记忆）~ `0.0005`（快速遗忘）
-
-控制历史记忆的"遗忘速度"。公式：
-
-$$w = e^{-\lambda \cdot t_{hours}}$$
-
-- **半衰期** ≈ ln(2) / λ
-- λ 越大 → 遗忘越快 → 系统更重视近期数据
-- λ 越小 → 遗忘越慢 → 系统更依赖长期历史
-
-**自适应逻辑**：当检测到漏检（负向事件）方差较大时，算法自动增大 λ 以快速适应变化的发布模式。
-
-| Lambda 值 | 半衰期 | 含义 |
-|----------|--------|------|
-| 0.00005 | ~833天 | 长期记忆，发布习惯很少改变 |
-| 0.0001 | ~417天 | 标准遗忘速度，发布习惯较稳定 |
-| 0.0005 | ~83天 | 快速遗忘，发布习惯经常变化 |
-| 0.001+ | ~29天 | 极快遗忘，发布模式极不稳定 |
-
----
-
-## 3. `last_pos_variance` / `last_neg_variance` — 事件方差
-
-| 参数 | 默认值 | 含义 |
-|------|--------|------|
-| `last_pos_variance` | 0.0 | **正向事件（成功检测）的时间间隔方差**。值越大说明 UP 主发布间隔越不规律 |
-| `last_neg_variance` | 0.0 | **负向事件（漏检）的时间间隔方差**。用于驱动 λ 的自适应调节，方差越大 → λ 越大 → 遗忘越快 |
-
-这两个值是以秒²为单位的原始方差，数值通常很大。它们共同驱动 `last_lambda` 的自适应调节。
-
----
-
-## 4. `last_update` — 上次参数更新时间
-
-- **默认值**: `0`
-- **格式**: Unix 时间戳（秒）
-
-记录算法参数最后一次被更新的时刻。每次执行检查并更新自适应参数后会刷新此值。
-
----
-
-## 5. `next_check_time` — 下次检查时间
-
-- **默认值**: `0`
-- **格式**: Unix 时间戳（秒）
-
-算法根据当前热力得分和活跃度分析计算出的下次检查 B 站视频更新的时间。`next_check_time - last_update` 的差值反映了当前的检查间隔——间隔越长说明系统判断当前处于低活跃期。
-
----
-
-## 6. `is_manual_run` — 是否为手动运行
-
-- **默认值**: `true`
-
-| 值 | 含义 |
-|----|------|
-| `true` | 首次运行 / 用户手动触发。手动运行时**不保存漏检记录**到 `miss_history.txt`，避免污染学习数据 |
-| `false` | 正常自动运行模式，会正常记录漏检历史 |
-
-首次启动后自动变为 `false`，后续由系统自动管理。
-
----
-
-## 7. `sigmas` — 各维度高斯核标准差 (σ)
-
-控制每个时间维度上的"时间容忍度"，影响高斯核相似性计算：
-
-$$\text{similarity} = e^{-d^2 / (2\sigma^2)}$$
-
-| 参数 | 默认值 | 含义 |
-|------|--------|------|
-| `day` | 0.8 | 日周期容忍度 |
-| `week` | 1.0 | 周周期容忍度 |
-| `month_week` | 1.5 | 月周周期容忍度 |
-| `year_month` | 2.0 | 年月周期容忍度 |
-| `custom_0` ~ `custom_2` | 1.0 | 自相关发现的附加周期容忍度（可选）— 随数据离散度自适应调整 |
-
-**σ 的作用**：
-- σ **越小** → 匹配越严格，只有非常接近的时间点才被认为"相似"
-- σ **越大** → 匹配越宽松，对时间差异更包容
-
-**实际效果示例（以 σ = 1.0 为例）**：
-
-| 时间关系 | 距离 | 相似度 |
-|---------|------|--------|
-| 完全相同 | 0.0 | 1.000 |
-| 相邻（如周日→周一） | ~0.9 | 0.606 |
-| 相隔2个单位 | ~1.8 | 0.135 |
-| 相隔3个单位 | ~2.6 | 0.011 |
-
-**自适应逻辑**：算法根据历史数据的离散度调整 σ。若所有 σ 收敛到相近的较小值（如 0.8~1.0），说明 UP 主的发布模式在各维度上都比较集中明确。
-
----
-
-## 8. `score_calibration` — 得分校准参数
-
-将原始热力得分归一化到可比较的标准尺度，使用在线统计量进行标准化。
-
-| 参数 | 默认值 | 含义 |
-|------|--------|------|
-| `mean` | 0.5 | 历史得分**均值**。用于零中心化校准 |
-| `std` | 0.15 | 历史得分**标准差**。用于尺度归一化 |
-| `sample_count` | 0 | 已收集的得分**样本数**。样本越多校准越准确 |
-| `last_update` | 0 | 校准参数最后更新时间（Unix 时间戳） |
-
-校准公式：
-
-$$\text{calibrated\_score} = \frac{\text{raw\_score} - \text{mean}}{\text{std}}$$
-
-得分均值很低（如 0.01）是正常的，说明大部分时间点的发布概率都不高，只有特定时间窗口才会出现高分。
-
----
-
-## 9. `discovered_periods` — 自相关自动发现的附加周期
-
-- **默认值**: `[]`（空列表）
-- **格式**: Unix 秒数的浮点数列表，最多 3 个元素
-- **示例**: `[259200.0]` 表示发现了 3 天（72 小时）的周期
-
-由 `_discover_periods` 通过自相关分析（Wiener-Khinchin 定理）从历史时间戳中自动识别的非日历周期，用于捕捉"每3天"、"每10天"等不符合日/周/月/年节律的发布规律。
-
-**触发条件**：
-- 历史发布记录 ≥ 50 条
-- 数据时间跨度 ≥ 3 天（72 小时）
-
-**过滤规则**：
-- 排除已有 4 个固定维度覆盖的周期（±20% 容忍）
-- 排除谐波（已选周期的整数分频，±20% 容忍）
-
-**稳定性设计**：每次运行时，新发现的周期与已存储周期进行 ±10% 匹配。匹配成功则复用已有 `custom_N` 索引（保留已学习的权重），匹配失败才重置为初始权重 0.1。
-
-**与 `dimension_weights` / `sigmas` 的关系**：`discovered_periods` 列表长度决定 `custom_N` 键的数量。若列表为空，`custom_N` 键不存在，算法行为与旧版完全一致。
-
----
-
-## 参数关系总览
-
+```json
+{
+  "dimension_weights": {
+    "day": 0.5,
+    "week": 1.0,
+    "month_week": 0.3,
+    "year_month": 0.2
+  },
+  "last_lambda": 0.0001,
+  "last_pos_variance": 0.0,
+  "last_neg_variance": 0.0,
+  "last_update": 0,
+  "next_check_time": 0,
+  "is_manual_run": true,
+  "sigmas": {
+    "day": 0.8,
+    "week": 1.0,
+    "month_week": 1.5,
+    "year_month": 2.0
+  },
+  "discovered_periods": []
+}
 ```
-历史数据 (mtime.txt / miss_history.txt)
-    │
-    ├──→ last_pos_variance / last_neg_variance ──→ last_lambda (遗忘速度)
-    │
-    ├──→ [自相关分析] ──→ discovered_periods ──→ custom_N keys
-    │                                                      │
-    ├──→ dimension_weights (固定4维 + custom_N 动态维度) ←──┘
-    │
-    ├──→ sigmas (固定4维 + custom_N 动态维度)
-    │
-    └──→ score_calibration (得分归一化)
-              │
-              ↓
-        热力得分 → next_check_time (下次检查时间)
+
+默认值定义在 `wgmm_monitor/wgmm/constants.py`，读写模型定义在 `wgmm_monitor/models.py`。
+
+## `dimension_weights`
+
+时间维度权重，控制各维度在加权高斯相似度中的贡献。
+
+| 键 | 默认值 | 含义 |
+|----|--------|------|
+| `day` | `0.5` | 日内小时模式 |
+| `week` | `1.0` | 一周内时间模式 |
+| `month_week` | `0.3` | 月内第几周模式 |
+| `year_month` | `0.2` | 年内月份模式 |
+| `custom_N` | `0.1` | 自相关发现的附加周期维度 |
+
+`learn_dimension_weights()` 在正向历史不少于 20 条时更新权重。它统计每个维度的离散桶分布，分布越集中，该维度越有预测价值。更新采用平滑学习率，不会一次性大幅跳变。
+
+`custom_N` 只在 `discovered_periods` 非空时出现。`initialize_wgmm_dimensions()` 会补齐缺失的 custom 权重，并删除已经无对应周期的旧 custom 键。
+
+## `sigmas`
+
+各维度高斯核标准差，控制时间相似度的宽松程度。
+
+| 键 | 默认值 | 含义 |
+|----|--------|------|
+| `day` | `0.8` | 日内时间容忍度 |
+| `week` | `1.0` | 周周期容忍度 |
+| `month_week` | `1.5` | 月内周容忍度 |
+| `year_month` | `2.0` | 月份容忍度 |
+| `custom_N` | `1.0` | 附加周期容忍度 |
+
+公式：
+
+```text
+similarity = exp(-distance_sq / (2 * sigma^2))
 ```
+
+sigma 越小，匹配越严格；sigma 越大，匹配越宽松。`learn_adaptive_sigmas()` 根据历史数据在各维度上的离散度自适应更新。
+
+## `last_lambda`
+
+正向事件的最近一次自适应遗忘速度，单位是“每小时”。
+
+公式：
+
+```text
+weight = exp(-lambda * age_hours)
+```
+
+`calculate_adaptive_lambda()` 根据事件间隔方差和变异系数计算：
+
+- `lambda_min = LAMBDA_BASE * 0.3`
+- `lambda_max = LAMBDA_BASE * (1 + cv * 4)`，并限制到 `LAMBDA_BASE * 15`
+- 方差越大，lambda 越大，旧数据遗忘越快
+- 方差越小，lambda 越小，旧数据保留越久
+
+参考半衰期：
+
+| lambda | 半衰期 |
+|--------|--------|
+| `0.00005` | 约 578 天 |
+| `0.0001` | 约 289 天 |
+| `0.0005` | 约 58 天 |
+| `0.001` | 约 29 天 |
+
+## `last_pos_variance` / `last_neg_variance`
+
+最近一次正向事件和负向事件间隔方差，单位是秒平方。
+
+- `last_pos_variance`：来自 `data/mtime.txt`。
+- `last_neg_variance`：来自 `data/miss_history.txt`。
+
+这两个值作为下一次 `calculate_adaptive_lambda()` 的趋势参考。数值通常很大，直接阅读意义不如观察 `last_lambda` 和日志中的轮询间隔。
+
+## `last_update`
+
+最近一次完整非学习期调频更新时间，Unix 秒时间戳。
+
+数据不足进入学习期时，调频会更新 `next_check_time`，但不会写入完整学习参数。
+
+## `next_check_time`
+
+下一次检查时间，Unix 秒时间戳。
+
+- 生产模式由 `MonitorService.wait_for_next_check()` 读取并等待。
+- dev mode 只打印下次检查时间，不 sleep。
+- `--wgmm-core-only` 会计算一次该值后退出。
+
+## `is_manual_run`
+
+手动运行保护标记。
+
+- 默认 `true`。
+- 生产模式第一次进入调频时，如果为 `true`，会切换为 `false`。
+- 手动运行时不保存 miss history，避免把用户临时启动污染为负向样本。
+- dev mode 始终按手动运行处理。
+
+## `discovered_periods`
+
+自相关发现的非日历周期，单位是秒，最多 3 个。
+
+示例：
+
+```json
+"discovered_periods": [259200.0]
+```
+
+表示发现约 3 天周期。发现流程在 `discover_periods()`：
+
+- 至少 50 条正向历史。
+- 数据跨度至少 168 小时。
+- 构建小时级事件信号。
+- 通过 FFT 自相关寻找 2 天到 90 天范围内的局部峰值。
+- 过滤日、周、月、年附近的已有周期。
+- 过滤整数倍/约数谐波。
+
+`sync_discovered_periods()` 用 10% 容忍度复用已有周期，保持 `custom_N` 索引稳定，避免已经学到的权重频繁漂移。
+
+## 字段关系
+
+```text
+data/mtime.txt
+data/miss_history.txt
+    -> filter_outliers()
+    -> prune_old_data()
+    -> calculate_adaptive_lambda()
+        -> last_lambda
+        -> last_pos_variance / last_neg_variance
+    -> discover_periods()
+        -> discovered_periods
+        -> custom_N weights/sigmas
+    -> learn_dimension_weights()
+        -> dimension_weights
+    -> learn_adaptive_sigmas()
+        -> sigmas
+    -> decide_next_frequency()
+        -> next_check_time
+        -> last_update
+        -> is_manual_run
+```
+
+## 不存在的旧字段
+
+当前 `WgmmConfig` 不包含 `score_calibration`、固定 `MIN_INTERVAL`、固定 `MAX_INTERVAL` 或独立低活跃度参数。检查间隔边界由历史事件间隔、未来峰值距离和 `FALLBACK_INTERVAL` 动态决定。

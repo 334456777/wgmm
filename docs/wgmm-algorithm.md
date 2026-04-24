@@ -1,1015 +1,309 @@
-# WGMM 算法详细说明文档
+# WGMM 算法说明
 
-## 目录
+WGMM 的纯算法实现位于 `wgmm_monitor/wgmm/`。服务层只负责加载历史数据、保存配置和记录日志，算法层不访问网络、环境变量或本地文件。
 
-- [1. 算法概述](#1-算法概述)
-- [2. 数学原理](#2-数学原理)
-- [3. 算法参数](#3-算法参数)
-- [4. 算法流程图](#4-算法流程图)
-- [5. 常见问题](#5-常见问题)
+## 文件分工
 
----
+| 文件 | 职责 |
+|------|------|
+| `constants.py` | 默认权重、sigma、lambda、扫描窗口等常量 |
+| `features.py` | 时间特征提取和离散维度提取 |
+| `learning.py` | 异常值过滤、自适应参数学习、自相关周期发现 |
+| `scoring.py` | 单点得分和批量得分 |
+| `scheduler.py` | 调频决策、未来峰值扫描、配置更新 |
 
-## 1. 算法概述
+服务入口是 `wgmm_monitor/services/frequency.py`，核心函数是 `decide_next_frequency()`。
 
-### 1.1 核心思想
+## 核心思想
 
-基于**时间序列周期性模式识别**的机器学习方法，将视频发布行为建模为在时间维度上的概率分布问题。通过历史数据学习UP主的发布习惯，预测未来时间点的发布概率，实现智能化的监控频率调整。
+算法把“某个时间点是否可能发布”建模为历史事件在周期时间特征空间中的加权相似度。
 
-**关键特性：**
-- **周期性模式识别**：自动识别"每周三下午"、"工作日晚上"等复杂发布模式
-- **非日历周期自动发现**：通过自相关分析（Wiener-Khinchin 定理）从历史数据中识别"每3天"、"每10天"等不规则周期，作为附加维度动态加入模型
-- **时间特征编码**：使用 sin/cos 变换处理周期性时间数据，避免边界跳跃问题
-- **记忆衰退模拟**：近期事件权重更高，远期事件逐渐被"遗忘"，适应习惯变化
-- **相似度计算**：高斯核函数精确测量时间点相似性，实现精准预测
+输入：
 
-### 1.2 工作流程
+- 正向事件：`data/mtime.txt` 中的真实上传时间戳。
+- 负向事件：`data/miss_history.txt` 中未发现新内容的检查时间。
+- 当前时间。
+- 上一次持久化的 `WgmmConfig`。
 
-```
-数据采集层
-    ├── 历史发布时间戳（mtime.txt）
-    ├── 失败历史记录（miss_history.txt）
-    └── 当前系统时间
-         ↓
-特征编码层
-    ├── 日周期编码（sin/cos, 24小时）
-    ├── 周周期编码（sin/cos, 7天）
-    ├── 月周编码（每月第几周）
-    └── 年月编码（月份特征）
-         ↓
-非日历周期发现层（可选，数据充足时启用）
-    ├── 小时级信号构建（每桶计事件数）
-    ├── Wiener-Khinchin 自相关：FFT → |FFT|² → IFFT
-    ├── 时域局部极大值筛选（归一化自相关 ≥ 0.02）
-    ├── 谐波过滤（排除已选周期的整数倍/约数）
-    └── custom_N sin/cos 附加特征（最多3个新周期）
-         ↓
-相似性计算层
-    ├── 高斯核相似性计算
-    ├── 指数时间衰减权重
-    └── 多维度距离度量
-         ↓
-概率预测层
-    ├── 热力得分聚合
-    ├── 峰值检测（未来15天扫描）
-    └── 低活跃期调整
-         ↓
-决策输出层
-    ├── 得分到检查间隔映射
-    ├── 边界保护（5分钟-30天）
-    └── 自适应参数更新
+输出：
+
+- 下一次检查时间 `next_check_time`。
+- 学到的 `dimension_weights`、`sigmas`、`last_lambda` 等状态。
+- 是否需要保存本次 miss history。
+
+## 时间特征
+
+`vectorized_time_features_numpy()` 生成周期特征：
+
+```text
+day_sin / day_cos
+week_sin / week_cos
+month_week_sin / month_week_cos
+year_month_sin / year_month_cos
+custom_N_sin / custom_N_cos
 ```
 
-### 1.3 与传统方法对比
+固定维度：
 
-| 对比维度 | 固定间隔法 | 简单统计法 | WGMM 智能算法 |
-|---------|-----------|-----------|--------------|
-| **资源效率** | 低 (大量无效请求) | 中等 | **高 (60-80% 节省)** |
-| **响应及时性** | 取决于间隔设置 | 模式变化滞后 | **高 (平均<30分钟)** |
-| **适应性** | 无适应性 | 简单适应 | **强自适应性** |
-| **复杂模式识别** | 无法识别 | 基础识别 | **精确识别** |
-| **长期稳定性** | 中等 | 易失效 | **持续优化** |
+- `day`：一天内的秒数，周期 86400 秒。
+- `week`：一周内的秒数，周期 604800 秒。
+- `month_week`：月内第几周，按 6 个桶编码。
+- `year_month`：月份，周期 12。
 
----
+附加维度：
 
-## 2. 数学原理
+- `custom_N`：来自 `discovered_periods` 的任意秒级周期。
 
-### 2.1 时间特征周期性编码
+sin/cos 编码避免了周期边界问题，例如 23:59 与 00:01 在线性时间上相距很远，但在单位圆上相近。
 
-#### 问题背景
+## 预处理
 
-线性时间无法表示周期性：
-- 23:59 和 00:01 在线性表示上差距很大
-- 实际上这两个时间点非常接近（仅差2分钟）
-- 周一和周日也存在类似的边界跳跃问题
+`FrequencyService.adjust_check_frequency()` 会在进入调度器前做预处理：
 
-#### 解决方案：sin/cos 编码
+1. 如果 `mtime.txt` 不存在，调用 `HistoryService.generate_mtime_file()`。
+2. 加载正向和负向事件。
+3. 用 `filter_outliers()` 过滤未来时间和异常间隔。
+4. 当正向事件数量达到 `PRUNE_THRESHOLD` 时，用 `prune_old_data()` 剪枝低权重历史。
 
-将时间映射到单位圆，使用二维坐标 (sin, cos) 表示时间特征：
+`filter_outliers()` 使用 IQR：
 
-**日周期特征（24小时）：**
-```python
-# 将一天内的秒数转换为弧度
-seconds_in_day = hour × 3600 + minute × 60 + second
-radians = 2π × seconds_in_day / 86400
-
-# sin/cos 编码
-day_sin = sin(radians)
-day_cos = cos(radians)
+```text
+lower = Q1 - 3 * IQR
+upper = Q3 + 3 * IQR
 ```
 
-**周周期特征（7天）：**
-```python
-# 星期几转换为弧度（0=周一, 6=周日）
-weekday = (days_since_epoch + 3) % 7
-radians = 2π × weekday / 7
+剪枝使用指数衰减权重：
 
-# sin/cos 编码
-week_sin = sin(radians)
-week_cos = cos(radians)
+```text
+weight = exp(-last_lambda * age_hours)
 ```
 
-**月周周期特征（每月第几周）：**
-```python
-# 计算是每月的第几个星期（1-5）
-week_of_month = (day_of_month - 1) // 7 + 1
-radians = 2π × week_of_month / 5
+## 学习期
 
-# sin/cos 编码
-month_week_sin = sin(radians)
-month_week_cos = cos(radians)
+`MIN_HISTORY_COUNT = 10`。
+
+当正向事件少于 10 条时，调度器进入学习期：
+
+- 如果有正向或负向事件，使用历史间隔中位数作为下一次检查间隔。
+- 如果没有任何事件，使用 `FALLBACK_INTERVAL = 3600` 秒。
+- 不执行完整权重、sigma、周期发现和峰值扫描。
+
+学习期目标是收集足够历史，而不是做强预测。
+
+## 自适应 lambda
+
+`calculate_adaptive_lambda()` 根据事件间隔方差和变异系数学习遗忘速度。
+
+```text
+intervals = diff(sorted(timestamps))
+current_variance = var(intervals)
+cv = std(intervals) / mean(intervals)
+lambda_min = lambda_base * 0.3
+lambda_max = min(lambda_base * (1 + cv * 4), lambda_base * 15)
 ```
 
-**年月周期特征（月份）：**
-```python
-# 月份转换为弧度（1-12）
-month = current_month
-radians = 2π × month / 12
+方差越大，发布越不稳定，lambda 越高，旧数据越快被遗忘。方差越小，lambda 越低，长期规律保留得更多。
 
-# sin/cos 编码
-year_month_sin = sin(radians)
-year_month_cos = cos(radians)
+正向事件和负向事件分别计算 lambda，正向 lambda 保存为 `last_lambda`。
+
+## 自相关周期发现
+
+`discover_periods()` 在数据足够时发现非日历周期：
+
+- 最少 50 条正向事件。
+- 数据跨度至少 168 小时。
+- 构建小时级信号。
+- 使用 FFT 计算自相关。
+- 在 2 天到 90 天范围内寻找局部峰值。
+- 排除日、周、月、年附近的已有周期。
+- 排除与已选周期成整数倍或约数关系的谐波。
+- 最多返回 3 个周期。
+
+`sync_discovered_periods()` 使用 10% 容忍度复用旧周期，确保 `custom_0`、`custom_1` 等索引稳定。
+
+## 维度权重
+
+`learn_dimension_weights()` 在正向历史不少于 20 条时启用。
+
+流程：
+
+1. `get_raw_time_components()` 提取每个维度的离散桶。
+2. 统计每个桶的出现次数。
+3. 用 `mean(counts) / std(counts)` 估计集中度。
+4. 归一化到总权重约 2.0。
+5. 用学习率平滑旧权重和新权重。
+
+分布越集中，说明该维度对发布模式越有解释力。
+
+## 自适应 sigma
+
+`learn_adaptive_sigmas()` 也在正向历史不少于 20 条时启用。
+
+流程：
+
+1. 提取原始维度值。
+2. 将维度值归一化到 `[0, 1]`。
+3. 计算标准差。
+4. `adaptive_sigma = max(0.2, min(std * 3.0, 3.0))`。
+5. 用 `old_sigma * 0.7 + adaptive_sigma * 0.3` 平滑更新。
+
+sigma 越小，匹配越严格；sigma 越大，匹配越宽松。
+
+## 得分计算
+
+`calculate_point_score()` 计算一个时间点的得分。
+
+对每个事件：
+
+```text
+age_hours = (target_timestamp - event_timestamp) / 3600
+time_weight = exp(-lambda_decay * age_hours)
+distance_sq = (target_sin - event_sin)^2 + (target_cos - event_cos)^2
+dimension_similarity = exp(-distance_sq / (2 * sigma^2))
+combined = sum(dimension_weight * dimension_similarity)
 ```
 
-**自相关自动发现的附加周期特征（custom_N）：**
+正向得分提高检查概率，负向得分抑制检查概率：
 
-当自相关分析发现非日历周期 T（秒）时，使用 Unix 时间戳直接计算相位：
-
-```python
-# 任意周期 T（秒），如 259200.0 表示 3 天
-phase = 2π × unix_timestamp / T
-
-custom_N_sin = sin(phase)
-custom_N_cos = cos(phase)
+```text
+score = clip(pos_score - resistance_coefficient * neg_score, 0, 1)
 ```
 
-与固定四维不同，custom_N 特征基于绝对时间戳而非日历字段，能够捕捉跨越日历边界的任意周期规律。
+`batch_calculate_scores()` 用 NumPy 广播一次性计算未来扫描窗口的多个时间点。
 
-**编码优势：**
-- 23:59 和 00:01 在单位圆上非常接近
-- 周日和周一的坐标相邻，符合周期性直觉
-- custom_N 可表示任意非日历周期，突破固定四维的约束
-- 机器学习算法可以正确理解时间相似性
+## 未来峰值扫描
 
-### 2.2 高斯核相似性计算
+`scan_future_peak()` 默认扫描未来 15 天。
 
-#### 作用
-将时间距离转换为 0-1 的相似度得分，控制时间模式匹配的严格程度。
+扫描步长由 day sigma 推导：
 
-#### 公式
-
-```python
-# 欧几里得距离计算
-distance² = (sin₁ - sin₂)² + (cos₁ - cos₂)²
-
-# 高斯核相似性
-similarity = exp(-distance² / (2σ²))
+```text
+gaussian_width = (sigmas["day"] * 86400 / 24) * 2
+min_step = gaussian_width * 0.25
+scan_step = min_step if current_score > 0.5 else min_step * 2
 ```
 
-#### 参数说明
+峰值选择：
 
-**σ (sigma) 控制时间容忍度：**
-- **σ 越小** → 匹配越严格，仅响应非常相似的时间模式
-- **σ 越大** → 匹配越宽松，对时间差异更包容
+1. 批量计算所有扫描点得分。
+2. 计算均值和标准差。
+3. 用梯度变化寻找局部峰值。
+4. 优先选择高于 `mean + 1.5 * std` 且梯度较平缓的峰。
+5. 没有合格局部峰时，退回原始局部峰。
+6. 仍没有局部峰时，使用全局最高分。
 
-**实际效果（以 σ = 1.0 为例）：**
+## 间隔映射
 
-| 星期几关系 | 距离 | 相似度 |
-|-----------|------|--------|
-| 同一天 | 0.0 | 1.000 |
-| 相邻天（如周日→周一） | ~0.9 | **0.606** |
-| 相隔2天 | ~1.8 | 0.135 |
-| 相隔3天 | ~2.6 | 0.011 |
-| 相隔4天 | ~3.5 | 0.000 |
+调频决策使用数据驱动的边界：
 
-### 2.3 指数时间衰减权重
-
-#### 作用
-模拟人类记忆衰退特性，近期事件影响更大，远期事件逐渐被"遗忘"。
-
-#### 公式
-
-```python
-weight = exp(-λ × age_hours)
+```text
+min_check_interval = percentile(positive_intervals, 20)
+peak_distance = max(best_peak_time - current_timestamp, 0)
+max_check_interval = max(peak_distance, min_check_interval)
 ```
 
-其中：
-- **λ (lambda)** = 遗忘速度控制参数（当前默认 0.0001/小时）
-- **age_hours** = 事件年龄（小时）= (当前时间 - 事件时间) / 3600
+如果没有正向间隔，则使用 `FALLBACK_INTERVAL`。
 
-#### 参数影响
+当前得分会相对未来扫描窗口归一化：
 
-**Lambda 值与半衰期关系：**
-
-| Lambda 值 | 半衰期 | 适用场景 |
-|----------|--------|----------|
-| 0.0005 | ~83天 (2000小时) | 发布习惯经常改变的UP主 |
-| 0.0001 | ~417天 (10000小时) | 发布习惯相对稳定的UP主 |
-| 0.00005 | ~833天 (20000小时) | 发布习惯很少改变的UP主 |
-
-**实际效果：**
-- **1天前的事件**：权重 ≈ 0.9976 (几乎无衰减)
-- **30天前的事件**：权重 ≈ 0.9304 (轻微衰减)
-- **90天前的事件**：权重 ≈ 0.8058 (中度衰减)
-- **365天前的事件**：权重 ≈ 0.4256 (显著衰减)
-
-### 2.4 自适应学习机制
-
-#### 动态维度权重
-
-算法自动学习哪些时间维度重要：
-
-```python
-# 1. 计算当前得分
-current_score = calculate_heat_score(current_time, dimension_weights)
-
-# 2. 评估每个维度的贡献（动态遍历所有维度，含自相关发现的 custom_N）
-for dimension in dimension_weights:  # day, week, month_week, year_month, custom_0, ...
-    original_weight = dimension_weights[dimension]
-
-    # 临时移除该维度
-    dimension_weights[dimension] = 0.0
-    score_without = calculate_heat_score(current_time, dimension_weights)
-
-    # 恢复权重
-    dimension_weights[dimension] = original_weight
-
-    # 计算贡献度
-    contribution = current_score - score_without
-
-    # 根据贡献度调整权重（有上下界 0.1-1.0）
-    if contribution > 0:
-        dimension_weights[dimension] = min(1.0,
-            original_weight + learning_rate * contribution)
-    else:
-        dimension_weights[dimension] = max(0.1,
-            original_weight - learning_rate * abs(contribution))
+```text
+relative_score = (current_score - scan_min) / (scan_max - scan_min)
+exponential_score = relative_score ** MAPPING_CURVE
+check_interval = max_interval - (max_interval - min_interval) * exponential_score
 ```
 
-**权重含义示例：**
-```json
-{
-  "dimension_weights": {
-    "day": 0.402,        // 日周期不太重要
-    "week": 0.672,       // 周周期最重要（如工作日/周末模式）
-    "month_week": 0.590, // 月周模式中等重要
-    "year_month": 0.336, // 年月模式不太重要
-    "custom_0": 0.08     // 自相关发现的 3 天周期（权重较低，影响有限）
-  }
-}
+得分越高，间隔越接近 `min_check_interval`；得分越低，间隔越接近预测峰值距离。
+
+## 峰值提前与阻抗
+
+如果未来最佳峰值明显高于当前得分：
+
+```text
+best_peak_score > current_score * 1.2
 ```
 
-#### 自适应 Lambda
+并且峰值足够近，算法会用 `max(last_ytdlp_duration, normal_ytdlp_duration)` 提前检查，避免刚好错过发布峰值。
 
-根据发布方差调整遗忘速度：
+如果最近一次 `yt-dlp` 耗时超过正常耗时两倍，调度器会增加最多 50% 的阻抗因子，降低请求压力。
 
-```python
-# 1. 计算正向事件（成功检测）和负向事件（漏检）的方差
-pos_variance = variance(mtime.txt)
-neg_variance = variance(miss_history.txt)
+## miss history
 
-# 2. 根据方差调整 lambda
-if neg_variance > 0:
-    # 有漏检记录，说明预测不准，需要快速适应
-    lambda_adaptive = lambda_min + (lambda_max - lambda_min) * sigmoid(neg_variance)
-else:
-    # 无漏检，说明预测准确，保持标准遗忘速度
-    lambda_adaptive = lambda_base
+当一次自动调频未发现新内容，且不是手动运行时：
 
-# 3. 平滑更新
-last_lambda = 0.7 * last_lambda + 0.3 * lambda_adaptive
+```text
+should_save_miss = True
+miss_timestamp = current_timestamp
 ```
 
-**自适应逻辑：**
-- **方差大** → 发布时间不规律 → 使用更快的遗忘速度（λ = 0.0005）
-- **方差小** → 发布时间规律 → 使用标准的遗忘速度（λ = 0.0001）
+服务层随后写入 `data/miss_history.txt`。dev mode 和手动运行不会写真实负向历史。
 
-#### 自适应 Sigma
+## 数据流图
 
-根据数据离散度调整时间容忍度：
-
-```python
-# 1. 计算每个维度的时间离散度
-for dimension in ["day", "week", "month_week", "year_month"]:
-    values = extract_dimension_values(historical_events, dimension)
-    std_dev = standard_deviation(values)
-
-    # 2. 根据标准差调整 sigma
-    if std_dev > threshold_high:
-        # 数据离散，使用宽松的 sigma
-        sigmas[dimension] = base_sigma * 1.5
-    elif std_dev < threshold_low:
-        # 数据集中，使用严格的 sigma
-        sigmas[dimension] = base_sigma * 0.8
-    else:
-        # 使用默认 sigma
-        sigmas[dimension] = base_sigma
+```text
+data/mtime.txt
+data/miss_history.txt
+    -> FrequencyService
+    -> filter_outliers()
+    -> prune_old_data()
+    -> decide_next_frequency()
+        -> adaptive lambda
+        -> period discovery
+        -> weights/sigmas
+        -> current score
+        -> future peak scan
+        -> interval mapping
+    -> FrequencyDecision
+    -> data/wgmm_config.json
+    -> optional data/miss_history.txt append
 ```
 
-### 2.5 WGMM 热力得分聚合
+## 调优位置
 
-综合所有历史事件对当前时间的影响：
+默认参数：
 
-```python
-# 1. 加载历史事件
-positive_events = load_positive_events(mtime.txt)  # 成功检测
-negative_events = load_negative_events(miss_history.txt)  # 漏检记录
-
-# 2. 计算正向影响
-positive_score = 0
-for event in positive_events:
-    # 时间相似性
-    similarity = calculate_gaussian_similarity(
-        current_time, event.timestamp, sigmas
-    )
-
-    # 时间衰减权重
-    weight = exp(-last_lambda * (current_time - event.timestamp) / 3600)
-
-    # 维度权重调整
-    weighted_similarity = similarity * dimension_weights[event.dominant_dimension]
-
-    positive_score += weight * weighted_similarity
-
-# 3. 计算负向影响（惩罚机制）
-negative_score = 0
-for event in negative_events:
-    similarity = calculate_gaussian_similarity(
-        current_time, event.timestamp, sigmas
-    )
-    weight = exp(-last_lambda * (current_time - event.timestamp) / 3600)
-    negative_score += weight * similarity * PENALTY_FACTOR
-
-# 4. 聚合得分
-heat_score = (positive_score - negative_score) / len(positive_events)
-heat_score = max(0.0, min(1.0, heat_score))  # 限制在 [0, 1]
+```text
+wgmm_monitor/wgmm/constants.py
 ```
 
-### 2.6 低活跃期智能调整
+常用参数：
 
-#### 双维度活跃度分析
+- `DEFAULT_DIMENSION_WEIGHTS`
+- `DEFAULT_SIGMAS`
+- `LAMBDA_BASE`
+- `MAPPING_CURVE`
+- `MIN_HISTORY_COUNT`
+- `LOOKAHEAD_DAYS`
+- `FALLBACK_INTERVAL`
 
-```python
-# 小时活跃度
-hourly_counts = count_events_by_hour(mtime.txt)
-hourly_avg = len(mtime.txt) / 24
-hourly_activity = hourly_counts[current_hour] / hourly_avg if hourly_avg > 0 else 0
-
-# 星期活跃度
-weekday_counts = count_events_by_weekday(mtime.txt)
-weekday_avg = len(mtime.txt) / 7
-weekday_activity = weekday_counts[current_weekday] / weekday_avg if weekday_avg > 0 else 0
-
-# 综合活跃度
-combined_activity = hourly_activity + weekday_activity
-
-# 活跃度范围限制
-clamped_activity = max(0.0, min(combined_activity, 2.0))
-```
-
-#### 线性频率调整映射
-
-```python
-# 活跃度调整倍数
-activity_multiplier = ACTIVITY_BASELINE - LINEAR_SLOPE * clamped_activity
-# 其中：ACTIVITY_BASELINE = 4.0, LINEAR_SLOPE = 1.5
-
-# 映射效果：
-# 活跃度 = 0.0 → 倍数 = 4.0 (检查间隔延长4倍)
-# 活跃度 = 1.0 → 倍数 = 2.5 (检查间隔延长2.5倍)
-# 活跃度 = 2.0 → 倍数 = 1.0 (正常检查频率)
-```
-
----
-
-## 3. 算法参数
-
-### 3.1 核心参数列表
-
-#### WGMM 核心参数
-
-| 参数名称 | 默认值 | 作用说明 | 代码位置 |
-|---------|--------|----------|---------|
-| **SIGMA** | 0.8 | 高斯核标准差，控制时间相似性容忍度 | monitor.py:466 |
-| **LAMBDA** | 0.0001/小时 | 指数衰减率，控制历史记忆遗忘速度 | monitor.py:467 |
-| **MIN_CHECK_INTERVAL** | 数据驱动 | 最小检查间隔，取正向事件间隔的 P20（无数据时回退 3600 秒） | monitor.py adjust_check_frequency |
-| **MAX_CHECK_INTERVAL** | 数据驱动 | 最大检查间隔，取 peak_distance 与 min_check_interval 的较大值 | monitor.py adjust_check_frequency |
-
-#### 低活跃期调整参数
-
-| 参数名称 | 默认值 | 作用说明 | 代码位置 |
-|---------|--------|----------|---------|
-| **ACTIVITY_MULTIPLIER_MAX** | 5.0 | 最大活跃度调整倍数 | monitor.py:449 |
-| **LINEAR_SLOPE** | 1.5 | 线性映射斜率控制 | monitor.py:449 |
-| **ACTIVITY_BASELINE** | 4.0 | 活跃度基准调整值 | monitor.py:449 |
-
-#### 维度 Sigma 参数
-
-| 参数名称 | 默认值 | 作用说明 |
-|---------|--------|----------|
-| **sigma_day** | 1.0 | 日周期时间容忍度 |
-| **sigma_week** | 1.0 | 周周期时间容忍度 |
-| **sigma_month_week** | 1.5 | 月周周期时间容忍度 |
-| **sigma_year_month** | 2.0 | 年月周期时间容忍度 |
-
-#### 自适应学习参数
-
-| 参数名称 | 默认值 | 作用说明 |
-|---------|--------|----------|
-| **lambda_min** | 0.00005 | 最小遗忘速度（长期记忆） |
-| **lambda_base** | 0.0001 | 基础遗忘速度（标准） |
-| **lambda_max** | 0.0005 | 最大遗忘速度（快速适应） |
-| **mapping_curve** | 2.0 | 评分映射曲线 |
-| **resistance_coefficient** | 0.8 | 阻力系数（防过度调整） |
-| **lookahead_days** | 15 | 前瞻扫描天数 |
-| **learning_rate** | 0.1 | 维度权重学习率 |
-| **min_history_count** | 10 | 最小历史数据量 |
-
-### 3.2 参数调优指南
-
-#### 针对 UP 主类型的优化策略
-
-##### 高频规律型 UP 主（每日发布）
-
-```python
-# 推荐参数配置
-SIGMA = 0.6              # 更严格的时间匹配
-LAMBDA = 0.0002          # 稍快的记忆遗忘，适应近期变化
-DEFAULT_INTERVAL = 1800  # 降低基础间隔至30分钟
-```
-
-**优化效果：**
-- 在固定发布时间前后提供更密集的监控
-- 快速适应发布时间的微调变化
-- 避免在非发布时段的频繁检查
-
-##### 中频模式型 UP 主（每周2-3次）
-
-```python
-# 推荐参数配置（默认最优）
-SIGMA = 0.8              # 平衡的时间容忍度
-LAMBDA = 0.0001          # 标准记忆衰减速度
-DEFAULT_INTERVAL = 3600  # 标准1小时基础间隔
-```
-
-**优化效果：**
-- 有效识别周期性发布模式
-- 在历史活跃时段提高检查频率
-- 在空白期合理降低资源消耗
-
-##### 低频随机型 UP 主（每月1-2次）
-
-```python
-# 推荐参数配置
-SIGMA = 1.2              # 更宽松的时间匹配
-LAMBDA = 0.00005         # 更慢的记忆遗忘，保留长期模式
-DEFAULT_INTERVAL = 7200  # 提高基础间隔至2小时
-```
-
-**优化效果：**
-- 容忍更大的时间差异，捕捉不规律模式
-- 长期保持历史模式记忆
-- 大幅减少无效检查，提高整体效率
-
-#### 参数调优实用技巧
-
-##### SIGMA 值调优
-
-```
-SIGMA = 0.5   # 精确模式：仅匹配极相似时间模式
-            # 适用：发布时间极其固定的UP主
-
-SIGMA = 0.8   # 平衡模式：标准时间容忍度（推荐默认）
-            # 适用：大多数有一定规律的UP主
-
-SIGMA = 1.2   # 宽松模式：容忍较大时间差异
-            # 适用：发布时间经常变动的UP主
-
-SIGMA = 1.8   # 自适应模式：最大时间包容性
-            # 适用：完全随机发布的UP主
-```
-
-##### LAMBDA 值调优
-
-```
-LAMBDA = 0.0005  # 快速适应：2000小时半衰期 (~83天)
-               # 适用：发布习惯经常改变的UP主
-
-LAMBDA = 0.0001  # 标准衰减：10000小时半衰期 (~417天)
-               # 适用：发布习惯相对稳定的UP主
-
-LAMBDA = 0.00005 # 长期记忆：20000小时半衰期 (~833天)
-               # 适用：发布习惯很少改变的UP主
-```
-
-##### 实时调优监控指标
+调优后运行：
 
 ```bash
-# 查看 WGMM 预测效果
-./monitor.sh logs | grep "WGMM调频"
-
-关键指标解读：
-• 热度值 0-20%：参数可能过于严格，考虑增大 SIGMA
-• 热度值 80-100%：参数可能过于宽松，考虑减小 SIGMA
-• 轮询间隔过短(<10分钟)：考虑调整 DEFAULT_INTERVAL
-• 轮询间隔过长(>6小时)：检查低活跃期调整是否过度
+source .venv/bin/activate
+ruff check monitor.py wgmm_monitor tests
+ruff format --check monitor.py wgmm_monitor tests
+python -m unittest discover -s tests
+python monitor.py --wgmm-core-only
 ```
 
-### 3.3 高级性能调优参数
+## 常见问题
 
-#### 算法性能优化
+### 算法是否硬编码固定检查间隔？
 
-```python
-# 历史数据处理优化
-MAX_HISTORICAL_EVENTS = 1000    # 限制历史事件数量，控制计算复杂度
-DATA_CLEANUP_THRESHOLD = 5000   # 数据清理触发阈值
+不是。当前实现没有固定 5 分钟或 30 天边界。检查间隔来自历史正向间隔、未来峰值距离、当前相对得分和 1 小时回退间隔。
 
-# 并行处理优化
-MAX_WORKERS = 5                 # 并行线程数量限制
-TIMEOUT_SECONDS = 600           # 单次操作最大超时时间
-```
+### 为什么数据少时看起来不智能？
 
-#### 内存与性能监控
+少于 10 条正向事件时处于学习期，调度器只使用历史间隔中位数或 1 小时回退。权重和 sigma 学习需要至少 20 条正向历史，附加周期发现需要至少 50 条。
+
+### custom_N 是什么？
+
+`custom_N` 是自相关发现的非日历周期维度。例如一个 UP 主接近每 3 天发布，算法可能把 259200 秒加入 `discovered_periods`，并创建 `custom_0` 的 sin/cos 特征、权重和 sigma。
+
+### 如何只验证 WGMM？
 
 ```bash
-# 监控系统资源使用
-./monitor.sh status | grep -E "(内存|CPU|进程)"
-
-# 查看算法计算性能
-./monitor.sh logs | grep -E "(计算|处理|耗时)"
+source .venv/bin/activate
+python monitor.py --wgmm-core-only
 ```
 
----
-
-## 4. 算法流程图
-
-### 4.1 主预测流程
-
-```
-adjust_check_frequency() 主函数
-    ↓
-┌─────────────────────────────────────────┐
-│ 1. 数据加载与预处理                      │
-├─────────────────────────────────────────┤
-│ • 加载正向事件（mtime.txt）              │
-│ • 加载负向事件（miss_history.txt）        │
-│ • 过滤异常值（filter_outliers）          │
-│ • 剪枝低权重数据（prune_old_data）       │
-└─────────────────────────────────────────┘
-    ↓
-┌─────────────────────────────────────────┐
-│ 2. 自适应参数调整                        │
-├─────────────────────────────────────────┤
-│ • 计算自适应 Lambda（遗忘速度）          │
-│ • 学习维度权重（各时间维度重要性）        │
-│ • 学习自适应 Sigma（时间容忍度）          │
-└─────────────────────────────────────────┘
-    ↓
-┌─────────────────────────────────────────┐
-│ 3. 当前时间热力得分计算                  │
-├─────────────────────────────────────────┤
-│ • 提取当前时间的四维特征                 │
-│ • 对所有历史事件计算相似性和权重         │
-│ • 聚合正向和负向影响                     │
-│ • 应用低活跃期调整                       │
-└─────────────────────────────────────────┘
-    ↓
-┌─────────────────────────────────────────┐
-│ 4. 峰值预测（未来15天扫描）              │
-├─────────────────────────────────────────┤
-│ • 批量计算未来时间点的热力得分           │
-│ • 寻找最佳峰值（best_peak_score）       │
-│ • 判断是否存在明确的发布高峰             │
-└─────────────────────────────────────────┘
-    ↓
-┌─────────────────────────────────────────┐
-│ 5. 得分到检查间隔映射                    │
-├─────────────────────────────────────────┤
-│ if 存在明确峰值:                         │
-│     使用峰值时间映射                     │
-│ else:                                   │
-│     使用基础频率（基于历史平均间隔）      │
-│                                         │
-│ • 应用低活跃期调整倍数                   │
-│ • 边界保护（300秒 - 30天）               │
-└─────────────────────────────────────────┘
-    ↓
-┌─────────────────────────────────────────┐
-│ 6. 配置持久化                            │
-├─────────────────────────────────────────┤
-│ • 保存学习到的维度权重                   │
-│ • 保存自适应 Lambda 和 Sigma             │
-│ • 保存下次检查时间                       │
-│ • 更新惩罚计数器                         │
-└─────────────────────────────────────────┘
-    ↓
-返回：下次检查间隔（秒）
-```
-
-### 4.2 数据流向图
-
-```
-GitHub Gist (云端备份)
-    ↓ sync_urls_from_gist()
-memory_urls (已备份视频)
-    +
-local_known.txt (本地状态)
-    ↓
-known_urls (完整已知集合)
-    ↓ 对比检测结果
-truly_new_urls (真正的新视频)
-    ↓ notify_new_videos()
-Bark 推送 + GitHub Gist 更新
-```
-
-### 4.3 三层检测架构
-
-```
-┌─────────────────────────────────────┐
-│ 第一层：分片预检查                   │
-│ check_potential_new_parts()         │
-│ • 检查现有多分片视频                │
-│ • 判断是否有新分片发布              │
-│ • 快速过滤，避免完整扫描            │
-└─────────────────────────────────────┘
-                ↓ 发现变化
-┌─────────────────────────────────────┐
-│ 第二层：快速 ID 检查                │
-│ quick_precheck()                    │
-│ • 对比最新视频 ID                   │
-│ • 快速判断是否有新内容              │
-│ • 如果有变化 → 触发完整检查         │
-└─────────────────────────────────────┘
-                ↓ 有新内容
-┌─────────────────────────────────────┐
-│ 第三层：完整深度检查                 │
-│ get_all_videos_parallel()           │
-│ • 并行获取所有视频信息              │
-│ • 对比已知 URL 列表                 │
-│ • 识别真正的新视频                  │
-└─────────────────────────────────────┘
-```
-
----
-
-## 5. 常见问题
-
-### Q1: 为什么算法会形成3天的检查间隔？是硬编码的吗？
-
-**A: 不是硬编码，而是 WGMM 算法通过数学计算自然涌现的结果。**
-
-#### 算法没有硬编码"3天"
-
-关键配置：
-```python
-lookahead_days = 15  # 向前扫描15天
-sigma_week = 1.0      # 星期维度的高斯核宽度
-```
-
-算法会在**未来15天内扫描**，寻找最佳检查时间点。没有硬编码"3天"这个值。
-
-#### 星期维度的数学编码
-
-```python
-weekday = (days_since_epoch + 3) % 7
-# 0=周一, 1=周二, ..., 5=周六, 6=周日
-```
-
-将星期几转换为**周期性特征**（sin/cos 编码）：
-
-```python
-week_sin = sin(2π × weekday / 7)
-week_cos = cos(2π × weekday / 7)
-```
-
-这样，**周六和周日**在特征空间中相邻，**周一到周五**形成另一簇。
-
-#### 高斯核相似性计算
-
-对于任意两个时间点 t1 和 t2：
-
-```python
-week_distance² = (week_sin₁ - week_sin₂)² + (week_cos₁ - week_cos₂)²
-similarity = exp(-week_distance² / (2 × sigma_week²))
-```
-
-由于 `sigma_week = 1.0`：
-
-| 星期几关系 | 距离 | 相似度 |
-|-----------|------|--------|
-| 同一天 | 0.0 | 1.000 |
-| 相邻天（如周日→周一） | ~0.9 | **0.606** |
-| 相隔2天 | ~1.8 | 0.135 |
-| 相隔3天 | ~2.6 | 0.011 |
-| 相隔4天 | ~3.5 | 0.000 |
-
-#### 为什么会产生3天间隔？
-
-从配置数据分析：
-
-```json
-"dimension_weights": {
-  "week": 0.672,        // ← 最高权重！
-  "month_week": 0.590,
-  "day": 0.402,
-  "year_month": 0.336
-}
-```
-
-**数学含义：**
-- 算法学习到**星期模式最重要**
-- 历史数据分布在所有星期几
-- 发布时间高度不规律（方差极大）
-
-**算法的推理过程：**
-```
-1. 当前得分很低 → 基础间隔延长
-2. 没有找到明确的峰值（best_peak_score <= 0.6）
-3. 使用 check_interval 作为间隔
-4. 经过低活跃期调整 → 最终约3天
-```
-
-#### 3天的数学意义
-
-**3天 = 覆盖一周中大部分可能的发布时间**
-
-如果今天检查：
-- **今天**：覆盖可能的发布
-- **明天**：相邻星期（相似度 0.606）
-- **后天**：跨度稍大（相似度 0.135）
-- **第3天**：覆盖另一极端（如工作日→周末或反之，相似度 0.011）
-
-**这不是巧合**，而是因为：
-- **星期维度权重最高**（0.672）
-- **sigma_week = 1.0** 意味着相邻天的相似度 = 0.606
-- **3天间隔** 确保以较高相似度覆盖工作日和周末
-
-#### 数学验证：计算最佳间隔
-
-假设今天是周四（weekday = 3），检查未来7天的相似度：
-
-```
-间隔 | 星期 |   与周四相似度 | 累计覆盖
---------------------------------------------------
- 0天 | 周四 |       1.0000 |   1.0000
- 1天 | 周五 |       0.6065 |   1.6065
- 2天 | 周六 |       0.1353 |   1.7419
- 3天 | 周日 |       0.0111 |   1.7530
- 4天 | 周一 |       0.0111 |   1.7641
- 5天 | 周二 |       0.1353 |   1.8994
- 6天 | 周三 |       0.6065 |   2.5059
-```
-
-**结论：**
-- 3天后累计相似度 = 1.75
-- 4天后累计相似度 = 1.76（收益递减）
-- **3天是性价比最高的间隔**
-
-#### 美妙之处
-
-3天间隔**自然涌现**自：
-- 数据特点（历史发布记录分布）
-- 学习到的维度权重（week=0.672 最高）
-- 高斯核的数学性质（sigma=1.0）
-
-这就是 WGMM 算法的智能之处——**从数据中学习模式，而非预设规则**。
-
----
-
-### Q2: WGMM 算法的核心参数有哪些？如何调优？
-
-**A: 算法有三大类核心参数，均可针对不同 UP 主类型进行优化。**
-
-#### 核心参数配置
-
-```python
-# 时间维度的 sigma（高斯核宽度）
-sigma_day = 1.0
-sigma_week = 1.0
-sigma_month_week = 1.5
-sigma_year_month = 2.0
-
-# Lambda 参数（遗忘速度）
-lambda_min = 0.00005
-lambda_base = 0.0001
-lambda_max = 0.0005
-
-# 其他参数
-mapping_curve = 2.0          # 评分映射曲线
-resistance_coefficient = 0.8 # 阻力系数
-lookahead_days = 15          # 前瞻扫描天数
-learning_rate = 0.1          # 维度权重学习率
-min_history_count = 10       # 最小历史数据量
-```
-
-#### 针对不同 UP 主类型的优化策略
-
-**高频规律型 UP 主（每日发布）：**
-```python
-SIGMA = 0.6              # 更严格的时间匹配
-LAMBDA = 0.0002          # 稍快的记忆遗忘，适应近期变化
-DEFAULT_INTERVAL = 1800  # 降低基础间隔至30分钟
-```
-
-**中频模式型 UP 主（每周2-3次）：**
-```python
-SIGMA = 0.8              # 平衡的时间容忍度（默认）
-LAMBDA = 0.0001          # 标准记忆衰减速度
-DEFAULT_INTERVAL = 3600  # 标准1小时基础间隔
-```
-
-**低频随机型 UP 主（每月1-2次）：**
-```python
-SIGMA = 1.2              # 更宽松的时间匹配
-LAMBDA = 0.00005         # 更慢的记忆遗忘，保留长期模式
-DEFAULT_INTERVAL = 7200  # 提高基础间隔至2小时
-```
-
----
-
-### Q3: 如何查看算法当前的学习状态？
-
-**A: 可以通过以下方式查看算法状态：**
-
-#### 查看配置文件
-
-```bash
-cat wgmm_config.json
-```
-
-**输出示例：**
-```json
-{
-  "dimension_weights": {
-    "day": 0.5,
-    "week": 1.0,
-    "month_week": 0.3,
-    "year_month": 0.2
-  },
-  "last_lambda": 0.0001,
-  "last_pos_variance": 0.0,
-  "last_neg_variance": 0.0,
-  "last_update": 1704331200,
-  "next_check_time": 1704334800,
-  "is_manual_run": false
-}
-```
-
-#### 使用状态命令
-
-```bash
-./monitor.sh status
-```
-
-**输出包括：**
-- 维度权重（day/week/month_week/year_month）
-- 当前 Lambda 值
-- 方差数据
-- 下次检查时间
-- 历史事件数量
-
-#### 查看热力得分
-
-```bash
-./monitor.sh status | grep "热力得分"
-```
-
----
-
-### Q4: 算法需要多少历史数据才能开始有效预测？
-
-**A: 算法设计要求最小10条历史数据，但更多数据会提升准确性。**
-
-- **10条数据**：可以开始基础预测
-- **50条数据**：能够识别基本的周期性模式
-- **100+条数据**：稳定预测，准确识别复杂模式
-- **300+条数据**：充分学习，高度准确
-
-**数据质量要求：**
-- 必须包含准确的时间戳
-- 最好覆盖多个星期或月份
-- 包含 UP 主的典型发布模式
-
----
-
-### Q5: 如果 UP 主改变发布习惯，算法多久能适应？
-
-**A: 由于指数衰减权重机制，算法能快速适应变化。**
-
-- **2-3次新模式发布**：开始调整预测
-- **1-2周**：完全适应新的发布习惯
-- **Lambda 参数**：控制适应速度
-
-**适应速度调整：**
-
-| 场景 | Lambda 设置 | 半衰期 | 完全适应时间 |
-|------|------------|--------|-------------|
-| UP 主经常改变习惯 | 0.0005 | ~83天 | 1-2周 |
-| UP 主习惯稳定 | 0.0001 | ~417天 | 2-4周 |
-| UP 主习惯极少改变 | 0.00005 | ~833天 | 1-2个月 |
-
-**快速适应技巧：**
-如果 UP 主突然改变发布习惯，可以：
-1. 删除部分旧的历史数据（`mtime.txt`）
-2. 或者手动调整 `lambda_base` 为更大的值（如 0.0005）
-3. 重启系统让算法重新学习
-
----
-
-## 附录
-
-### A. 算法性能指标
-
-#### 预测准确性指标
-- **时间命中率**：在实际发布前后2小时内检测到新内容的概率 > 95%
-- **资源节省率**：相比固定1小时间隔，平均节省网络请求 60-80%
-- **响应及时性**：新视频发布后平均检测延迟 < 30分钟
-
-#### 系统性能指标
-- **计算延迟**：单次频率预测计算 < 100ms
-- **内存占用**：历史数据存储 < 1MB (1000条记录)
-- **学习速度**：5个历史事件即可开始有效预测
-- **CPU 使用率**：< 1%（大部分时间在睡眠等待）
-
-### B. 实际预测效果案例
-
-#### 案例1: 高活跃工作日晚间发布模式
-
-```
-UP 主特征：主要在工作日 19:00-21:00 发布视频
-当前时间：周二 20:30
-历史匹配：该时段历史发布密度高
-
-算法计算过程：
-├── 热力得分：0.89 (89%)
-├── 基础间隔：2小时 (7200秒)
-├── 低活跃倍数：1.0 (正常活跃期)
-├── 映射计算：7200 - (7200-300) × 0.89 × 1.0 = 1059秒
-└── 最终结果：17.6分钟检查一次
-
-预测准确性：✅ 在发布高峰期前后提供密集监控
-```
-
-#### 案例2: 中等活跃周末下午模式
-
-```
-UP 主特征：偶尔在周末下午发布视频
-当前时间：周六 15:30
-历史匹配：该时段有一定发布记录但不频繁
-
-算法计算过程：
-├── 热力得分：0.43 (43%)
-├── 基础间隔：3小时 (10800秒)
-├── 低活跃倍数：1.2 (略低活跃)
-├── 映射计算：10800 - (10800-300) × 0.43 × 1.2 = 5385秒
-└── 最终结果：89.8分钟检查一次
-
-预测准确性：✅ 平衡监控密度与资源消耗
-```
-
-#### 案例3: 低活跃深夜时段
-
-```
-UP 主特征：从未在深夜时段发布视频
-当前时间：周四 03:30
-历史匹配：该时段无任何发布记录
-
-算法计算过程：
-├── 热力得分：0.02 (2%)
-├── 基础间隔：2小时 (7200秒)
-├── 低活跃倍数：3.8 (极低活跃期)
-├── 映射计算：7200 - (7200-300) × 0.02 × 3.8 = 6675秒
-└── 最终结果：111.2分钟检查一次
-
-预测准确性：✅ 大幅减少不必要的检查，节省资源
-```
-
-#### 案例4: 极低活跃长期休息期
-
-```
-UP 主特征：当前处于长期停更状态
-当前时间：任意时间
-历史匹配：最近一个月无发布记录
-
-算法计算过程：
-├── 热力得分：0.01 (1%)
-├── 基础间隔：45天 (3888000秒，基于历史稀疏发布)
-├── 低活跃倍数：4.0 (最大低活跃调整)
-├── 映射计算：应用最大间隔限制
-└── 最终结果：7天检查一次
-
-预测准确性：✅ 在长期停更期间最小化资源消耗
-```
-
-### C. 相关文档
-
-- **算法实现**：`/Users/yusteven/Documents/wgmm/monitor.py` (约2200行)
-- **开发指南**：`/Users/yusteven/Documents/wgmm/CLAUDE.md`
-- **用户文档**：`/Users/yusteven/Documents/wgmm/README.md`
-- **架构决策**：`/Users/yusteven/Documents/wgmm/docs/adr/`
-
----
-
-**文档版本：** v1.0
-**最后更新：** 2026-01-24
-**维护者：** WGMM 项目团队
+该模式跳过 B站检测流程，只运行一次调频。
