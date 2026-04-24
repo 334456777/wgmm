@@ -80,6 +80,7 @@ class FrequencyService:
 				current_timestamp,
 				self.history_store.mtime_file,
 			)
+		if len(negative_events) >= PRUNE_THRESHOLD:
 			negative_events = self.history_store.prune_old_data(
 				negative_events,
 				self.config.last_lambda or LAMBDA_BASE,

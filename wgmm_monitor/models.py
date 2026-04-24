@@ -109,21 +109,22 @@ class WgmmConfig:
 		)
 
 	def to_dict(self) -> dict[str, Any]:
-		"""转换为兼容原始 ``wgmm_config.json`` 的字典."""
-		data = dict(self.extra)
-		data.update(
-			{
-				"dimension_weights": dict(self.dimension_weights),
-				"last_lambda": self.last_lambda,
-				"last_pos_variance": self.last_pos_variance,
-				"last_neg_variance": self.last_neg_variance,
-				"last_update": self.last_update,
-				"next_check_time": self.next_check_time,
-				"is_manual_run": self.is_manual_run,
-				"sigmas": dict(self.sigmas),
-				"discovered_periods": list(self.discovered_periods),
-			}
-		)
+		"""转换为兼容原始 ``wgmm_config.json`` 的字典.
+
+		已知字段按固定顺序输出, extra 追加在末尾, 保证跨次运行 JSON diff 稳定.
+		"""
+		data: dict[str, Any] = {
+			"dimension_weights": dict(self.dimension_weights),
+			"sigmas": dict(self.sigmas),
+			"last_lambda": self.last_lambda,
+			"last_pos_variance": self.last_pos_variance,
+			"last_neg_variance": self.last_neg_variance,
+			"last_update": self.last_update,
+			"next_check_time": self.next_check_time,
+			"is_manual_run": self.is_manual_run,
+			"discovered_periods": list(self.discovered_periods),
+		}
+		data.update(self.extra)
 		return data
 
 
