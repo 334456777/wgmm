@@ -1,419 +1,220 @@
-# 🎯 WGMM 智能视频监控系统
+# WGMM 智能视频监控系统
 
-基于**加权高斯混合模型(WGMM)**机器学习算法的B站视频智能监控系统,自适应调整监控频率,在保证及时性的同时节省 **60-80%** 的网络请求。
+WGMM 是一个 B站视频监控工具，使用加权高斯混合模型根据历史发布时间自适应调整检查间隔。对外入口仍然是 `python monitor.py`，当前实现已经拆分为 `wgmm_monitor/` 下的小型模块化单体应用。
 
-## ✨ 核心亮点
+项目目标是实用监控：及时发现新视频和新分片，同时减少无效网络请求。
 
-| 🏆 特性 | 📊 指标 | 🔍 技术实现 |
-|-------|-------|-----------|
-| **🧠 智能预测精度** | 时间命中率 >95% | WGMM机器学习算法,周期性模式识别 |
-| **⚡ 资源效率提升** | 节省网络请求 60-80% | 三层检测架构,智能频率调整 |
-| **🎯 响应及时性** | 新视频检测延迟 <30分钟 | 发布高峰期提供5分钟级密集监控 |
-| **🔄 自适应能力** | 2-3次新模式即可学习 | 指数衰减权重,自动适应习惯变化 |
-| **🛡️ 系统可靠性** | 7×24小时稳定运行 | 多重故障恢复,自动数据修复机制 |
+## 快速开始
 
-## 🚀 快速开始
+### 运行要求
 
-### 1️⃣ 准备配置文件(仅需2个文件)
+- Python 3.14+
+- 项目自带 `.venv` 虚拟环境
+- `yt-dlp` 可执行文件在 `PATH` 中
+- B站 cookies 保存到 `data/cookies.txt`
+- GitHub Gist 和 Bark 配置写入 `data/.env`
+
+检查 `yt-dlp`：
 
 ```bash
-# 复制环境变量模板
-cp data/.env.example data/.env
+which yt-dlp
+yt-dlp --version
+```
 
-# 编辑 .env 文件,填入你的配置
+### 配置
+
+```bash
+cp data/.env.example data/.env
 nano data/.env
 ```
 
-**必需配置**:
-```bash
-GITHUB_TOKEN=your_github_token          # GitHub Token (需要 gist 权限)
-BARK_DEVICE_KEY=your_bark_key          # Bark 推送设备密钥
-GIST_ID=your_gist_id                   # GitHub Gist ID
-BILIBILI_UID=your_bilibili_uid         # 要监控的UP主UID
-```
-
-**获取方法**:
-- **GITHUB_TOKEN**: https://github.com/settings/tokens (勾选 `gist` 权限)
-- **BARK_DEVICE_KEY**: iOS Bark App 中复制
-- **GIST_ID**: 创建新 Gist 后从 URL 中获取
-- **BILIBILI_UID**: UP主主页 URL 中获取 (如 `space.bilibili.com/123456789`)
-
-### 2️⃣ 准备 cookies.txt
-
-从浏览器导出 B站登录凭证:
-
-1. 登录 B站后打开开发者工具 (F12)
-2. 访问任意视频页面
-3. Application → Cookies → 复制所有 cookies
-4. 保存到项目目录的 `data/cookies.txt` 文件
-
-**格式示例**:
-```
-# Netscape HTTP Cookie File
-.bilibili.com	TRUE	/	FALSE	1234567890	cookie_name	cookie_value
-```
-
-### 3️⃣ 启动监控
+必需变量：
 
 ```bash
-# 激活虚拟环境(项目已包含 .venv)
+GITHUB_TOKEN=your_github_token
+BARK_DEVICE_KEY=your_bark_key
+GIST_ID=your_gist_id
+BILIBILI_UID=your_bilibili_uid
+BARK_APP_TITLE=your_app_title
+```
+
+手动创建 `data/cookies.txt`，使用 Netscape cookie 格式。程序启动时会检查该文件是否存在且非空。
+
+### 运行
+
+```bash
 source .venv/bin/activate
 
-# 开发模式:运行单次检查后退出(不修改配置)
-python monitor.py --dev
-
-# WGMM核心模式: 跳过视频检测, 仅运行一次WGMM调频后退出
-python monitor.py --wgmm-core-only
-
-# 正常模式:持续监控
 python monitor.py
-
-# systemd 服务方式(推荐生产环境)
-sudo systemctl start video-monitor
-sudo systemctl enable video-monitor  # 开机自启
+python monitor.py --dev
+python monitor.py --wgmm-core-only
 ```
 
-### 4️⃣ 查看状态
+模式说明：
+
+- `python monitor.py`：生产循环，等待 `next_check_time`，执行一次监控，再进入下一轮。
+- `python monitor.py --dev`：执行一次完整检测链，不写 WGMM 配置，不发送新视频通知。
+- `python monitor.py --wgmm-core-only`：只执行一次 WGMM 调频，跳过 B站检测流程。
+
+### systemd
 
 ```bash
-# systemd 服务状态
 sudo systemctl status video-monitor
-
-# 查看日志
-tail -f urls.log                      # 主日志
-cat critical_errors.log               # 严重错误日志
-
-# systemd 服务日志
-sudo journalctl -u video-monitor -f   # 实时查看服务日志
-```
-
-## 📁 文件结构
-
-```
-wgmm/
-├── monitor.py                    # 主程序 (2296行,58个方法)
-├── requirements.txt              # 依赖包清单
-├── pyproject.toml                # Ruff 代码质量配置
-├── video-monitor.service         # systemd 服务配置
-│
-├── data/                         # 数据目录 (自动创建)
-│   ├── .env                      # 环境变量配置 ⚠️ 需手动创建
-│   ├── .env.example              # 环境变量模板 (已纳入版本控制)
-│   ├── cookies.txt               # B站登录凭证 ⚠️ 需手动创建
-│   ├── local_known.txt           # 本地已知URL列表 (自动生成)
-│   ├── wgmm_config.json          # WGMM算法状态 (自动生成)
-│   ├── mtime.txt                 # 历史发布时间戳 (自动生成)
-│   └── miss_history.txt          # 失败历史记录 (自动生成)
-│
-├── urls.log                      # 主运行日志 (自动生成)
-└── critical_errors.log           # 严重错误日志 (自动生成)
-```
-
-**自动生成文件说明**:
-- 程序首次运行时会自动创建所有数据文件
-- 无需手动创建或维护
-- 配置文件已加入 `.gitignore`,不会被提交
-
-## 🧠 WGMM 算法简介
-
-### 设计灵感
-
-如果你看过《咒术回战》,可以把 WGMM 算法想象成**八握剑异戒神将·魔虚罗**——
-
-魔虚罗的核心能力是**适应**:每次受到攻击后,法阵转动一格,逐渐适应对手的术式,最终完全免疫并反制。WGMM 的工作方式与此异曲同工:
-
-| 魔虚罗 | WGMM 算法 |
-|--------|-----------|
-| 被攻击后法阵转动,逐步适应术式 | 每次检查后更新参数,逐步学习发布模式 |
-| 适应速度与攻击强度有关 | 自适应 λ:模式变化越大,遗忘越快,适应越快 |
-| 完全适应后对该术式免疫 | σ 收敛后精准匹配时间模式,几乎不做无效请求 |
-| 面对新术式需要重新适应 | UP 主改变习惯时,算法自动重新学习 |
-
-简单来说:WGMM 就是一个不断"挨打"(观测数据)、不断"适应"(更新参数)、最终精准预判 UP 主发布时间的算法。
-
-### 核心原理
-
-WGMM (Weighted Gaussian Mixture Model) 算法通过分析历史发布时间,预测未来发布概率:
-
-1. **四维时间特征编码**
-   - 日周期 (sin/cos)
-   - 周周期 (sin/cos)
-   - 月内周 (1-5)
-   - 年内月 (1-12)
-
-2. **高斯核相似度计算**
-   ```
-   相似度 = exp(-距离² / (2σ²))
-   ```
-
-3. **指数时间衰减权重**
-   ```
-   权重 = exp(-λ × 年龄小时数)
-   ```
-
-4. **自适应学习**
-   - 动态调整维度权重
-   - 自适应 lambda (遗忘速度)
-   - 自适应 sigma (时间容忍度)
-
-### 智能特性
-
-- **周期性模式识别**: 自动识别"每周三下午"、"工作日晚上"等发布模式
-- **记忆衰退模拟**: 近期事件权重更高,快速适应习惯变化
-- **低活跃期优化**: 低峰期自动延长检查间隔至30天
-- **峰值预测**: 提前15天扫描,在发布高峰期提供5分钟级密集监控
-
-**详细算法原理**: 参见 [docs/wgmm-algorithm.md](docs/wgmm-algorithm.md)
-
-## 🔧 管理命令
-
-### systemd 服务管理
-
-```bash
-# 启动/停止/重启
 sudo systemctl start video-monitor
 sudo systemctl stop video-monitor
 sudo systemctl restart video-monitor
-
-# 开机自启
-sudo systemctl enable video-monitor
-sudo systemctl disable video-monitor
-
-# 查看状态和日志
-sudo systemctl status video-monitor
 sudo journalctl -u video-monitor -f
 ```
 
-### Python 命令
+## 文件结构
+
+```text
+wgmm/
+├── monitor.py                    # 入口壳: wgmm_monitor.cli.main()
+├── wgmm_monitor/
+│   ├── cli.py                    # 参数解析和模式分发
+│   ├── app.py                    # 运行期依赖装配
+│   ├── config.py                 # data/.env 加载
+│   ├── models.py                 # RuntimePaths/AppConfig/WgmmConfig/结果模型
+│   ├── runtime_logger.py         # 控制台、urls.log、critical_errors.log
+│   ├── clients/
+│   │   ├── bark.py               # Bark HTTP 客户端
+│   │   ├── gist.py               # GitHub Gist API 客户端
+│   │   └── ytdlp.py              # yt-dlp 子进程封装
+│   ├── services/
+│   │   ├── monitor.py            # 三层检测主流程
+│   │   ├── bilibili.py           # B站和 yt-dlp 业务
+│   │   ├── frequency.py          # WGMM 调频编排
+│   │   ├── history.py            # 上传时间戳生成与维护
+│   │   └── notification.py       # 通知内容封装
+│   ├── stores/
+│   │   ├── config_store.py       # data/wgmm_config.json
+│   │   ├── history_store.py      # data/mtime.txt 与 miss_history.txt
+│   │   └── url_store.py          # data/local_known.txt
+│   ├── wgmm/
+│   │   ├── constants.py          # 算法默认参数
+│   │   ├── features.py           # 时间特征提取
+│   │   ├── learning.py           # lambda/权重/sigma/周期发现
+│   │   ├── scheduler.py          # 下一次检查时间决策
+│   │   └── scoring.py            # 单点和批量得分
+│   └── utils/
+├── tests/                        # unittest 测试
+├── docs/
+├── requirements.txt
+├── pyproject.toml
+└── video-monitor.service
+```
+
+运行时文件：
+
+```text
+data/.env                  # 手动创建，已忽略
+data/cookies.txt           # 手动创建，已忽略
+data/local_known.txt       # 本地 URL 状态
+data/wgmm_config.json      # WGMM 状态
+data/mtime.txt             # 正向上传历史
+data/miss_history.txt      # 负向检查历史
+urls.log                   # 主日志
+critical_errors.log        # 严重错误日志
+```
+
+## 监控流程
+
+系统维护两层 URL 状态：
+
+- `memory_urls`：从 GitHub Gist `urls.txt` 读取的云端已知 URL。
+- `known_urls`：从 `data/local_known.txt` 读取并合并 `memory_urls` 后的完整本地状态。
+
+只有不在这两层中的 URL 才会被视为真正的新内容。
+
+```text
+GitHub Gist urls.txt
+    -> memory_urls
+        + data/local_known.txt
+    -> known_urls
+    -> 与当前 B站扫描结果对比
+    -> truly new URLs
+    -> Bark 推送 + Gist new.txt 更新
+```
+
+主流程位于 `wgmm_monitor/services/monitor.py`：
+
+1. 从 Gist 同步 URL。
+2. 执行多分片预检查。
+3. 执行最新视频 ID 快速检查。
+4. 任一预检查发现变化时，抓取完整视频列表并展开分片。
+5. 为真正新增 URL 保存真实上传时间戳。
+6. 发送 Bark 推送并写入 Gist `new.txt`。
+7. 调用 WGMM 计算下一次检查时间。
+
+## WGMM 摘要
+
+纯算法层在 `wgmm_monitor/wgmm/`：
+
+- `features.py`：用 sin/cos 编码日、周、月内周、年内月，以及可选 `custom_N` 周期。
+- `learning.py`：异常值过滤、自适应 lambda/sigma/权重学习、自相关周期发现。
+- `scoring.py`：正向和负向事件的加权高斯得分。
+- `scheduler.py`：扫描未来 15 天，将相对得分映射为检查间隔，并根据 `yt-dlp` 实际耗时提前峰值检查。
+
+详见 [docs/wgmm-algorithm.md](docs/wgmm-algorithm.md) 和 [docs/wgmm-config-params.md](docs/wgmm-config-params.md)。
+
+## 开发命令
 
 ```bash
-# 激活虚拟环境
 source .venv/bin/activate
 
-# 开发模式: 单次检查后退出
-python monitor.py --dev
-
-# WGMM核心模式: 单次WGMM调频后退出(会写入真实miss历史)
+ruff check monitor.py wgmm_monitor tests
+ruff format monitor.py wgmm_monitor tests
+python -m unittest discover -s tests
 python monitor.py --wgmm-core-only
-
-# 正常模式: 持续监控
-python monitor.py
+python monitor.py --dev
 ```
 
-## ⚙️ 配置调优
+修改 Python 代码后运行 Ruff 和完整 unittest。`--wgmm-core-only` 用于隔离 WGMM 调频，`--dev` 用于跑完整检测链但避免写 WGMM 配置和发送新视频通知。
 
-### 查看算法状态
+## 故障排查
 
-```bash
-# 查看当前配置
-cat data/wgmm_config.json
-
-# 查看日志中的预测结果
-grep "WGMM调频" urls.log | tail -20
-```
-
-### 参数调整位置
-
-核心参数位于 `monitor.py` 第 466-478 行:
-
-```python
-SIGMA = 0.8              # 时间相似性容忍度 (0.5-1.5)
-LAMBDA = 0.0001          # 记忆遗忘速度 (0.00005-0.0005)
-DEFAULT_INTERVAL = 3600  # 默认基础间隔 (秒)
-MIN_INTERVAL = 300       # 最小检查间隔 (5分钟)
-MAX_INTERVAL = 2592000   # 最大检查间隔 (30天)
-```
-
-**调优指南**: 参见 [docs/wgmm-algorithm.md#参数调优](docs/wgmm-algorithm.md#参数调优)
-
-## 📚 文档导航
-
-### 用户文档
-- **[本 README](README.md)** - 快速开始和基本使用
-- **[FAQ](#常见问题)** - 常见问题解答
-
-### 开发文档
-- **[docs/development-guide.md](docs/development-guide.md)** - 完整开发指南
-  - 代码质量检查 (Ruff)
-  - 调试技巧
-  - 故障排查
-  - 性能监控
-
-### 技术参考
-- **[docs/wgmm-algorithm.md](docs/wgmm-algorithm.md)** - WGMM 算法详解
-  - 数学原理
-  - 参数调优
-  - 代码修改场景
-
-- **[docs/code-logic-flow.md](docs/code-logic-flow.md)** - 系统架构流程
-  - 主监控循环
-  - 三层检测架构
-  - 数据流向
-
-- **[docs/code-reference.md](docs/code-reference.md)** - 代码参考
-  - VideoMonitor 类方法分类
-  - 性能优化要点
-
-### 架构决策记录
-- **[docs/adr/001-keep-python-implementation.md](docs/adr/001-keep-python-implementation.md)** - 保持 Python 实现的决策
-- **[docs/adr/002-do-not-adopt-x-algorithm-techniques.md](docs/adr/002-do-not-adopt-x-algorithm-techniques.md)** - 不引入推荐系统技术的决策
-- **[docs/adr/003-avoid-large-refactoring.md](docs/adr/003-avoid-large-refactoring.md)** - 采用单体架构的决策
-
-### 贡献指南
-- **[CONTRIBUTING.md](CONTRIBUTING.md)** - 贡献指南
-  - 开发环境设置
-  - 代码质量标准
-  - 提交规范
-
-## ❓ 常见问题
-
-### Q1: 为什么算法会形成3天的检查间隔?
-
-**A**: 这是 WGMM 算法通过数学计算自然涌现的结果,而非硬编码。
-
-算法通过以下机制自然产生3天间隔:
-
-1. **星期维度权重最高** (learned weight ≈ 0.67)
-2. **sigma_week = 1.0** 使得相邻天相似度 ≈ 0.606
-3. **3天间隔**能以较高相似度覆盖工作日和周末两个极端
-
-**详细数学解释**: 参见 [docs/wgmm-algorithm.md#3天间隔的数学原理](docs/wgmm-algorithm.md#3天间隔的数学原理)
-
-### Q2: WGMM 算法需要多少历史数据才能开始有效预测?
-
-**A**:
-- **最小10条数据**: 可以开始基础预测
-- **50条数据**: 能够识别基本的周期性模式
-- **100+条数据**: 稳定预测,准确识别复杂模式
-
-### Q3: 如果UP主改变发布习惯,算法多久能适应?
-
-**A**: 由于指数衰减权重机制:
-- **2-3次新模式发布**: 开始调整预测
-- **1-2周**: 完全适应新的发布习惯
-
-### Q4: 如何重置算法学习?
-
-**A**: 删除 `data/wgmm_config.json` 和 `data/mtime.txt`,重启程序即可重新学习:
-
-```bash
-rm data/wgmm_config.json data/mtime.txt
-sudo systemctl restart video-monitor
-```
-
-### Q5: 预测频率异常怎么办?
-
-**A**:
-1. 查看日志了解当前热力得分: `grep "热力" urls.log | tail -5`
-2. 检查历史数据是否正常: `wc -l data/mtime.txt`
-3. 如需重新学习,参考 Q4 重置算法
-
-### Q6: cookies.txt 过期怎么办?
-
-**A**:
-1. 重新从浏览器导出 cookies
-2. 替换 `data/cookies.txt` 文件
-3. 重启服务: `sudo systemctl restart video-monitor`
-
-## 🔍 故障排查
-
-### 系统检查
-
-```bash
-# 检查服务状态
-sudo systemctl status video-monitor
-
-# 查看详细日志
-sudo journalctl -u video-monitor -n 100
-
-# 检查配置文件
-cat data/.env
-ls -l data/cookies.txt
-```
-
-### 常见问题
-
-**问题1: 服务无法启动**
-- 检查 `data/.env` 文件是否存在且配置正确
-- 检查 `data/cookies.txt` 是否存在
-- 查看详细错误日志: `sudo journalctl -u video-monitor -n 50`
-
-**问题2: 检测不到新视频**
-- 验证 data/cookies.txt 是否过期
-- 手动运行 `python monitor.py --dev` 测试
-- 运行 `python monitor.py --wgmm-core-only` 隔离验证 WGMM 行为(跳过视频检测)
-- 检查 BILIBILI_UID 是否正确
-
-**问题3: 预测频率过长/过短**
-- 正常现象,算法会根据历史数据自适应调整
-- 低活跃期可能长达30天,高峰期可能短至5分钟
-- 可通过重置算法重新学习 (见 Q4)
-
-**详细故障排查**: 参见 [docs/development-guide.md#故障排查](docs/development-guide.md#故障排查)
-
-## 📊 性能指标
-
-| 指标 | 典型值 |
-|------|--------|
-| WGMM 算法计算 | ~10ms |
-| 三层检测耗时 | ~2s (主要在 yt-dlp I/O) |
-| 内存占用 | <10MB |
-| CPU 使用率 | <1% (大部分时间在睡眠) |
-| 网络请求节省率 | 60-80% (相比固定1小时间隔) |
-
-## 🛡️ 安全性
-
-- `data/.env` 和 `data/cookies.txt` 已被 `.gitignore` 排除
-- 敏感文件不纳入版本控制
-- systemd 服务使用安全沙盒设置
-- 建议定期更换 GitHub Token
-
-## 📝 开发规范
-
-### 代码质量检查
-
-**修改代码后必须运行**:
+常用检查：
 
 ```bash
 source .venv/bin/activate
-ruff check monitor.py        # 必须通过
-ruff format monitor.py       # 必须通过
+which yt-dlp
+yt-dlp --version
+ls -l data/cookies.txt
+tail -100 urls.log
+cat critical_errors.log
+sudo journalctl -u video-monitor -n 100
 ```
 
-### 提交规范
+常见情况：
 
-遵循 Conventional Commits 规范:
+- 环境变量缺失：启动时输出 `缺少必要的环境变量` 并退出。
+- cookies 缺失或为空：启动时记录严重错误并退出。
+- `yt-dlp` 不在 `PATH`：`YtDlpClient` 记录错误并返回失败结果，先检查 `which yt-dlp`。
+- Gist 获取失败：本轮记录严重错误；如果没有基准 URL 数据，则跳过本次检查。
+- B站限流或分片扩展失败：记录 warning，跳过本次检测，并按“未发现新内容”执行 WGMM 调频。
+- 通知失败：记录失败，不阻断 URL 状态和调频流程。
 
-```bash
-feat: 添加新功能
-fix: 修复Bug
-docs: 更新文档
-refactor: 代码重构
-```
+## 文档
 
-**详细指南**: 参见 [CONTRIBUTING.md](CONTRIBUTING.md)
+- [README.md](README.md)：英文用户说明
+- [CONTRIBUTING.md](CONTRIBUTING.md)：贡献流程
+- [docs/development-guide.md](docs/development-guide.md)：开发与故障排查
+- [docs/code_logic_flow.md](docs/code_logic_flow.md)：当前架构流程
+- [docs/code-reference.md](docs/code-reference.md)：模块参考
+- [docs/wgmm-algorithm.md](docs/wgmm-algorithm.md)：算法说明
+- [docs/wgmm-config-params.md](docs/wgmm-config-params.md)：配置字段说明
+- [docs/wgmm-universality-analysis.md](docs/wgmm-universality-analysis.md)：普适性分析
+- [docs/adr/002-do-not-adopt-x-algorithm-techniques.md](docs/adr/002-do-not-adopt-x-algorithm-techniques.md)
+- [docs/adr/003-avoid-large-refactoring.md](docs/adr/003-avoid-large-refactoring.md)
+- [docs/adr/004-fix-cascade-false-detection.md](docs/adr/004-fix-cascade-false-detection.md)
 
-## 🤝 贡献
+## 安全
 
-欢迎贡献! 请先阅读 [CONTRIBUTING.md](CONTRIBUTING.md) 了解:
-- 开发环境设置
-- 代码质量标准
-- 提交规范
-- 架构决策原则
+- `data/.env` 和 `data/cookies.txt` 不进入版本控制。
+- 不要提交 Gist Token、Bark Key、cookies 或包含敏感信息的日志。
+- systemd 服务应使用项目提供的路径和沙盒设置。
 
-## 📄 许可证
+## 许可证
 
 MIT License
-
-## 🙏 致谢
-
-- **yt-dlp** - 强大的视频元信息获取工具
-- **Bark** - 优秀的 iOS 推送服务
-- **NumPy** - 高效的数值计算库
-
----
-
-**需要帮助?**
-- 📖 查看 [文档](#📚-文档导航)
-- 🐛 [提交 Issue](https://github.com/yourusername/wgmm/issues)
-- 💬 [查看 FAQ](#常见问题)
