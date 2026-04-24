@@ -1,6 +1,6 @@
 .DS_Store
 /.venv
-/__pycache__
+__pycache__/
 /check_frequency.conf
 /critical_errors.log
 /last_video_id.cache
