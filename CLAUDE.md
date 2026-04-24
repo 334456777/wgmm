@@ -7,7 +7,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 这是一个基于加权高斯混合模型（WGMM）的B站视频智能监控系统，使用机器学习算法自适应调整监控频率，在保证及时性的同时节省 60-80% 的网络请求。
 
 **核心设计哲学**:
-- **Simple is Better（简单即美）**: 保持单体架构，避免过度模块化
+- **Simple is Better（简单即美）**: 模块化单体结构，避免框架化和过度工程
 - **专注核心价值**: WGMM 是监控工具，而非预测系统
 - **实用主义**: 解决实际问题，而非追逐技术热点
 - **稳定可靠**: 7×24 小时无人值守运行
@@ -15,7 +15,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 **重要架构决策**:
 - **ADR 001**: 保持 Python 实现，不迁移到 Go
 - **ADR 002**: 不引入 X-Algorithm 推荐系统技术
-- **ADR 003**: 采用单体架构，拒绝 Pipeline 模块化重构
+- **ADR 003**: 不进行大型代码重构（已被 ADR 005 取代，风险控制精神保留）
+- **ADR 005**: 采用模块化单体结构（`monitor.py` 入口壳 + `wgmm_monitor/` 包）
 
 > 在提出重大架构变更前，请务必阅读 `docs/adr/` 目录中的架构决策记录。
 
@@ -58,16 +59,24 @@ sudo journalctl -u video-monitor -f
 
 ### 核心文件
 
-- **`monitor.py`**: 主程序（约2200行），包含完整的监控逻辑和 WGMM 算法实现
+- **`monitor.py`**: 6 行 CLI 入口壳，调用 `wgmm_monitor.cli.main`
+- **`wgmm_monitor/`**: 业务实现包（约 2800 行）
+  - `cli.py`, `app.py`, `config.py`, `models.py`, `runtime_logger.py`
+  - `clients/` — Bark、Gist、yt-dlp 外部依赖
+  - `services/` — bilibili、frequency、history、monitor、notification 业务服务
+  - `stores/` — config、history、url 持久化
+  - `wgmm/` — constants、features、learning、scheduler、scoring 纯算法层
+  - `utils/` — files、time 工具
+- **`tests/`**: 单元测试（`python -m unittest discover -s tests`）
 - **`requirements.txt`**: Python 依赖包清单
 - **`pyproject.toml`**: Ruff 代码质量检查配置
 - **`video-monitor.service`**: systemd 系统服务配置
-- **`README.md`**: 用户文档，包含算法原理、FAQ、使用指南
+- **`README.md`** / **`README_CN.md`**: 用户文档，包含算法原理、FAQ、使用指南
 - **`CONTRIBUTING.md`**: 贡献指南
 
 ### 必需配置文件（手动创建）
 
-- **`data/.env`**: 环境变量配置（GITHUB_TOKEN, BARK_DEVICE_KEY, GIST_ID, BILIBILI_UID）
+- **`data/.env`**: 环境变量配置（GITHUB_TOKEN, BARK_DEVICE_KEY, BARK_APP_TITLE, GIST_ID, BILIBILI_UID）
 - **`data/cookies.txt`**: B站登录凭证
 
 ### 自动生成的数据文件
@@ -119,14 +128,16 @@ sudo journalctl -u video-monitor -f
   - 数据流向
 
 - **`docs/code-reference.md`**: 代码参考
-  - VideoMonitor 类方法分类
+  - `wgmm_monitor` 子模块职责
   - 性能优化要点
   - 代码理解提示
 
 #### 架构决策记录（ADR）
 - **`docs/adr/001-keep-python-implementation.md`**: 保持 Python 实现的决策
 - **`docs/adr/002-do-not-adopt-x-algorithm-techniques.md`**: 不引入推荐系统技术的决策
-- **`docs/adr/003-avoid-large-refactoring.md`**: 采用单体架构的决策
+- **`docs/adr/003-avoid-large-refactoring.md`**: 不进行大型代码重构（已被 ADR 005 取代）
+- **`docs/adr/004-fix-cascade-false-detection.md`**: 修复级联误检测故障
+- **`docs/adr/005-adopt-modular-monolith.md`**: 采用模块化单体结构（反转 ADR 003 的禁止规则）
 
 ### 文档使用建议
 
@@ -239,25 +250,28 @@ EOF
 ```bash
 # 1. 代码质量检查（必须通过）
 source .venv/bin/activate
-ruff check monitor.py        # 必须显示 "All checks passed!"
-ruff format monitor.py       # 必须显示 "already formatted" 或格式化成功
+ruff check monitor.py wgmm_monitor tests       # 必须显示 "All checks passed!"
+ruff format --check monitor.py wgmm_monitor tests  # 必须全部 already formatted
 
-# 2. 查看修改
+# 2. 运行单元测试
+python -m unittest discover -s tests           # 全绿才提交
+
+# 3. 查看修改
 git status
 git diff
 
-# 3. 检查是否需要更新文档
-# - 新功能？→ 更新 README.md
+# 4. 检查是否需要更新文档
+# - 新功能？→ 更新 README.md / README_CN.md
 # - 架构变更？→ 更新相关文档
 # - 新的架构决策？→ 创建新的 ADR 文件
 
-# 4. 添加文件（包括文档）
+# 5. 添加文件（包括文档）
 git add <文件名>
 
-# 5. 创建提交
+# 6. 创建提交
 git commit -m "feat: 添加XXX功能"
 
-# 6. 推送到远程
+# 7. 推送到远程
 git push
 ```
 
@@ -294,12 +308,13 @@ git push
 
 ### 代码质量检查
 
-**强制要求：每次修改 Python 代码后必须运行 ruff 检查**
+**强制要求：每次修改 Python 代码后必须运行 ruff 检查和单元测试**
 
 ```bash
 source .venv/bin/activate
-ruff check monitor.py        # 必须通过
-ruff format monitor.py       # 必须通过
+ruff check monitor.py wgmm_monitor tests       # 必须通过
+ruff format --check monitor.py wgmm_monitor tests  # 必须通过
+python -m unittest discover -s tests           # 必须全绿
 ```
 
 **代码风格规范**:
@@ -333,7 +348,7 @@ ruff format monitor.py       # 必须通过
 
 ## 代码理解提示
 
-**重要：** `monitor.py` 中的所有函数和类都包含详细的中文注释（docstring 和行内注释）。
+**重要：** `wgmm_monitor/` 中的所有函数和类都包含详细的中文注释（docstring 和行内注释）。
 
 当你需要理解某个函数或变量的用途时，可以：
 1. **使用 Grep 工具搜索**函数名或关键词，快速定位相关代码
@@ -341,103 +356,118 @@ ruff format monitor.py       # 必须通过
 3. **查看行内注释**，了解复杂逻辑的实现细节
 
 例如：
-- 搜索 `def adjust_check_frequency` 可以找到 WGMM 算法的主函数
-- 搜索 `def check_potential_new_parts` 可以找到分片预检查逻辑
-- 搜索 `def quick_precheck` 可以找到快速ID检查逻辑
+- 搜索 `def decide_next_frequency` 可以找到 WGMM 调频主函数（`wgmm_monitor/wgmm/scheduler.py`）
+- 搜索 `def adjust_check_frequency` 可以找到调频服务入口（`wgmm_monitor/services/frequency.py`）
+- 搜索 `def check_potential_new_parts` 可以找到分片预检查逻辑（`wgmm_monitor/services/bilibili.py`）
+- 搜索 `def run_monitor` 可以找到主监控循环（`wgmm_monitor/services/monitor.py`）
 
 ## 核心架构速览
 
-### VideoMonitor 类关键方法
+### wgmm_monitor 关键模块
 
-`monitor.py` 是整个系统的核心，包含完整监控逻辑和 WGMM 算法实现。
+**入口与装配**
+- `monitor.py` → `wgmm_monitor/cli.py::main()` → `wgmm_monitor/app.py::Application`
+- `app.py` 负责实例化所有依赖并注入服务，支持 `--dev` 与 `--wgmm-core-only`
 
-**初始化与配置**
-- `__init__()`, `load_env_file()`, `_load_wgmm_config()`, `_save_wgmm_config()`
+**WGMM 纯算法层（`wgmm_monitor/wgmm/`）**
+- `scheduler.decide_next_frequency()`: WGMM 调频决策主函数
+- `scheduler.scan_future_peak()`: 未来 15 天峰值扫描
+- `scoring.calculate_point_score()` / `batch_calculate_scores()`: 单点 / 批量发布概率得分
+- `features.vectorized_time_features_numpy()`: 周期性时间特征提取
+- `features.get_raw_time_components()`: 离散时间维度（用于权重学习）
+- `learning.filter_outliers()`: IQR 过滤异常值
+- `learning.calculate_adaptive_lambda()`: 自适应计算 lambda
+- `learning.discover_periods()`: 自相关分析，自动发现非日历周期
+- `learning.sync_discovered_periods()`: 稳定 custom_N 索引映射
+- `learning.initialize_wgmm_dimensions()`: 同步 custom_N 权重与 sigma
+- `learning.learn_dimension_weights()` / `learn_adaptive_sigmas()`: 在线学习
+- `constants.py`: `LAMBDA_BASE` / `MAPPING_CURVE` / `MIN_HISTORY_COUNT` / `LOOKAHEAD_DAYS` 等
 
-**WGMM 核心算法**
-- `adjust_check_frequency()`: WGMM 算法主函数
-- `generate_mtime_file()`: 生成历史发布时间戳文件
-- `_calculate_adaptive_lambda()`: 自适应计算 lambda 参数
-- `_discover_periods()`: 自相关分析，自动发现非日历周期
-- `_sync_discovered_periods()`: 将发现周期同步到配置，稳定 custom_N 映射
-- `learn_dimension_weights()`: 学习各维度权重（含自相关发现的 custom_N 维度）
+**业务服务层（`wgmm_monitor/services/`）**
+- `MonitorService.run_monitor()`: 主监控循环（三层检测 + 通知 + 调频）
+- `BilibiliService.check_potential_new_parts()`: 第一层 - 分片预检查
+- `BilibiliService.quick_precheck()`: 第二层 - 快速ID检查
+- `BilibiliService.fetch_video_list()` + `get_all_videos_parallel()`: 第三层 - 完整深度检查
+- `FrequencyService.adjust_check_frequency()`: 加载历史 → 过滤异常 → 剪枝 → 调用 scheduler
+- `HistoryService.generate_mtime_file()`: 通过 yt-dlp info.json 生成历史时间戳
+- `HistoryService.save_real_upload_timestamps()`: 保存新视频真实上传时间
+- `NotificationService.notify_new_videos()` / `notify_error()` / `notify_critical_error()`: Bark 通知
 
-**三层检测架构**
-- `check_potential_new_parts()`: 第一层 - 分片预检查
-- `quick_precheck()`: 第二层 - 快速ID检查
-- `run_monitor()`: 第三层 - 完整深度检查（主监控循环）
+**持久化层（`wgmm_monitor/stores/`）**
+- `ConfigStore.load()` / `save()` / `ensure_manual_flag()`: `wgmm_config.json` 读写
+- `HistoryStore.load_positive_events()` / `load_miss_history()` / `save_miss_history()` / `append_upload_timestamps()` / `prune_old_data()`: 历史事件存储
+- `UrlStore.load()` / `save()`: 本地 `local_known.txt`
 
-**数据管理**
-- `sync_urls_from_gist()`: 从 GitHub Gist 同步已备份的 URL 列表
-- `load_known_urls()`: 加载本地已知 URL
-- `save_known_urls()`: 保存本地已知 URL
-
-**日志与通知**
-- `send_bark_push()`: 发送 Bark 推送通知
-- `notify_new_videos()`: 通知发现新视频
-- `notify_critical_error()`: 通知严重错误
+**外部客户端（`wgmm_monitor/clients/`）**
+- `BarkClient.send_push()`: Bark HTTP 推送
+- `GistClient.fetch_urls()` / `write_new_urls()`: GitHub Gist API
+- `YtDlpClient.run()`: yt-dlp 调用与耗时统计（`last_duration` / `normal_duration`）
 
 ### 主监控循环
 
 ```
-run_monitor() 主循环
-├── sync_urls_from_gist()       # 从 GitHub Gist 同步已知 URL
-├── check_potential_new_parts() # 第一层：分片预检查
-├── quick_precheck()            # 第二层：快速 ID 检查
-│   └── 如果有变化 → 触发完整检查
-├── get_all_videos_parallel()   # 第三层：完整深度检查
-├── notify_new_videos()         # 发送通知
-└── adjust_check_frequency()    # WGMM 计算下次检查时间
+MonitorService.run_monitor()
+├── sync_urls_from_gist()                    # 从 GitHub Gist 同步已备份 URL
+├── BilibiliService.check_potential_new_parts()  # 第一层：分片预检查
+├── BilibiliService.quick_precheck()         # 第二层：快速 ID 检查
+│   └── 任一层有变化 → 触发完整检查
+├── BilibiliService.fetch_video_list()       # 第三层：完整深度扫描
+├── BilibiliService.get_all_videos_parallel()    # 并行展开所有分片
+├── HistoryService.save_real_upload_timestamps() # 写入真实上传时间
+├── NotificationService.notify_new_videos()  # 发送通知
+└── FrequencyService.adjust_check_frequency()    # WGMM 计算下次检查时间
 ```
 
 ### WGMM 算法流程
 
 ```
-adjust_check_frequency()
-├── 加载正向事件(mtime.txt)和负向事件(miss_history.txt)
-├── filter_outliers()              # 过滤异常值
-├── prune_old_data()               # 剪枝低权重历史数据
-├── _calculate_adaptive_lambda()   # 自适应计算遗忘速度
-├── _discover_periods()            # 自相关自动发现附加周期（数据不足时跳过）
-├── _sync_discovered_periods()     # 稳定 custom_N 索引映射
-├── learn_dimension_weights()      # 学习所有维度重要性（含 custom_N）
-├── learn_adaptive_sigmas()        # 学习时间容忍度（含 custom_N）
-├── _calculate_point_score()       # 计算当前时间发布概率
-├── _batch_calculate_scores()      # 扫描未来15天找峰值
-└── 映射得分 → 检查间隔
+FrequencyService.adjust_check_frequency()
+├── HistoryStore.load_positive_events()      # 加载正向事件(mtime.txt)
+├── HistoryStore.load_miss_history()         # 加载负向事件(miss_history.txt)
+├── learning.filter_outliers()               # IQR 过滤异常值
+├── HistoryStore.prune_old_data()            # positive/negative 分别剪枝（各自独立阈值）
+└── scheduler.decide_next_frequency()
+    ├── learning.calculate_adaptive_lambda() # 自适应遗忘速度
+    ├── learning.discover_periods()          # 自相关发现附加周期（数据不足时跳过）
+    ├── learning.sync_discovered_periods()   # 稳定 custom_N 索引
+    ├── learning.learn_dimension_weights()   # 学习维度权重（含 custom_N）
+    ├── learning.learn_adaptive_sigmas()     # 学习时间容忍度（含 custom_N）
+    ├── scoring.calculate_point_score()      # 当前时刻发布概率
+    ├── scheduler.scan_future_peak()         # 扫描未来 15 天找峰值
+    └── 映射得分 → 检查间隔 → FrequencyDecision
 ```
 
 ## 快速参考
 
 ### 常见代码修改场景
 
-**调整预测激进程度**:
+**调整预测激进程度**（`wgmm_monitor/wgmm/constants.py`）:
 ```python
 # 更激进：更频繁检查
-mapping_curve = 2.0  # → 改为 3.0
+MAPPING_CURVE = 2.0  # → 改为 3.0
 
 # 更保守：减少请求
-mapping_curve = 2.0  # → 改为 1.5
+MAPPING_CURVE = 2.0  # → 改为 1.5
 
 # 注：峰值提前量自动使用 yt-dlp 实际执行耗时，无需手动调整
 ```
 
-**修改时间容忍度**:
+**修改时间容忍度**（`wgmm_monitor/wgmm/constants.py::DEFAULT_SIGMAS`）:
 ```python
 # 更严格
-sigmas["day"] = 0.8  # → 改为 0.5
+DEFAULT_SIGMAS["day"] = 0.8   # → 改为 0.5
 
 # 更宽松
-sigmas["week"] = 1.0  # → 改为 1.5
+DEFAULT_SIGMAS["week"] = 1.0  # → 改为 1.5
 ```
 
-**调整记忆速度**:
+**调整记忆速度**（`wgmm_monitor/wgmm/constants.py`）:
 ```python
 # 快速适应
-lambda_base = 0.0001  # → 改为 0.0002
+LAMBDA_BASE = 0.0001  # → 改为 0.0002
 
 # 长期记忆
-lambda_base = 0.0001  # → 改为 0.00005
+LAMBDA_BASE = 0.0001  # → 改为 0.00005
 ```
 
 ### 查看日志
