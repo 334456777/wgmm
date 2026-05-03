@@ -242,7 +242,8 @@ python monitor.py --wgmm-core-only
 
 ### `wgmm_monitor/wgmm/learning.py`
 
-- `filter_outliers()`：IQR 过滤异常间隔。
+- `aggregate_publish_events()`：链式合并 600 秒内的连续时间戳，把视频粒度折成 UP 主行为粒度。仅用于正向事件。
+- `filter_outliers()`：IQR 过滤异常间隔。仅用于负向事件（正向数据有批量发布，IQR 短端失效）。
 - `calculate_adaptive_lambda()`：根据间隔方差和变异系数学习遗忘速度。
 - `discover_periods()`：自相关发现非日历周期。
 - `sync_discovered_periods()`：稳定 `custom_N` 映射，避免索引漂移。

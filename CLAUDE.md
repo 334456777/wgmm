@@ -375,7 +375,8 @@ python -m unittest discover -s tests           # 必须全绿
 - `scoring.calculate_point_score()` / `batch_calculate_scores()`: 单点 / 批量发布概率得分
 - `features.vectorized_time_features_numpy()`: 周期性时间特征提取
 - `features.get_raw_time_components()`: 离散时间维度（用于权重学习）
-- `learning.filter_outliers()`: IQR 过滤异常值
+- `learning.aggregate_publish_events()`: 把视频粒度时间戳折成 UP 主行为粒度（正向数据用，默认 600 秒阈值）
+- `learning.filter_outliers()`: IQR 过滤异常间隔（仅用于负向数据）
 - `learning.calculate_adaptive_lambda()`: 自适应计算 lambda
 - `learning.discover_periods()`: 自相关分析，自动发现非日历周期
 - `learning.sync_discovered_periods()`: 稳定 custom_N 索引映射
@@ -424,7 +425,8 @@ MonitorService.run_monitor()
 FrequencyService.adjust_check_frequency()
 ├── HistoryStore.load_positive_events()      # 加载正向事件(mtime.txt)
 ├── HistoryStore.load_miss_history()         # 加载负向事件(miss_history.txt)
-├── learning.filter_outliers()               # IQR 过滤异常值
+├── learning.aggregate_publish_events()      # 正向：近邻聚合 600 秒（折成 UP 主行为粒度）
+├── learning.filter_outliers()               # 负向：IQR 过滤异常间隔
 ├── HistoryStore.prune_old_data()            # positive/negative 分别剪枝（各自独立阈值）
 └── scheduler.decide_next_frequency()
     ├── learning.calculate_adaptive_lambda() # 自适应遗忘速度

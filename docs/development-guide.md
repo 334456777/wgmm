@@ -146,7 +146,8 @@ sync_urls_from_gist()
 ```text
 load_positive_events()
 load_miss_history()
-filter_outliers()
+aggregate_publish_events()  # 正向：近邻聚合 600 秒
+filter_outliers()           # 负向：IQR 过滤
 prune_old_data()
 decide_next_frequency()
     -> calculate_adaptive_lambda()

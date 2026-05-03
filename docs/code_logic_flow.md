@@ -90,13 +90,16 @@ Application.run_forever()
         -> gist_missing_urls = current_urls_set - existing_urls_set
         -> truly_new_urls = gist_missing_urls - known_urls
 
-    -> if gist_missing_urls:
+    -> if truly_new_urls:
         -> save real upload timestamps for truly_new_urls
         -> known_urls.update(gist_missing_urls)
         -> UrlStore.save(known_urls)
         -> write Gist new.txt outside dev mode
-        -> notify outside dev mode
-        -> adjust_check_frequency(found_new_content=bool(truly_new_urls))
+        -> notify outside dev mode (count = len(truly_new_urls))
+        -> adjust_check_frequency(found_new_content=True)
+
+    -> elif gist_missing_urls:
+        -> adjust_check_frequency(found_new_content=False)
 
     -> elif found_new_parts:
         -> adjust_check_frequency(found_new_content=True)
@@ -131,9 +134,9 @@ GitHub Gist urls.txt
 - `memory_urls`：云端已备份 URL。
 - `known_urls`：本地完整已知集合，包含云端和本地尚未同步状态。
 - `gist_missing_urls`：当前扫描中 Gist 还没有的 URL。
-- `truly_new_urls`：本地也没见过的 URL，才保存上传时间并触发新内容学习。
+- `truly_new_urls`：本地也没见过的 URL，才保存上传时间、写入 Gist new.txt、触发通知和新内容学习。
 
-这个设计容忍 Gist 手动或延迟更新期间的状态不一致。
+通知与 Gist new.txt 写入只在 `truly_new_urls` 非空时发生。如果 `gist_missing_urls` 非空但 `truly_new_urls` 为空（云端备份滞后于本地已知），路径会静默走 negative 调频，避免对同一批 URL 重复推送。这个设计容忍 Gist 手动或延迟更新期间的状态不一致。
 
 ## WGMM 调频流程
 
@@ -157,7 +160,7 @@ FrequencyService.adjust_check_frequency()
 
     -> positive_events = HistoryStore.load_positive_events()
     -> negative_events = HistoryStore.load_miss_history()
-    -> filter_outliers(positive_events)
+    -> aggregate_publish_events(positive_events, gap_threshold_sec=600)
     -> filter_outliers(negative_events)
 
     -> if positive event count >= PRUNE_THRESHOLD:

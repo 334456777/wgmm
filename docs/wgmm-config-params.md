@@ -150,7 +150,8 @@ weight = exp(-lambda * age_hours)
 ```text
 data/mtime.txt
 data/miss_history.txt
-    -> filter_outliers()
+    -> aggregate_publish_events() for positive
+    -> filter_outliers() for negative
     -> prune_old_data()
     -> calculate_adaptive_lambda()
         -> last_lambda

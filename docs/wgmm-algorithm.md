@@ -62,15 +62,33 @@ sin/cos 编码避免了周期边界问题，例如 23:59 与 00:01 在线性时�
 
 1. 如果 `mtime.txt` 不存在，调用 `HistoryService.generate_mtime_file()`。
 2. 加载正向和负向事件。
-3. 用 `filter_outliers()` 过滤未来时间和异常间隔。
-4. 当正向事件数量达到 `PRUNE_THRESHOLD` 时，用 `prune_old_data()` 剪枝低权重历史。
+3. 正向事件用 `aggregate_publish_events()` 做近邻聚合。
+4. 负向事件用 `filter_outliers()` 做 IQR 过滤。
+5. 当正向事件数量达到 `PRUNE_THRESHOLD` 时，用 `prune_old_data()` 剪枝低权重历史。
 
-`filter_outliers()` 使用 IQR：
+### 正向：近邻聚合（`aggregate_publish_events`）
+
+`mtime.txt` 中每个视频/分片各占一条时间戳。UP 主一次性发布多个视频时，会产生数十条相邻间隔在几秒到几十秒之间的"批量事件"。这种数据会把"历史发布间隔的 P20"压到几分钟级别，进而让算法判定"高峰时段"时把检查间隔压到 5 分钟左右。
+
+聚合算法把视频粒度的时间戳折成 UP 主一次发布行为粒度：
+
+```text
+排序 -> 链式扩展（任意相邻间隔 <= gap_threshold_sec 视为同一次行为）
+     -> 每个事件取最早一条作为代表
+```
+
+默认阈值 `gap_threshold_sec = 600`（10 分钟）。文件本体 `mtime.txt` 不变，聚合只在内存中进行。
+
+### 负向：IQR 过滤（`filter_outliers`）
+
+负向事件（`miss_history.txt`）由程序自身一次写一条，没有批量问题，IQR 在它身上仍然有效——能过滤掉服务停机数周后回来产生的超长负向间隔。
 
 ```text
 lower = Q1 - 3 * IQR
 upper = Q3 + 3 * IQR
 ```
+
+注意 IQR 在双峰分布上对短端会失效：当数据中"批量事件"占比超过 25%，Q1 会贴近 0，下界变负，短间隔过滤完全瘫痪。这是不把 IQR 用在正向数据上的根本原因。
 
 剪枝使用指数衰减权重：
 
@@ -243,7 +261,8 @@ miss_timestamp = current_timestamp
 data/mtime.txt
 data/miss_history.txt
     -> FrequencyService
-    -> filter_outliers()
+    -> aggregate_publish_events() for positive
+    -> filter_outliers() for negative
     -> prune_old_data()
     -> decide_next_frequency()
         -> adaptive lambda
