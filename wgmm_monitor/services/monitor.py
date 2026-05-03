@@ -216,7 +216,7 @@ class MonitorService:
 				self.known_urls.update(gist_missing_urls)
 				self.save_known_urls()
 
-				if not self.dev_mode and not self.write_new_urls_to_gist(truly_new_urls):
+				if not self.dev_mode and not self.write_new_urls_to_gist(gist_missing_urls):
 					self.logger.log_warning("写入 new.txt 失败, 不影响主流程")
 
 				if not self.dev_mode and not self.notification_service.notify_new_videos(
