@@ -29,6 +29,30 @@ def filter_outliers(timestamps: list[int], current_time: int) -> list[int]:
 	return [int(x) for x in final_ts.tolist()]
 
 
+def aggregate_publish_events(
+	timestamps: list[int],
+	current_time: int,
+	gap_threshold_sec: int = 600,
+) -> list[int]:
+	"""把视频粒度的时间戳聚合为 UP 主发布事件粒度的时间戳.
+
+	链式扩展: 任意相邻两条时间戳间隔不超过 ``gap_threshold_sec`` 即视作仍在同一次
+	发布行为内, 直到出现一次大间隔才开启新事件. 每个事件取最早的时间戳作为代表.
+	仅在内存中处理, 不修改持久化文件.
+	"""
+	valid = sorted(ts for ts in timestamps if ts <= current_time)
+	if not valid:
+		return []
+
+	aggregated: list[int] = [valid[0]]
+	prev = valid[0]
+	for ts in valid[1:]:
+		if ts - prev > gap_threshold_sec:
+			aggregated.append(ts)
+		prev = ts
+	return aggregated
+
+
 def calculate_adaptive_lambda(
 	timestamps: list[int],
 	last_variance: float,

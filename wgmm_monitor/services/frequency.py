@@ -10,7 +10,7 @@ from wgmm_monitor.services.history import HistoryService
 from wgmm_monitor.stores.config_store import ConfigStore
 from wgmm_monitor.stores.history_store import HistoryStore
 from wgmm_monitor.wgmm.constants import FALLBACK_INTERVAL, LAMBDA_BASE, PRUNE_THRESHOLD
-from wgmm_monitor.wgmm.learning import filter_outliers
+from wgmm_monitor.wgmm.learning import aggregate_publish_events, filter_outliers
 from wgmm_monitor.wgmm.scheduler import decide_next_frequency
 
 
@@ -67,7 +67,7 @@ class FrequencyService:
 
 		positive_events = self.history_store.load_positive_events()
 		negative_events = self.history_store.load_miss_history()
-		positive_events = filter_outliers(positive_events, current_timestamp)
+		positive_events = aggregate_publish_events(positive_events, current_timestamp)
 		negative_events = filter_outliers(negative_events, current_timestamp)
 
 		total_events = len(positive_events) + len(negative_events)

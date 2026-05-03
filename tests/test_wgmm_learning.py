@@ -6,6 +6,7 @@ import unittest
 
 from wgmm_monitor.models import WgmmConfig
 from wgmm_monitor.wgmm.learning import (
+	aggregate_publish_events,
 	discover_periods,
 	filter_outliers,
 	initialize_wgmm_dimensions,
@@ -22,6 +23,39 @@ class WgmmLearningTest(unittest.TestCase):
 
 	def test_filter_outliers_keeps_small_sample_without_future_values(self) -> None:
 		self.assertEqual(filter_outliers([10, 20, 200], 100), [10, 20])
+
+	def test_aggregate_publish_events_empty(self) -> None:
+		self.assertEqual(aggregate_publish_events([], 1000), [])
+
+	def test_aggregate_publish_events_drops_future_timestamps(self) -> None:
+		self.assertEqual(aggregate_publish_events([100, 200, 5000], 1000), [100])
+
+	def test_aggregate_publish_events_keeps_unrelated_events(self) -> None:
+		# 间隔均超过阈值, 应原样返回
+		result = aggregate_publish_events([1000, 5000, 10000], 20000, gap_threshold_sec=600)
+		self.assertEqual(result, [1000, 5000, 10000])
+
+	def test_aggregate_publish_events_collapses_burst(self) -> None:
+		# 一批 5 个时间戳间隔均小, 应只留最早一条
+		burst = [1000, 1010, 1050, 1120, 1300]
+		result = aggregate_publish_events(burst, 5000, gap_threshold_sec=600)
+		self.assertEqual(result, [1000])
+
+	def test_aggregate_publish_events_chain_extends_within_threshold(self) -> None:
+		# 链式扩展: 100→700→1300 每段间隔 600, 整体合为一次事件
+		chain = [100, 700, 1300, 5000]
+		result = aggregate_publish_events(chain, 10000, gap_threshold_sec=600)
+		self.assertEqual(result, [100, 5000])
+
+	def test_aggregate_publish_events_threshold_boundary_inclusive(self) -> None:
+		# 间隔恰好 = 阈值, 视为同一事件 (阈值上界包含)
+		result = aggregate_publish_events([1000, 1600], 5000, gap_threshold_sec=600)
+		self.assertEqual(result, [1000])
+
+	def test_aggregate_publish_events_threshold_exceeded_starts_new_event(self) -> None:
+		# 间隔比阈值大 1 秒, 视为新事件
+		result = aggregate_publish_events([1000, 1601], 5000, gap_threshold_sec=600)
+		self.assertEqual(result, [1000, 1601])
 
 	def test_sync_discovered_periods_keeps_existing_index(self) -> None:
 		result = sync_discovered_periods([270000.0], [271000.0, 900000.0])
