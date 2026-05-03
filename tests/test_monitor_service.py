@@ -263,6 +263,35 @@ class MonitorServiceTest(unittest.TestCase):
 			self.assertEqual(bilibili.fetch_count, 2)
 			self.assertEqual(frequency.calls, [True])
 
+	def test_locally_known_url_is_not_renotified(self) -> None:
+		"""Gist backup 滞后但本地已知时, 不重复通知, 调频走 negative."""
+		with tempfile.TemporaryDirectory() as tmp:
+			notification = FakeNotificationService()
+			gist = FakeGistClient(urls=["old"])
+			bilibili = FakeBilibiliService(
+				found_videos=True,
+				fetch_results=[YtDlpResult(True, stdout="base")],
+				all_parts=["old", "new"],
+			)
+			history = FakeHistoryService()
+			frequency = FakeFrequencyService()
+			_monitor, _history, _frequency = make_service(
+				Path(tmp),
+				gist,
+				bilibili,
+				url_store=FakeUrlStore({"old", "new"}),
+				history=history,
+				frequency=frequency,
+				notification=notification,
+			)
+
+			_monitor.run_monitor()
+
+			self.assertEqual(notification.calls, [])
+			self.assertEqual(gist.written, [])
+			self.assertEqual(history.saved_urls, [])
+			self.assertEqual(frequency.calls, [False])
+
 	def test_notification_failure_does_not_block_frequency_update(self) -> None:
 		with tempfile.TemporaryDirectory() as tmp:
 			bilibili = FakeBilibiliService(

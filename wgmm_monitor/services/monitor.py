@@ -73,8 +73,6 @@ class MonitorService:
 		"""写入 Gist new.txt."""
 		success, error = self.gist_client.write_new_urls(urls)
 		if success:
-			if urls:
-				self.logger.log_info(f"已将 {len(urls)} 个URL写入 Gist new.txt")
 			return True
 		self.logger.log_critical_error(error, "Gist new.txt 更新", send_notification=True)
 		return False
@@ -206,15 +204,14 @@ class MonitorService:
 			gist_missing_urls = current_urls_set - existing_urls_set
 			truly_new_urls = gist_missing_urls - self.known_urls
 
-			if gist_missing_urls:
+			if truly_new_urls:
 				old_count = len(gist_missing_urls) - len(truly_new_urls)
 				new_count = len(truly_new_urls)
 				separator = " " if old_count > 0 and new_count > 0 else ""
 				display = f"{'*' * old_count}{separator}{'*' * new_count}"
 				self.logger.log_info(display)
 
-				if truly_new_urls:
-					self.history_service.save_real_upload_timestamps(truly_new_urls)
+				self.history_service.save_real_upload_timestamps(truly_new_urls)
 
 				self.known_urls.update(gist_missing_urls)
 				self.save_known_urls()
@@ -222,10 +219,8 @@ class MonitorService:
 				if not self.dev_mode and not self.write_new_urls_to_gist(gist_missing_urls):
 					self.logger.log_warning("写入 new.txt 失败, 不影响主流程")
 
-				if self.dev_mode:
-					pass
-				elif not self.notification_service.notify_new_videos(
-					len(gist_missing_urls),
+				if not self.dev_mode and not self.notification_service.notify_new_videos(
+					len(truly_new_urls),
 					has_new_parts=found_new_parts,
 				):
 					self.logger.log_critical_error(
@@ -234,10 +229,12 @@ class MonitorService:
 						send_notification=False,
 					)
 
-				if truly_new_urls:
-					self.adjust_check_frequency(found_new_content=True)
-				else:
-					self.adjust_check_frequency(found_new_content=False)
+				self.adjust_check_frequency(found_new_content=True)
+			elif gist_missing_urls:
+				self.logger.log_info(
+					f"完整检查发现 {len(gist_missing_urls)} 个URL均已在本地, 跳过通知",
+				)
+				self.adjust_check_frequency(found_new_content=False)
 			elif found_new_parts:
 				self.logger.log_info("完整检查未发现新视频 - 但发现新分片, 已处理")
 				self.adjust_check_frequency(found_new_content=True)
