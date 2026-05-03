@@ -231,9 +231,6 @@ class MonitorService:
 
 				self.adjust_check_frequency(found_new_content=True)
 			elif gist_missing_urls:
-				self.logger.log_info(
-					f"完整检查发现 {len(gist_missing_urls)} 个URL均已在本地, 跳过通知",
-				)
 				self.adjust_check_frequency(found_new_content=False)
 			elif found_new_parts:
 				self.logger.log_info("完整检查未发现新视频 - 但发现新分片, 已处理")
