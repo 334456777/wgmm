@@ -68,8 +68,13 @@ class FakeBilibiliService:
 		self.ytdlp_client = FakeYtDlpClient()
 		self.fetch_count = 0
 
-	def check_potential_new_parts(self, memory_urls: list[str]) -> bool:
+	def check_potential_new_parts(
+		self,
+		memory_urls: list[str],
+		known_urls: set[str],
+	) -> bool:
 		_ = memory_urls
+		_ = known_urls
 		return self.found_parts
 
 	def quick_precheck(self, memory_urls: list[str], known_urls: set[str]) -> bool:

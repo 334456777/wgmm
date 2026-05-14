@@ -66,16 +66,21 @@ class BilibiliService:
 		video_exists = any(latest_id in url for url in all_known)
 		return not video_exists
 
-	def check_potential_new_parts(self, memory_urls: list[str]) -> bool:
+	def check_potential_new_parts(
+		self,
+		memory_urls: list[str],
+		known_urls: set[str],
+	) -> bool:
 		"""第一层检测: 分片预检查."""
-		if not memory_urls:
+		all_known_urls = set(memory_urls) | known_urls
+		if not all_known_urls:
 			self.logger.log_info("内存数据为空, 跳过分片预检查")
 			return False
 
 		has_new_parts = False
 		try:
 			base_urls = {}
-			for url in memory_urls:
+			for url in all_known_urls:
 				if "?p=" in url:
 					parsed = urllib.parse.urlparse(url)
 					base_url = parsed._replace(query="").geturl()

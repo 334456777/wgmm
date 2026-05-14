@@ -143,7 +143,10 @@ class MonitorService:
 				self.cleanup()
 				return
 
-			found_new_parts = self.bilibili.check_potential_new_parts(self.memory_urls)
+			found_new_parts = self.bilibili.check_potential_new_parts(
+				self.memory_urls,
+				self.known_urls,
+			)
 			found_new_videos = self.bilibili.quick_precheck(
 				self.memory_urls,
 				self.known_urls,
