@@ -6,6 +6,105 @@ import numpy as np
 
 from wgmm_monitor.wgmm.features import vectorized_time_features_numpy
 
+NEAR_ZERO = 1e-12
+
+
+def _cyclic_similarity_to_reference(
+	reference_timestamp: float,
+	event_timestamps: np.ndarray,
+	dimension_weights: dict[str, float],
+	sigmas: dict[str, float],
+	extra_periods: list[float] | None = None,
+) -> np.ndarray:
+	"""计算历史事件与参考事件的周期相似度."""
+	if len(event_timestamps) == 0:
+		return np.array([], dtype=np.float64)
+
+	reference_feat = vectorized_time_features_numpy(
+		np.array([reference_timestamp], dtype=np.float64),
+		extra_periods,
+	)
+	events_feat = vectorized_time_features_numpy(event_timestamps, extra_periods)
+	combined = np.zeros(len(event_timestamps), dtype=np.float64)
+	for dim, weight in dimension_weights.items():
+		sigma = sigmas.get(dim, 1.0)
+		dist_sq = (reference_feat[f"{dim}_sin"][0] - events_feat[f"{dim}_sin"]) ** 2 + (
+			reference_feat[f"{dim}_cos"][0] - events_feat[f"{dim}_cos"]
+		) ** 2
+		combined += weight * np.exp(-dist_sq / (2 * sigma**2), dtype=np.float64)
+
+	max_possible = max(sum(dimension_weights.values()), NEAR_ZERO)
+	return np.clip(combined / max_possible, 0.0, 1.0)
+
+
+def _conditional_interval_scores(
+	target_timestamps: np.ndarray,
+	pos_events: list[int],
+	dimension_weights: dict[str, float],
+	pos_lambda: float,
+	sigmas: dict[str, float],
+	extra_periods: list[float] | None = None,
+) -> np.ndarray:
+	"""根据相似历史发布状态后的下一跳间隔, 预测目标时间得分."""
+	min_interval_count = 3
+	if len(pos_events) < min_interval_count + 1:
+		return np.ones(len(target_timestamps), dtype=np.float64)
+
+	events_arr = np.array(sorted(set(pos_events)), dtype=np.float64)
+	start_events = events_arr[:-1]
+	intervals = np.diff(events_arr)
+	valid_intervals = intervals > 0
+	start_events = start_events[valid_intervals]
+	intervals = intervals[valid_intervals]
+	if len(intervals) < min_interval_count:
+		return np.ones(len(target_timestamps), dtype=np.float64)
+
+	last_event = float(events_arr[-1])
+	elapsed = np.asarray(target_timestamps, dtype=np.float64) - last_event
+	scores = np.zeros(len(target_timestamps), dtype=np.float64)
+	valid_targets = elapsed > 0
+	if not np.any(valid_targets):
+		return scores
+
+	state_similarity = _cyclic_similarity_to_reference(
+		last_event,
+		start_events,
+		dimension_weights,
+		sigmas,
+		extra_periods,
+	)
+	ages_hours = (last_event - start_events) / 3600.0
+	recency_weights = np.exp(-pos_lambda * ages_hours, dtype=np.float64)
+	weights = state_similarity * recency_weights
+	if np.sum(weights) <= NEAR_ZERO:
+		weights = np.ones(len(intervals), dtype=np.float64)
+
+	log_intervals = np.log(intervals)
+	weight_sum = float(np.sum(weights))
+	weighted_mean = float(np.sum(weights * log_intervals) / weight_sum)
+	weighted_var = float(
+		np.sum(weights * (log_intervals - weighted_mean) ** 2) / weight_sum
+	)
+	effective_n = float(weight_sum**2 / max(np.sum(weights**2), NEAR_ZERO))
+	bandwidth = 1.06 * np.sqrt(weighted_var) * (effective_n ** (-1 / 5))
+	bandwidth = max(float(bandwidth), 0.1)
+
+	training_z = (log_intervals[:, np.newaxis] - log_intervals[np.newaxis, :]) / bandwidth
+	training_density = (
+		np.sum(
+			weights[np.newaxis, :] * np.exp(-0.5 * training_z**2),
+			axis=1,
+		)
+		/ weight_sum
+	)
+	normalizer = max(float(np.max(training_density)), NEAR_ZERO)
+
+	log_elapsed = np.log(elapsed[valid_targets])
+	z = (log_elapsed[:, np.newaxis] - log_intervals[np.newaxis, :]) / bandwidth
+	density = np.sum(weights[np.newaxis, :] * np.exp(-0.5 * z**2), axis=1) / weight_sum
+	scores[valid_targets] = np.clip(density / normalizer, 0.0, 1.0)
+	return scores
+
 
 def calculate_point_score(
 	target_timestamp: float,
@@ -73,7 +172,24 @@ def calculate_point_score(
 	neg_score = (
 		calculate_source_score_vectorized(neg_events, neg_lambda) if neg_events else 0.0
 	)
-	return float(np.clip(pos_score - (resistance_coefficient * neg_score), 0.0, 1.0))
+	interval_score = float(
+		_conditional_interval_scores(
+			np.array([target_timestamp]),
+			pos_events,
+			dimension_weights,
+			pos_lambda,
+			sigmas,
+			extra_periods,
+		)[0]
+	)
+	combined_pos_score = np.sqrt(max(pos_score * interval_score, 0.0))
+	return float(
+		np.clip(
+			combined_pos_score - (resistance_coefficient * neg_score),
+			0.0,
+			1.0,
+		)
+	)
 
 
 def batch_calculate_scores(
@@ -140,4 +256,17 @@ def batch_calculate_scores(
 
 	pos_scores = get_source_scores_vectorized(pos_events, pos_lambda)
 	neg_scores = get_source_scores_vectorized(neg_events, neg_lambda)
-	return np.clip(pos_scores - (resistance_coefficient * neg_scores), 0.0, 1.0)
+	interval_scores = _conditional_interval_scores(
+		scan_times,
+		pos_events,
+		dimension_weights,
+		pos_lambda,
+		sigmas,
+		extra_periods,
+	)
+	combined_pos_scores = np.sqrt(np.clip(pos_scores * interval_scores, 0.0, 1.0))
+	return np.clip(
+		combined_pos_scores - (resistance_coefficient * neg_scores),
+		0.0,
+		1.0,
+	)
