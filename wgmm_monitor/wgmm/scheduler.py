@@ -24,6 +24,8 @@ from wgmm_monitor.wgmm.learning import (
 )
 from wgmm_monitor.wgmm.scoring import batch_calculate_scores, calculate_point_score
 
+MIN_BURST_EVENTS = 20
+
 
 def scan_future_peak(
 	current_timestamp: int,
@@ -112,6 +114,28 @@ def scan_future_peak(
 				best_peak_time = float(scan_times[global_best_idx])
 
 	return best_peak_time, best_peak_score, scan_stats
+
+
+
+
+def compute_burst_adjustment(current_timestamp: int, positive_events: list[int]) -> float:
+	"""Compute burst-state adjustment factor based on recent publish intensity."""
+	if len(positive_events) < MIN_BURST_EVENTS:
+		return 1.0
+	recent_72h = sum(
+		1
+		for ts in positive_events
+		if current_timestamp - 72 * 3600 <= ts <= current_timestamp
+	)
+	recent_7d = sum(
+		1
+		for ts in positive_events
+		if current_timestamp - 7 * SECONDS_IN_DAY <= ts <= current_timestamp
+	)
+	baseline_daily = max(recent_7d / 7.0, 1e-6)
+	recent_daily = recent_72h / 3.0
+	ratio = recent_daily / baseline_daily
+	return float(np.clip(ratio, 0.6, 1.6))
 
 
 def decide_next_frequency(
@@ -253,6 +277,8 @@ def decide_next_frequency(
 	else:
 		relative_score = 0.5
 
+	burst_adjustment = compute_burst_adjustment(current_timestamp, positive_events)
+	relative_score = float(np.clip(relative_score / burst_adjustment, 0.0, 1.0))
 	exponential_score = relative_score**MAPPING_CURVE
 	check_interval = (
 		max_check_interval - (max_check_interval - min_check_interval) * exponential_score
