@@ -253,10 +253,10 @@ python monitor.py --wgmm-core-only
 
 ### `wgmm_monitor/wgmm/scoring.py`
 
-- `calculate_point_score()`：计算单个时间点得分。
-- `batch_calculate_scores()`：批量计算扫描窗口得分。
-
-得分由正向事件贡献减去负向事件惩罚，并裁剪到 `[0, 1]`。
+- `calculate_point_score()`：计算单个时间点得分；先求周期得分与条件间隔得分的几何均值，再减去负向惩罚，裁剪到 `[0, 1]`。
+- `batch_calculate_scores()`：批量计算扫描窗口得分，逻辑与单点版本相同，用 NumPy 广播实现。
+- `_conditional_interval_scores()`（私有）：以加权核密度估计（KDE）对 log 间隔建模，权重 = 历史起始状态与最近发布的周期相似度 × 时间衰减；数据不足时返回全 1。
+- `_cyclic_similarity_to_reference()`（私有）：计算历史事件与参考时间点的周期维度相似度，供条件间隔得分加权使用。
 
 ### `wgmm_monitor/wgmm/scheduler.py`
 

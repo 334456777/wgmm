@@ -372,7 +372,7 @@ python -m unittest discover -s tests           # 必须全绿
 **WGMM 纯算法层（`wgmm_monitor/wgmm/`）**
 - `scheduler.decide_next_frequency()`: WGMM 调频决策主函数
 - `scheduler.scan_future_peak()`: 未来 15 天峰值扫描
-- `scoring.calculate_point_score()` / `batch_calculate_scores()`: 单点 / 批量发布概率得分
+- `scoring.calculate_point_score()` / `batch_calculate_scores()`: 单点 / 批量发布概率得分（周期得分 × 条件间隔得分几何均值 − 负向惩罚）
 - `features.vectorized_time_features_numpy()`: 周期性时间特征提取
 - `features.get_raw_time_components()`: 离散时间维度（用于权重学习）
 - `learning.aggregate_publish_events()`: 把视频粒度时间戳折成 UP 主行为粒度（正向数据用，默认 600 秒阈值）
@@ -434,7 +434,7 @@ FrequencyService.adjust_check_frequency()
     ├── learning.sync_discovered_periods()   # 稳定 custom_N 索引
     ├── learning.learn_dimension_weights()   # 学习维度权重（含 custom_N）
     ├── learning.learn_adaptive_sigmas()     # 学习时间容忍度（含 custom_N）
-    ├── scoring.calculate_point_score()      # 当前时刻发布概率
+    ├── scoring.calculate_point_score()      # 当前时刻发布概率（周期得分与条件间隔得分几何均值）
     ├── scheduler.scan_future_peak()         # 扫描未来 15 天找峰值
     └── 映射得分 → 检查间隔 → FrequencyDecision
 ```

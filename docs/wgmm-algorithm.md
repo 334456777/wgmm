@@ -169,7 +169,9 @@ sigma 越小，匹配越严格；sigma 越大，匹配越宽松。
 
 ## 得分计算
 
-`calculate_point_score()` 计算一个时间点的得分。
+`calculate_point_score()` 计算一个时间点的得分，最终得分由**周期得分**与**条件间隔得分**共同决定。
+
+### 周期得分（pos_score / neg_score）
 
 对每个事件：
 
@@ -181,13 +183,27 @@ dimension_similarity = exp(-distance_sq / (2 * sigma^2))
 combined = sum(dimension_weight * dimension_similarity)
 ```
 
-正向得分提高检查概率，负向得分抑制检查概率：
+### 条件间隔得分（interval_score）
+
+`_conditional_interval_scores()` 预测「距上次发布已过去多久」的概率。
+
+1. 计算历史相邻发布事件的间隔序列。
+2. 用 `_cyclic_similarity_to_reference()` 计算每段间隔的起始状态与最近一次发布的周期相似度。
+3. 权重 = 状态相似度 × 时间衰减（exp(-lambda × 年龄(小时))）。
+4. 以 Silverman 规则自适应带宽，对 log 间隔做加权核密度估计（KDE）。
+5. 将目标时间点距上次发布的 elapsed 代入 KDE，归一化到 `[0, 1]`。
+
+### 最终得分合成
 
 ```text
-score = clip(pos_score - resistance_coefficient * neg_score, 0, 1)
+interval_score  = conditional_interval_score(target, pos_events, ...)
+combined_pos    = sqrt(pos_score * interval_score)   # 几何均值，两者均高才得高分
+score           = clip(combined_pos - resistance_coefficient * neg_score, 0, 1)
 ```
 
-`batch_calculate_scores()` 用 NumPy 广播一次性计算未来扫描窗口的多个时间点。
+几何均值确保「发布时段匹配」和「间隔时机匹配」两个条件必须同时满足，任一为 0 则最终为 0。历史数据不足（< 4 条正向事件）时 `interval_score` 回退为 1.0，退化为纯周期得分。
+
+`batch_calculate_scores()` 用 NumPy 广播一次性计算未来扫描窗口的多个时间点，逻辑与单点版本相同。
 
 ## 未来峰值扫描
 
