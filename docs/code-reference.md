@@ -175,7 +175,7 @@ python monitor.py --wgmm-core-only
 
 `BilibiliService` 封装 B站相关业务：
 
-- `check_potential_new_parts()`：第一层，多分片预检查。
+- `check_potential_new_parts(memory_urls, known_urls)`：第一层，多分片预检查。合并 `memory_urls`（Gist 状态）与 `known_urls`（本地状态）确定当前最高已知分片编号，再探测下一分片，避免 Gist 滞后时重复探测本地已知分片。
 - `quick_precheck()`：第二层，获取最新视频 ID，并同时检查 `memory_urls` 与 `known_urls`。
 - `fetch_video_list()`：第三层完整扫描入口。
 - `get_video_parts()`：获取单个视频的所有分片 URL。

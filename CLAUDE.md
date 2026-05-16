@@ -386,7 +386,7 @@ python -m unittest discover -s tests           # 必须全绿
 
 **业务服务层（`wgmm_monitor/services/`）**
 - `MonitorService.run_monitor()`: 主监控循环（三层检测 + 通知 + 调频）
-- `BilibiliService.check_potential_new_parts()`: 第一层 - 分片预检查
+- `BilibiliService.check_potential_new_parts(memory_urls, known_urls)`: 第一层 - 分片预检查；合并 Gist 状态与本地状态确定最高已知分片，避免 Gist 滞后导致重复探测
 - `BilibiliService.quick_precheck()`: 第二层 - 快速ID检查
 - `BilibiliService.fetch_video_list()` + `get_all_videos_parallel()`: 第三层 - 完整深度检查
 - `FrequencyService.adjust_check_frequency()`: 加载历史 → 过滤异常 → 剪枝 → 调用 scheduler
@@ -409,7 +409,7 @@ python -m unittest discover -s tests           # 必须全绿
 ```
 MonitorService.run_monitor()
 ├── sync_urls_from_gist()                    # 从 GitHub Gist 同步已备份 URL
-├── BilibiliService.check_potential_new_parts()  # 第一层：分片预检查
+├── BilibiliService.check_potential_new_parts(memory_urls, known_urls)  # 第一层：分片预检查（合并本地与Gist状态）
 ├── BilibiliService.quick_precheck()         # 第二层：快速 ID 检查
 │   └── 任一层有变化 → 触发完整检查
 ├── BilibiliService.fetch_video_list()       # 第三层：完整深度扫描
