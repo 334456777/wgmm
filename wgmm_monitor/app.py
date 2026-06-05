@@ -10,6 +10,7 @@ from pathlib import Path
 from types import FrameType
 
 from wgmm_monitor.clients.bark import BarkClient
+from wgmm_monitor.clients.bilibili_api import BilibiliApiClient
 from wgmm_monitor.clients.gist import GistClient
 from wgmm_monitor.clients.ytdlp import YtDlpClient
 from wgmm_monitor.config import load_app_config
@@ -73,9 +74,11 @@ class Application:
 			dev_mode=dev_mode,
 		)
 		self.ytdlp_client = YtDlpClient(self.logger)
+		self.bilibili_api_client = BilibiliApiClient(self.logger)
 		self.bilibili = BilibiliService(
 			self.config,
 			self.ytdlp_client,
+			self.bilibili_api_client,
 			self.paths.cookies_file,
 			self.logger,
 		)

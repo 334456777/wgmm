@@ -88,7 +88,8 @@ wgmm/
 │   ├── clients/
 │   │   ├── bark.py               # Bark HTTP client
 │   │   ├── gist.py               # GitHub Gist API client
-│   │   └── ytdlp.py              # yt-dlp subprocess wrapper
+│   │   ├── ytdlp.py              # yt-dlp subprocess wrapper
+│   │   └── bilibili_api.py       # Bilibili view API client (real ctime)
 │   ├── services/
 │   │   ├── monitor.py            # Main three-layer monitoring flow
 │   │   ├── bilibili.py           # Bilibili and yt-dlp operations
@@ -152,7 +153,7 @@ The monitor flow is implemented in `wgmm_monitor/services/monitor.py`:
 2. Run multi-part precheck.
 3. Run latest-video ID precheck.
 4. If either precheck finds a change, fetch and expand the full video list.
-5. Save real upload timestamps for new URLs.
+5. Save real upload timestamps for new URLs (via the Bilibili view API `ctime`, not the UP-spoofable `pubdate`).
 6. Notify through Bark and write `new.txt` to Gist.
 7. Ask WGMM for the next check time.
 

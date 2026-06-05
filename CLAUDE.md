@@ -62,7 +62,7 @@ sudo journalctl -u video-monitor -f
 - **`monitor.py`**: 6 行 CLI 入口壳，调用 `wgmm_monitor.cli.main`
 - **`wgmm_monitor/`**: 业务实现包（约 2800 行）
   - `cli.py`, `app.py`, `config.py`, `models.py`, `runtime_logger.py`
-  - `clients/` — Bark、Gist、yt-dlp 外部依赖
+  - `clients/` — Bark、Gist、yt-dlp、Bilibili view API 外部依赖
   - `services/` — bilibili、frequency、history、monitor、notification 业务服务
   - `stores/` — config、history、url 持久化
   - `wgmm/` — constants、features、learning、scheduler、scoring 纯算法层
@@ -390,8 +390,8 @@ python -m unittest discover -s tests           # 必须全绿
 - `BilibiliService.quick_precheck()`: 第二层 - 快速ID检查
 - `BilibiliService.fetch_video_list()` + `get_all_videos_parallel()`: 第三层 - 完整深度检查
 - `FrequencyService.adjust_check_frequency()`: 加载历史 → 过滤异常 → 剪枝 → 调用 scheduler
-- `HistoryService.generate_mtime_file()`: 通过 yt-dlp info.json 生成历史时间戳
-- `HistoryService.save_real_upload_timestamps()`: 保存新视频真实上传时间
+- `HistoryService.generate_mtime_file()`: 用 yt-dlp 枚举视频后经 view API 取真实 ctime 生成历史时间戳
+- `HistoryService.save_real_upload_timestamps()`: 经 view API 保存新视频真实投稿时间（ctime）
 - `NotificationService.notify_new_videos()` / `notify_error()` / `notify_critical_error()`: Bark 通知
 
 **持久化层（`wgmm_monitor/stores/`）**
@@ -403,6 +403,7 @@ python -m unittest discover -s tests           # 必须全绿
 - `BarkClient.send_push()`: Bark HTTP 推送
 - `GistClient.fetch_urls()` / `write_new_urls()`: GitHub Gist API
 - `YtDlpClient.run()`: yt-dlp 调用与耗时统计（`last_duration` / `normal_duration`）
+- `BilibiliApiClient.get_ctime()` / `get_part_ctimes()`: B站 view API 获取真实投稿时间 `ctime`（按 bvid 串行 + 缓存，避免封控）
 
 ### 主监控循环
 

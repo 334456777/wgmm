@@ -59,6 +59,7 @@ python monitor.py --wgmm-core-only
 - `BarkClient`
 - `GistClient`
 - `YtDlpClient`
+- `BilibiliApiClient`
 - `ConfigStore`
 - `UrlStore`
 - `HistoryStore`
@@ -114,6 +115,14 @@ python monitor.py --wgmm-core-only
 ### `wgmm_monitor/clients/bark.py`
 
 `BarkClient` 构造 Bark URL 并发送 GET 请求。通知语义不在 client 层处理，由 `NotificationService` 决定。
+
+### `wgmm_monitor/clients/bilibili_api.py`
+
+`BilibiliApiClient` 封装 B站 view API（`/x/web-interface/view`），获取视频**真实投稿时间** `ctime`：
+
+- `extract_bvid()`：从 URL 或 yt-dlp id 中提取 BV 号（模块级纯函数）。
+- `fetch_view()`：按 bvid **缓存**（含失败的 `None`），**串行**请求 API（两次实际请求间留 `REQUEST_INTERVAL` 间隔，避免封控），同一 BV 的多 P 只请求一次。
+- `get_ctime()` / `get_part_ctimes()`：单 P 用 `data.ctime`，多 P 按 `page` 匹配 `data.pages[].ctime`。
 
 ## 本地存储
 
@@ -180,7 +189,8 @@ python monitor.py --wgmm-core-only
 - `fetch_video_list()`：第三层完整扫描入口。
 - `get_video_parts()`：获取单个视频的所有分片 URL。
 - `get_all_videos_parallel()`：最多 5 个线程并行展开分片。
-- `get_video_upload_time()`：获取真实上传时间，优先 `timestamp`，降级 `upload_date`。
+- `get_video_upload_time()`：通过 B站 view API 获取真实投稿时间 `ctime`（单 P 用 `data.ctime`，多 P 按 `page` 匹配 `data.pages[].ctime`）。注意 yt-dlp 的 `timestamp`/`upload_date` 对应可被 UP 主伪造的 `pubdate`，不作为训练数据。
+- `get_bvid_part_ctimes()`：透传 view API，返回某 BV 全部分 P 的真实 ctime（供批量重建使用）。
 
 ### `wgmm_monitor/services/history.py`
 
@@ -188,7 +198,7 @@ python monitor.py --wgmm-core-only
 
 - `save_real_upload_timestamps()`：为真正新 URL 获取真实上传时间。获取失败时跳过，不使用当前时间伪造。
 - `generate_mtime_file()`：保证 `mtime.txt` 可用，最多尝试 3 次。
-- `create_mtime_from_info_json()`：通过 `yt-dlp --write-info-json` 批量提取上传时间。
+- `create_mtime_from_info_json()`：用 `yt-dlp --write-info-json` 枚举该 UP 主全部视频，再按 bvid **串行**调用 view API 取真实 ctime（不再使用 info.json 中可伪造的 pubdate）。
 
 ### `wgmm_monitor/services/frequency.py`
 

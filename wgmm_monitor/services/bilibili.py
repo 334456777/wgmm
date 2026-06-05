@@ -2,13 +2,11 @@
 
 from __future__ import annotations
 
-import subprocess
 import urllib.parse
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import UTC
-from datetime import datetime as dt
 from pathlib import Path
 
+from wgmm_monitor.clients.bilibili_api import BilibiliApiClient, extract_bvid
 from wgmm_monitor.clients.ytdlp import YtDlpClient
 from wgmm_monitor.models import AppConfig, YtDlpResult
 from wgmm_monitor.runtime_logger import RuntimeLogger
@@ -21,12 +19,14 @@ class BilibiliService:
 		self,
 		config: AppConfig,
 		ytdlp_client: YtDlpClient,
+		api_client: BilibiliApiClient,
 		cookies_file: Path,
 		logger: RuntimeLogger,
 	) -> None:
 		"""初始化 B站检测所需依赖."""
 		self.config = config
 		self.ytdlp_client = ytdlp_client
+		self.api_client = api_client
 		self.cookies_file = cookies_file
 		self.logger = logger
 
@@ -176,38 +176,34 @@ class BilibiliService:
 		return all_parts
 
 	def get_video_upload_time(self, video_url: str) -> int | None:
-		"""获取视频真实上传时间戳."""
-		try:
-			result = self.run_yt_dlp(
-				[
-					"--cookies",
-					str(self.cookies_file),
-					"--print",
-					"%(timestamp)s|%(upload_date)s",
-					"--no-download",
-					video_url,
-				],
-				timeout=60,
-			)
-			if not result.success or not result.stdout:
-				self.logger.log_warning("获取视频上传时间失败")
-				return None
+		"""获取视频真实投稿时间戳.
 
-			parts = result.stdout.strip().split("|")
-			min_parts_for_date = 2
-			if len(parts) >= 1 and parts[0] and parts[0] != "NA":
-				try:
-					return int(parts[0])
-				except ValueError:
-					pass
-			if len(parts) >= min_parts_for_date and parts[1] and parts[1] != "NA":
-				try:
-					parsed_dt = dt.strptime(parts[1], "%Y%m%d").replace(tzinfo=UTC)
-					return int(parsed_dt.timestamp())
-				except ValueError:
-					pass
-			self.logger.log_warning("无法解析视频上传时间")
+		通过 B站 view API 取真实 ``ctime`` (而非可被伪造的 pubdate):
+		从 URL 解析 bvid 与分 P 编号, 单 P 用 ``data.ctime``, 多 P 按 ``page``
+		匹配 ``data.pages[].ctime``. 获取失败返回 ``None``, 上层会跳过不记录.
+
+		Args:
+			video_url: B站视频 URL, 可带 ``?p=N`` 分 P 参数.
+
+		Returns:
+			真实投稿时间戳 (Unix 秒), 解析或请求失败时返回 ``None``.
+		"""
+		bvid = extract_bvid(video_url)
+		if not bvid:
+			self.logger.log_warning(f"无法从 URL 解析 bvid: {video_url}")
 			return None
-		except (ValueError, subprocess.SubprocessError) as exc:
-			self.logger.log_warning(f"获取视频上传时间异常: {exc}")
-			return None
+
+		page = 1
+		parsed = urllib.parse.urlparse(video_url)
+		params = urllib.parse.parse_qs(parsed.query)
+		if "p" in params:
+			try:
+				page = int(params["p"][0])
+			except ValueError:
+				page = 1
+
+		return self.api_client.get_ctime(bvid, page)
+
+	def get_bvid_part_ctimes(self, bvid: str) -> list[int]:
+		"""获取某个 BV 的全部真实投稿时间戳 (供批量重建使用)."""
+		return self.api_client.get_part_ctimes(bvid)

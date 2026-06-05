@@ -6,9 +6,8 @@ import json
 import shutil
 import subprocess
 from contextlib import suppress
-from datetime import UTC
-from datetime import datetime as dt
 
+from wgmm_monitor.clients.bilibili_api import extract_bvid
 from wgmm_monitor.models import AppConfig, RuntimePaths
 from wgmm_monitor.runtime_logger import RuntimeLogger
 from wgmm_monitor.services.bilibili import BilibiliService
@@ -82,31 +81,33 @@ class HistoryService:
 				self.logger.log_warning("获取元信息失败")
 				return False
 
-			timestamp_count = 0
-			collected_timestamps: list[int] = []
+			# 先从 info.json 收集去重后的 bvid, 再按 bvid 串行调 view API 取真实 ctime.
+			# info.json 的 timestamp/upload_date 对应可被伪造的 pubdate, 不能直接使用.
+			bvids: list[str] = []
+			seen_bvids: set[str] = set()
 			for info_file in temp_info_dir.glob("*.info.json"):
 				try:
 					with info_file.open(encoding="utf-8") as f:
 						info_data = json.load(f)
 
-					upload_timestamp = None
-					if info_data.get("timestamp"):
-						upload_timestamp = int(info_data["timestamp"])
-					elif info_data.get("upload_date"):
-						try:
-							parsed_dt = dt.strptime(
-								info_data["upload_date"],
-								"%Y%m%d",
-							).replace(tzinfo=UTC)
-							upload_timestamp = int(parsed_dt.timestamp())
-						except ValueError:
-							pass
-
-					if upload_timestamp and upload_timestamp > 0:
-						collected_timestamps.append(upload_timestamp)
-						timestamp_count += 1
+					bvid = extract_bvid(
+						info_data.get("id") or info_data.get("webpage_url", "")
+					)
+					if bvid and bvid not in seen_bvids:
+						seen_bvids.add(bvid)
+						bvids.append(bvid)
 				except (OSError, json.JSONDecodeError) as exc:
 					self.logger.log_warning(f"解析 info.json 文件失败: {info_file} - {exc}")
+
+			timestamp_count = 0
+			collected_timestamps: list[int] = []
+			for bvid in bvids:
+				ctimes = [ts for ts in self.bilibili.get_bvid_part_ctimes(bvid) if ts > 0]
+				if ctimes:
+					collected_timestamps.extend(ctimes)
+					timestamp_count += len(ctimes)
+				else:
+					self.logger.log_warning(f"跳过时间戳采集(view API 失败): {bvid}")
 
 			if collected_timestamps:
 				with temp_timestamps_file.open("w", encoding="utf-8") as tf:

@@ -223,12 +223,18 @@ HistoryService.generate_mtime_file(context)
 ```text
 yt-dlp --write-info-json --skip-download
     -> temp_info_json/*.info.json
-    -> parse timestamp or upload_date
+    -> extract_bvid()  从每个 info.json 收集去重 bvid
+    -> for each bvid (串行):
+        -> BilibiliApiClient.get_part_ctimes()  view API 取真实 ctime
+           (单 P: data.ctime; 多 P: data.pages[].ctime)
     -> write temp_timestamps.txt
     -> sort with system sort when available
     -> write data/mtime.txt
     -> cleanup temp files
 ```
+
+> 注意：info.json 中的 `timestamp`/`upload_date` 对应可被 UP 主伪造的 `pubdate`，
+> 因此仅用 info.json 枚举视频，真实投稿时间统一通过 view API 的 `ctime` 获取。
 
 ## 通知流程
 

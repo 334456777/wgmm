@@ -80,12 +80,13 @@ wgmm/
 │   ├── clients/
 │   │   ├── bark.py               # Bark HTTP 客户端
 │   │   ├── gist.py               # GitHub Gist API 客户端
-│   │   └── ytdlp.py              # yt-dlp 子进程封装
+│   │   ├── ytdlp.py              # yt-dlp 子进程封装
+│   │   └── bilibili_api.py       # B站 view API 客户端（真实 ctime）
 │   ├── services/
 │   │   ├── monitor.py            # 三层检测主流程
 │   │   ├── bilibili.py           # B站和 yt-dlp 业务
 │   │   ├── frequency.py          # WGMM 调频编排
-│   │   ├── history.py            # 上传时间戳生成与维护
+│   │   ├── history.py            # 投稿时间戳生成与维护（view API 取真实 ctime）
 │   │   └── notification.py       # 通知内容封装
 │   ├── stores/
 │   │   ├── config_store.py       # data/wgmm_config.json
@@ -143,7 +144,7 @@ GitHub Gist urls.txt
 2. 执行多分片预检查。
 3. 执行最新视频 ID 快速检查。
 4. 任一预检查发现变化时，抓取完整视频列表并展开分片。
-5. 为真正新增 URL 保存真实上传时间戳。
+5. 为真正新增 URL 保存真实投稿时间戳（通过 B站 view API 的 `ctime`，而非可被 UP 主伪造的 `pubdate`）。
 6. 发送 Bark 推送并写入 Gist `new.txt`。
 7. 调用 WGMM 计算下一次检查时间。
 
