@@ -49,7 +49,6 @@ def scan_future_peak(
 	best_peak_score = 0.0
 	scan_stats: dict[str, float] = {}
 	score_mean = 0.0
-	score_std = 0.0
 
 	score_threshold = 0.5
 	if lookahead_end > scan_start:
@@ -74,7 +73,6 @@ def scan_future_peak(
 
 		if len(scan_scores) > 0:
 			score_mean = float(np.mean(scan_scores))
-			score_std = float(np.std(scan_scores))
 			scan_stats = {
 				"min": float(np.min(scan_scores)),
 				"max": float(np.max(scan_scores)),
@@ -86,25 +84,19 @@ def scan_future_peak(
 		elif len(scan_scores) > 1:
 			gradients = np.diff(scan_scores)
 			raw_peaks_mask = (gradients[:-1] > 0) & (gradients[1:] < 0)
-			peak_score_threshold = score_mean + 1.5 * score_std
-			gradient_threshold = 0.05
-			filtered_mask = raw_peaks_mask.copy()
-			for i in range(len(filtered_mask)):
-				if filtered_mask[i]:
-					scan_idx = i + 1
-					score_condition = scan_scores[scan_idx] > peak_score_threshold
-					gradient_condition = abs(gradients[i]) < gradient_threshold
-					filtered_mask[i] = score_condition and gradient_condition
+			raw_peak_indices = np.where(raw_peaks_mask)[0] + 1
 
-			peak_indices = np.where(filtered_mask)[0] + 1
-			if len(peak_indices) == 0:
-				peak_indices = np.where(raw_peaks_mask)[0] + 1
-
-			if len(peak_indices) > 0:
-				peak_scores = scan_scores[peak_indices]
-				best_idx_in_peaks = np.argmax(peak_scores)
-				best_peak_idx = int(peak_indices[best_idx_in_peaks])
-				best_peak_score = float(peak_scores[best_idx_in_peaks])
+			if len(raw_peak_indices) > 0:
+				# 下一次发布 = 视野内"首个显著峰"(得分 > 扫描均值), 而非全局最高峰:
+				# 全局众数在多模态周期信号上系统性偏远, 不是"下一到达时间"
+				# 应有的数学对象. 无显著峰则退回得分最高的 raw peak.
+				peak_scores = scan_scores[raw_peak_indices]
+				significant = raw_peak_indices[peak_scores > score_mean]
+				if len(significant) > 0:
+					best_peak_idx = int(significant[0])
+				else:
+					best_peak_idx = int(raw_peak_indices[np.argmax(peak_scores)])
+				best_peak_score = float(scan_scores[best_peak_idx])
 				best_peak_time = float(scan_times[best_peak_idx])
 			else:
 				global_best_idx = int(np.argmax(scan_scores))
