@@ -138,6 +138,7 @@ sudo journalctl -u video-monitor -f
 - **`docs/adr/003-avoid-large-refactoring.md`**: 不进行大型代码重构（已被 ADR 005 取代）
 - **`docs/adr/004-fix-cascade-false-detection.md`**: 修复级联误检测故障
 - **`docs/adr/005-adopt-modular-monolith.md`**: 采用模块化单体结构（反转 ADR 003 的禁止规则）
+- **`docs/adr/006-wgmm-first-peak-decode.md`**: WGMM 首峰解码改进（scan_future_peak 全局峰值 → 首个显著峰，MAE −57%）
 
 ### 文档使用建议
 
