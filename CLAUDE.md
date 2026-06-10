@@ -59,8 +59,8 @@ sudo journalctl -u video-monitor -f
 
 ### 核心文件
 
-- **`monitor.py`**: 6 行 CLI 入口壳，调用 `wgmm_monitor.cli.main`
-- **`wgmm_monitor/`**: 业务实现包（约 2800 行）
+- **`monitor.py`**: 极薄 CLI 入口壳，调用 `wgmm_monitor.cli.main`
+- **`wgmm_monitor/`**: 业务实现包（约 3000 行）
   - `cli.py`, `app.py`, `config.py`, `models.py`, `runtime_logger.py`
   - `clients/` — Bark、Gist、yt-dlp、Bilibili view API 外部依赖
   - `services/` — bilibili、frequency、history、monitor、notification 业务服务
@@ -123,7 +123,7 @@ sudo journalctl -u video-monitor -f
   - 算法适用边界与固有局限
   - 普适性结论
 
-- **`docs/code-logic-flow.md`**: 系统架构流程
+- **`docs/code_logic_flow.md`**: 系统架构流程
   - 主监控循环
   - 三层检测架构
   - 数据流向
@@ -150,7 +150,7 @@ sudo journalctl -u video-monitor -f
 
 **深入理解**:
 3. 阅读 `docs/wgmm-algorithm.md` 理解算法原理
-4. 阅读 `docs/code-logic-flow.md` 理解系统架构
+4. 阅读 `docs/code_logic_flow.md` 理解系统架构
 5. 参考 `docs/code-reference.md` 查阅具体代码
 
 **架构变更**:

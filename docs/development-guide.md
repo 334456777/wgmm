@@ -299,6 +299,7 @@ source .venv/bin/activate
 ruff check monitor.py wgmm_monitor tests
 ruff format --check monitor.py wgmm_monitor tests
 python -m unittest discover -s tests
+python -m coverage run -m unittest discover -s tests && python -m coverage report
 git status
 git diff
 git add <files>

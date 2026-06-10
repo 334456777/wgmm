@@ -270,7 +270,7 @@ python monitor.py --wgmm-core-only
 
 ### `wgmm_monitor/wgmm/scheduler.py`
 
-- `scan_future_peak()`：扫描未来 `LOOKAHEAD_DAYS` 天并寻找峰值。
+- `scan_future_peak()`：扫描未来 `LOOKAHEAD_DAYS` 天，取**首个得分高于扫描均值的局部峰**作为"下一次发布"预估（首峰解码，ADR 006）；无显著峰时退回最高 raw peak，再退回全局最高分。
 - `decide_next_frequency()`：完整调频决策。
 
 决策步骤：
@@ -284,6 +284,18 @@ python monitor.py --wgmm-core-only
 7. 如果峰值足够强，根据 `yt-dlp` 正常耗时提前检查。
 8. 当最近 `yt-dlp` 耗时异常增大时加入阻抗因子。
 9. 更新 `WgmmConfig` 并返回 `FrequencyDecision`。
+
+## 工具函数
+
+### `wgmm_monitor/utils/files.py`
+
+- `limit_file_lines()`：限制文本文件最大行数，可保留文件头部若干行（供日志和历史文件复用）。
+
+### `wgmm_monitor/utils/time.py`
+
+- `get_jst_datetime_str()`：日志时间字符串（JST 时区）。
+- `get_local_timezone_offset()`：本地时区偏移秒数，`day`/`week` 特征依赖它。
+- `format_frequency_interval()`：把秒数格式化为"X 天 X 小时 X 分钟 X 秒"。
 
 ## 日志与错误
 
@@ -346,6 +358,7 @@ source .venv/bin/activate
 ruff check monitor.py wgmm_monitor tests
 ruff format --check monitor.py wgmm_monitor tests
 python -m unittest discover -s tests
+python -m coverage run -m unittest discover -s tests && python -m coverage report
 python monitor.py --wgmm-core-only
 python monitor.py --dev
 ```

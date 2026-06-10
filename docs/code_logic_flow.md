@@ -164,7 +164,9 @@ FrequencyService.adjust_check_frequency()
     -> filter_outliers(negative_events)
 
     -> if positive event count >= PRUNE_THRESHOLD:
-        -> HistoryStore.prune_old_data() for positive and negative files
+        -> HistoryStore.prune_old_data() for the positive file
+    -> if negative event count >= PRUNE_THRESHOLD:
+        -> HistoryStore.prune_old_data() for the negative file
 
     -> decide_next_frequency(...)
 
@@ -196,8 +198,9 @@ decide_next_frequency()
     -> calculate_point_score()
     -> scan_future_peak()
         -> batch_calculate_scores()
-        -> detect local peaks
-        -> fallback to global best when needed
+        -> detect raw local peaks
+        -> pick the first peak above the scan mean (ADR 006 first-peak decode)
+        -> fallback to best raw peak, then to global best
     -> map relative current score to interval
     -> optionally advance strong peak by observed yt-dlp duration
     -> apply yt-dlp impedance when recent duration is abnormal
@@ -320,6 +323,7 @@ source .venv/bin/activate
 ruff check monitor.py wgmm_monitor tests
 ruff format --check monitor.py wgmm_monitor tests
 python -m unittest discover -s tests
+python -m coverage run -m unittest discover -s tests && python -m coverage report
 python monitor.py --wgmm-core-only
 python monitor.py --dev
 ```

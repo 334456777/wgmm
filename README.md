@@ -107,9 +107,12 @@ wgmm/
 │   │   ├── scheduler.py          # Next-frequency decision
 │   │   └── scoring.py            # Point and batch score calculation
 │   └── utils/
-├── tests/                        # unittest coverage for stores/services/WGMM
+│       ├── files.py              # Line-limited file rewriting
+│       └── time.py               # Timezone offset and interval formatting
+├── tests/                        # unittest suite (96% coverage, no network/subprocess)
 ├── docs/
-├── requirements.txt
+├── requirements.txt              # Runtime dependencies
+├── requirements-dev.txt          # Dev tools: ruff + coverage
 ├── pyproject.toml
 └── video-monitor.service
 ```
@@ -166,7 +169,8 @@ The pure algorithm layer is under `wgmm_monitor/wgmm/`.
 - `learning.py` filters outliers, learns adaptive lambda/sigma/weights, and
   discovers non-calendar periods with autocorrelation when enough data exists.
 - `scoring.py` computes positive and negative weighted Gaussian scores.
-- `scheduler.py` scans the next 15 days, maps relative score to an interval,
+- `scheduler.py` scans the next 15 days, picks the first significant peak as
+  the next-publish estimate (ADR 006), maps relative score to an interval,
   applies peak advance based on observed `yt-dlp` duration, and updates
   `WgmmConfig`.
 
@@ -177,10 +181,12 @@ See [docs/wgmm-algorithm.md](docs/wgmm-algorithm.md) and
 
 ```bash
 source .venv/bin/activate
+pip install -r requirements-dev.txt  # dev tools: ruff + coverage
 
 ruff check monitor.py wgmm_monitor tests
 ruff format monitor.py wgmm_monitor tests
 python -m unittest discover -s tests
+python -m coverage run -m unittest discover -s tests && python -m coverage report
 python monitor.py --wgmm-core-only
 python monitor.py --dev
 ```
@@ -229,9 +235,13 @@ Common cases:
 - [docs/wgmm-config-params.md](docs/wgmm-config-params.md): config fields
 - [docs/wgmm-universality-analysis.md](docs/wgmm-universality-analysis.md):
   algorithm applicability analysis
+- [docs/adr/001-keep-python-implementation.md](docs/adr/001-keep-python-implementation.md)
 - [docs/adr/002-do-not-adopt-x-algorithm-techniques.md](docs/adr/002-do-not-adopt-x-algorithm-techniques.md)
 - [docs/adr/003-avoid-large-refactoring.md](docs/adr/003-avoid-large-refactoring.md)
 - [docs/adr/004-fix-cascade-false-detection.md](docs/adr/004-fix-cascade-false-detection.md)
+- [docs/adr/005-adopt-modular-monolith.md](docs/adr/005-adopt-modular-monolith.md)
+- [docs/adr/006-wgmm-first-peak-decode.md](docs/adr/006-wgmm-first-peak-decode.md)
+- [docs/adr/007-keep-wgmm-structure-unchanged.md](docs/adr/007-keep-wgmm-structure-unchanged.md)
 
 ## Security
 

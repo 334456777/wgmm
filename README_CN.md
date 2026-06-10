@@ -99,9 +99,12 @@ wgmm/
 │   │   ├── scheduler.py          # 下一次检查时间决策
 │   │   └── scoring.py            # 单点和批量得分
 │   └── utils/
-├── tests/                        # unittest 测试
+│       ├── files.py              # 限行重写工具
+│       └── time.py               # 时区偏移与间隔格式化
+├── tests/                        # unittest 测试（覆盖率 96%，不触网、不开真实子进程）
 ├── docs/
-├── requirements.txt
+├── requirements.txt              # 运行时依赖
+├── requirements-dev.txt          # 开发工具: ruff + coverage
 ├── pyproject.toml
 └── video-monitor.service
 ```
@@ -155,7 +158,7 @@ GitHub Gist urls.txt
 - `features.py`：用 sin/cos 编码日、周、月内周、年内月，以及可选 `custom_N` 周期。
 - `learning.py`：异常值过滤、自适应 lambda/sigma/权重学习、自相关周期发现。
 - `scoring.py`：正向和负向事件的加权高斯得分。
-- `scheduler.py`：扫描未来 15 天，将相对得分映射为检查间隔，并根据 `yt-dlp` 实际耗时提前峰值检查。
+- `scheduler.py`：扫描未来 15 天，取首个显著峰作为下一次发布预估（ADR 006），将相对得分映射为检查间隔，并根据 `yt-dlp` 实际耗时提前峰值检查。
 
 详见 [docs/wgmm-algorithm.md](docs/wgmm-algorithm.md) 和 [docs/wgmm-config-params.md](docs/wgmm-config-params.md)。
 
@@ -163,10 +166,12 @@ GitHub Gist urls.txt
 
 ```bash
 source .venv/bin/activate
+pip install -r requirements-dev.txt  # 开发工具: ruff + coverage
 
 ruff check monitor.py wgmm_monitor tests
 ruff format monitor.py wgmm_monitor tests
 python -m unittest discover -s tests
+python -m coverage run -m unittest discover -s tests && python -m coverage report
 python monitor.py --wgmm-core-only
 python monitor.py --dev
 ```
@@ -206,9 +211,13 @@ sudo journalctl -u video-monitor -n 100
 - [docs/wgmm-algorithm.md](docs/wgmm-algorithm.md)：算法说明
 - [docs/wgmm-config-params.md](docs/wgmm-config-params.md)：配置字段说明
 - [docs/wgmm-universality-analysis.md](docs/wgmm-universality-analysis.md)：普适性分析
+- [docs/adr/001-keep-python-implementation.md](docs/adr/001-keep-python-implementation.md)
 - [docs/adr/002-do-not-adopt-x-algorithm-techniques.md](docs/adr/002-do-not-adopt-x-algorithm-techniques.md)
 - [docs/adr/003-avoid-large-refactoring.md](docs/adr/003-avoid-large-refactoring.md)
 - [docs/adr/004-fix-cascade-false-detection.md](docs/adr/004-fix-cascade-false-detection.md)
+- [docs/adr/005-adopt-modular-monolith.md](docs/adr/005-adopt-modular-monolith.md)
+- [docs/adr/006-wgmm-first-peak-decode.md](docs/adr/006-wgmm-first-peak-decode.md)
+- [docs/adr/007-keep-wgmm-structure-unchanged.md](docs/adr/007-keep-wgmm-structure-unchanged.md)
 
 ## 安全
 

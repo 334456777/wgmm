@@ -17,6 +17,7 @@ WGMM 的核心价值是监控效率，而不是构建通用预测平台。
 
 ```bash
 source .venv/bin/activate
+pip install -r requirements-dev.txt  # 开发工具: ruff + coverage
 pip list
 which yt-dlp
 yt-dlp --version
@@ -66,9 +67,17 @@ python -m unittest discover -s tests
 根据改动范围补充测试：
 
 - WGMM 纯算法：优先测试 `wgmm_monitor/wgmm/learning.py`、`scheduler.py`、`scoring.py`。
-- 本地持久化：测试 `wgmm_monitor/stores/`。
+- 本地持久化：测试 `wgmm_monitor/stores/`（含 OSError 容错路径）。
 - 主监控流程：用 fake client/service 测试 `wgmm_monitor/services/monitor.py` 分支。
-- CLI 或装配逻辑：尽量保持薄层，必要时测试参数和模式分发。
+- 外部客户端：mock `requests`/`subprocess` 测试 Bark/Gist/yt-dlp 的参数组装与异常路径。
+- CLI 或装配逻辑：尽量保持薄层，测试参数分发与启动校验。
+
+覆盖率基线整体 ≥ 90%，新增代码应附带测试：
+
+```bash
+python -m coverage run -m unittest discover -s tests
+python -m coverage report --show-missing
+```
 
 冒烟测试顺序：
 
@@ -128,6 +137,7 @@ source .venv/bin/activate
 ruff check monitor.py wgmm_monitor tests
 ruff format --check monitor.py wgmm_monitor tests
 python -m unittest discover -s tests
+python -m coverage run -m unittest discover -s tests && python -m coverage report
 git status
 git diff
 ```
