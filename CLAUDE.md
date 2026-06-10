@@ -139,6 +139,7 @@ sudo journalctl -u video-monitor -f
 - **`docs/adr/004-fix-cascade-false-detection.md`**: 修复级联误检测故障
 - **`docs/adr/005-adopt-modular-monolith.md`**: 采用模块化单体结构（反转 ADR 003 的禁止规则）
 - **`docs/adr/006-wgmm-first-peak-decode.md`**: WGMM 首峰解码改进（scan_future_peak 全局峰值 → 首个显著峰，MAE −57%）
+- **`docs/adr/007-keep-wgmm-structure-unchanged.md`**: 维持 WGMM 结构现状（第二轮改进研究：baseline 已贴住无条件 L1 下界，12 个候选机制全部无增益）
 
 ### 文档使用建议
 
