@@ -28,7 +28,8 @@ def load_env_file(env_path: str = "data/.env") -> None:
 					if key and not os.getenv(key):
 						os.environ[key] = value
 	except OSError as exc:
-		print(f"无法加载 .env 文件: {exc}", file=sys.stderr)
+		# 在 RuntimeLogger 创建之前运行, 只能直接写 stderr
+		print(f"无法加载 .env 文件: {exc}", file=sys.stderr)  # noqa: T201
 
 
 def load_app_config() -> AppConfig:

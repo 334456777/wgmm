@@ -13,7 +13,7 @@ class ConfigModelTest(unittest.TestCase):
 	def test_app_config_reports_missing_required_keys(self) -> None:
 		config = AppConfig(
 			gist_id="",
-			github_token="".join(["tok", "en"]),
+			github_token="token",
 			bilibili_uid="",
 			bark_device_key="key",
 			bark_app_title="title",

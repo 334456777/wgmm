@@ -4,17 +4,25 @@ line-length = 92
 
 [tool.ruff.lint]
 select = [
-	"E", "W", "F", "I", "UP", "B", "SIM", "N", "PTH", "BLE", "RUF", 
-	"C4", "PL", "PERF", "TRY", "DTZ", "S"
+	"E", "W", "F", "I", "UP", "B", "SIM", "N", "PTH", "BLE", "RUF",
+	"C4", "PL", "PERF", "TRY", "DTZ", "S",
+	"D", "T20", "ARG", "RET", "A", "PIE", "EM", "G", "LOG", "RSE",
+	"ICN", "FLY", "FURB", "SLF", "EXE",
 ]
 
 ignore = [
 	"W191", "D206", "D203", "D213", "COM812", "ISC001",
-	"D", "FBT", "PLR0912", "PLR0913", "PLR0915", "C901", "RET505", "S603", "TRY300"
+	"FBT", "PLR0912", "PLR0913", "PLR0915", "C901", "RET505", "S603", "TRY300"
 ]
 
+[tool.ruff.lint.per-file-ignores]
+# 测试中的 Fake 类与测试方法不强制 docstring; 白盒断言允许访问私有成员和测试凭据字面量
+"tests/*" = ["D1", "SLF001", "S105", "S106"]
+# RuntimeLogger 是系统指定的控制台输出出口
+"wgmm_monitor/runtime_logger.py" = ["T201"]
+
 [tool.ruff.lint.pydocstyle]
-convention = "google" 
+convention = "google"
 
 [tool.ruff.format]
 indent-style = "tab"

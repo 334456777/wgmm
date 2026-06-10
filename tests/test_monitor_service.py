@@ -170,7 +170,7 @@ def make_service(
 		notification or FakeNotificationService(),
 		logger,
 		dev_mode=dev_mode,
-		sleep_func=lambda seconds: None,
+		sleep_func=lambda _seconds: None,
 	)
 	return monitor, history, frequency
 

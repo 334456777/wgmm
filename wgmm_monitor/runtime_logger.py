@@ -137,4 +137,3 @@ class RuntimeLogger:
 		traceback: TracebackType | None,
 	) -> None:
 		"""退出上下文管理器."""
-		return None

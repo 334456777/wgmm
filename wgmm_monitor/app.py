@@ -37,7 +37,8 @@ class Application:
 
 		self.config = load_app_config()
 		if self.config.missing_required_keys():
-			print("缺少必要的环境变量", file=sys.stderr)
+			# 此时 RuntimeLogger 尚未装配, 只能直接写 stderr
+			print("缺少必要的环境变量", file=sys.stderr)  # noqa: T201
 			sys.exit(1)
 
 		self.logger = RuntimeLogger(

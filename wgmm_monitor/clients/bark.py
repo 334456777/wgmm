@@ -63,7 +63,8 @@ class BarkClient:
 			success = response.ok
 		except requests.RequestException as exc:
 			timestamp = get_jst_datetime_str()
-			print(f"{timestamp} - WARNING - Bark推送失败: {exc}")
+			# Bark 客户端是 RuntimeLogger 的通知出口, 反向调用 logger 会成环
+			print(f"{timestamp} - WARNING - Bark推送失败: {exc}")  # noqa: T201
 			success = False
 
 		return success

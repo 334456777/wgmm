@@ -13,4 +13,5 @@ __pycache__/
 /data/*
 !/data/.env.example
 /.claude
-/.ruff_cache
+/.ruff_cache/.coverage
+/htmlcov
