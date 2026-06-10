@@ -69,6 +69,7 @@ sudo journalctl -u video-monitor -f
   - `utils/` — files、time 工具
 - **`tests/`**: 单元测试（`python -m unittest discover -s tests`）
 - **`requirements.txt`**: Python 依赖包清单
+- **`requirements-dev.txt`**: 开发工具依赖（ruff、coverage）
 - **`pyproject.toml`**: Ruff 代码质量检查配置
 - **`video-monitor.service`**: systemd 系统服务配置
 - **`README.md`** / **`README_CN.md`**: 用户文档，包含算法原理、FAQ、使用指南
@@ -257,6 +258,9 @@ ruff format --check monitor.py wgmm_monitor tests  # 必须全部 already format
 
 # 2. 运行单元测试
 python -m unittest discover -s tests           # 全绿才提交
+
+# 2b. 覆盖率检查（推荐，新增代码应附带测试，整体基线 ≥ 90%）
+python -m coverage run -m unittest discover -s tests && python -m coverage report
 
 # 3. 查看修改
 git status

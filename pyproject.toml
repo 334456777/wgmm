@@ -28,3 +28,10 @@ convention = "google"
 indent-style = "tab"
 quote-style = "double"
 skip-magic-trailing-comma = false
+
+[tool.coverage.run]
+source = ["wgmm_monitor"]
+
+[tool.coverage.report]
+skip_empty = true
+precision = 1

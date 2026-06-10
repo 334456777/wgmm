@@ -6,6 +6,7 @@
 
 ```bash
 source .venv/bin/activate
+pip install -r requirements-dev.txt  # 开发工具: ruff + coverage
 
 python monitor.py
 python monitor.py --dev
@@ -15,6 +16,10 @@ ruff check monitor.py wgmm_monitor tests
 ruff format monitor.py wgmm_monitor tests
 ruff format --check monitor.py wgmm_monitor tests
 python -m unittest discover -s tests
+
+# 测试覆盖率 (配置见 pyproject.toml [tool.coverage])
+python -m coverage run -m unittest discover -s tests
+python -m coverage report
 ```
 
 模式说明：
@@ -79,10 +84,23 @@ python -m unittest discover -s tests
 
 测试覆盖重点：
 
-- `wgmm_monitor/wgmm/`：算法输入输出、学习期、custom period、得分边界。
-- `wgmm_monitor/stores/`：缺失文件、dev mode、未知配置字段保留。
-- `wgmm_monitor/services/monitor.py`：预检查分支、Gist 失败、分片扩展失败、新 URL 通知。
-- `wgmm_monitor/config.py` 和 `models.py`：配置加载和必填项校验。
+- `wgmm_monitor/wgmm/`：算法输入输出、学习期、custom period、得分边界、峰值响应与阻抗分支。
+- `wgmm_monitor/stores/`：缺失文件、dev mode、未知配置字段保留、剪枝与 OSError 容错。
+- `wgmm_monitor/services/`：监控全分支、三层检测、历史重建（mock yt-dlp / view API）、调频编排、通知内容。
+- `wgmm_monitor/clients/`：Bark/Gist/yt-dlp 的参数组装与异常路径（mock requests / subprocess）。
+- `wgmm_monitor/config.py`、`cli.py`、`app.py`：配置加载、模式分发、装配与启动校验。
+
+测试约束：
+
+- 不触网、不调用真实子进程：requests/subprocess 一律 mock，外部系统用 Fake 类。
+- 文件操作全部落在 `tempfile.TemporaryDirectory` 内。
+- 整套测试应在 1 秒内完成。
+
+覆盖率基线：整体 ≥ 90%（当前约 96%）。新增代码应附带测试；查看缺失行：
+
+```bash
+python -m coverage report --show-missing
+```
 
 冒烟测试链：
 
