@@ -202,5 +202,164 @@ class UploadTimeTest(unittest.TestCase):
 			self.assertEqual(api.fetched_bvids, ["BV1dup"])
 
 
+class ScriptedYtDlpClient:
+	"""测试用 yt-dlp 客户端: 按调用顺序返回预设结果."""
+
+	def __init__(self, results: list[YtDlpResult]) -> None:
+		"""保存结果队列."""
+		self.results = list(results)
+		self.commands: list[list[str]] = []
+		self.last_duration = 0.0
+		self.normal_duration = 60.0
+
+	def run(self, command_args: list[str], timeout: int = 300) -> YtDlpResult:
+		"""依次弹出结果, 用尽后重复最后一个."""
+		_ = timeout
+		self.commands.append(list(command_args))
+		if len(self.results) > 1:
+			return self.results.pop(0)
+		return self.results[0]
+
+
+class QuickPrecheckTest(unittest.TestCase):
+	"""验证第二层快速 ID 检查."""
+
+	def test_empty_memory_urls_triggers_full_check(self) -> None:
+		with tempfile.TemporaryDirectory() as tmp:
+			client = ScriptedYtDlpClient([YtDlpResult(True, stdout="BV1x")])
+			service = make_service(client, Path(tmp))
+
+			self.assertTrue(service.quick_precheck([], set()))
+			self.assertEqual(client.commands, [])
+
+	def test_failed_listing_triggers_full_check(self) -> None:
+		with tempfile.TemporaryDirectory() as tmp:
+			client = ScriptedYtDlpClient([YtDlpResult(False)])
+			service = make_service(client, Path(tmp))
+
+			self.assertTrue(service.quick_precheck(["https://x/BV1old"], set()))
+
+	def test_known_latest_id_means_no_update(self) -> None:
+		with tempfile.TemporaryDirectory() as tmp:
+			client = ScriptedYtDlpClient([YtDlpResult(True, stdout="BV1old")])
+			service = make_service(client, Path(tmp))
+
+			found = service.quick_precheck(
+				["https://x/BV1old"],
+				{"https://x/BV1known"},
+			)
+
+			self.assertFalse(found)
+
+	def test_unknown_latest_id_means_update(self) -> None:
+		with tempfile.TemporaryDirectory() as tmp:
+			client = ScriptedYtDlpClient([YtDlpResult(True, stdout="BV1brand")])
+			service = make_service(client, Path(tmp))
+
+			self.assertTrue(service.quick_precheck(["https://x/BV1old"], set()))
+
+
+class PartPrecheckEdgeTest(unittest.TestCase):
+	"""验证第一层分片预检查的边界分支."""
+
+	def test_empty_known_urls_skips(self) -> None:
+		with tempfile.TemporaryDirectory() as tmp:
+			service = make_service(FakeYtDlpClient(set()), Path(tmp))
+
+			self.assertFalse(service.check_potential_new_parts([], set()))
+
+	def test_urls_without_part_param_are_ignored(self) -> None:
+		with tempfile.TemporaryDirectory() as tmp:
+			client = FakeYtDlpClient(set())
+			service = make_service(client, Path(tmp))
+
+			found = service.check_potential_new_parts(
+				["https://x/BV1plain", "https://x/BV1bad?p=abc"],
+				set(),
+			)
+
+			self.assertFalse(found)
+			self.assertEqual(client.probed_urls, [])
+
+	def test_part_one_only_is_not_probed(self) -> None:
+		with tempfile.TemporaryDirectory() as tmp:
+			client = FakeYtDlpClient(set())
+			service = make_service(client, Path(tmp))
+
+			found = service.check_potential_new_parts(["https://x/BV1a?p=1"], set())
+
+			self.assertFalse(found)
+			self.assertEqual(client.probed_urls, [])
+
+	def test_consecutive_new_parts_are_expanded(self) -> None:
+		with tempfile.TemporaryDirectory() as tmp:
+			base = "https://x/BV1a"
+			client = FakeYtDlpClient({f"{base}?p=3", f"{base}?p=4"})
+			service = make_service(client, Path(tmp))
+
+			found = service.check_potential_new_parts([f"{base}?p=2"], set())
+
+			self.assertTrue(found)
+			self.assertEqual(
+				client.probed_urls,
+				[f"{base}?p=3", f"{base}?p=4", f"{base}?p=5"],
+			)
+
+
+class FetchAndExpandTest(unittest.TestCase):
+	"""验证完整扫描与分片展开."""
+
+	def test_fetch_video_list_passes_uid(self) -> None:
+		with tempfile.TemporaryDirectory() as tmp:
+			client = ScriptedYtDlpClient([YtDlpResult(True, stdout="a\nb")])
+			service = make_service(client, Path(tmp))
+
+			result = service.fetch_video_list()
+
+			self.assertTrue(result.success)
+			self.assertIn("https://space.bilibili.com/1/video", client.commands[0])
+
+	def test_get_video_parts_splits_lines(self) -> None:
+		with tempfile.TemporaryDirectory() as tmp:
+			client = ScriptedYtDlpClient(
+				[YtDlpResult(True, stdout="https://x/p1\n\nhttps://x/p2\n")]
+			)
+			service = make_service(client, Path(tmp))
+
+			self.assertEqual(
+				service.get_video_parts("https://x/BV1a"),
+				["https://x/p1", "https://x/p2"],
+			)
+
+	def test_get_video_parts_failure_returns_empty(self) -> None:
+		with tempfile.TemporaryDirectory() as tmp:
+			client = ScriptedYtDlpClient([YtDlpResult(False)])
+			service = make_service(client, Path(tmp))
+
+			self.assertEqual(service.get_video_parts("https://x/BV1a"), [])
+
+	def test_parallel_expansion_merges_parts(self) -> None:
+		with tempfile.TemporaryDirectory() as tmp:
+			client = ScriptedYtDlpClient([YtDlpResult(True, stdout="part")])
+			service = make_service(client, Path(tmp))
+
+			parts = service.get_all_videos_parallel(["u1", "u2", "u3"])
+
+			self.assertEqual(parts, ["part", "part", "part"])
+
+
+class UploadTimeEdgeTest(unittest.TestCase):
+	"""验证投稿时间获取的参数解析边界."""
+
+	def test_invalid_page_param_defaults_to_one(self) -> None:
+		with tempfile.TemporaryDirectory() as tmp:
+			api = FakeBilibiliApiClient({"BV1abc": {"ctime": 123, "pages": []}})
+			service = make_service(FakeYtDlpClient(set()), Path(tmp), api)
+
+			ts = service.get_video_upload_time("https://x/BV1abc?p=oops")
+
+			self.assertEqual(ts, 123)
+
+
 if __name__ == "__main__":
 	unittest.main()

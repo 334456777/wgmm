@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import contextlib
+import io
 import json
 import tempfile
 import unittest
@@ -79,6 +81,97 @@ class StoreTest(unittest.TestCase):
 			store = UrlStore(path, make_logger(root), dev_mode=False)
 
 			self.assertEqual(store.load(), {"a", "b"})
+
+	def test_url_store_load_initializes_missing_file(self) -> None:
+		with tempfile.TemporaryDirectory() as tmp:
+			root = Path(tmp)
+			path = root / "local_known.txt"
+			store = UrlStore(path, make_logger(root), dev_mode=False)
+
+			self.assertEqual(store.load(), set())
+			self.assertTrue(path.exists())
+
+	def test_config_store_corrupted_json_returns_defaults(self) -> None:
+		with tempfile.TemporaryDirectory() as tmp:
+			root = Path(tmp)
+			path = root / "wgmm_config.json"
+			path.write_text("{broken", encoding="utf-8")
+			store = ConfigStore(path, make_logger(root), dev_mode=False)
+
+			with contextlib.redirect_stdout(io.StringIO()):
+				config = store.load()
+
+			self.assertTrue(config.is_manual_run)
+
+	def test_config_store_load_creates_default_file(self) -> None:
+		with tempfile.TemporaryDirectory() as tmp:
+			root = Path(tmp)
+			path = root / "wgmm_config.json"
+			store = ConfigStore(path, make_logger(root), dev_mode=False)
+
+			store.load()
+
+			self.assertTrue(path.exists())
+
+	def test_ensure_manual_flag_sets_when_key_missing(self) -> None:
+		with tempfile.TemporaryDirectory() as tmp:
+			root = Path(tmp)
+			path = root / "wgmm_config.json"
+			path.write_text("{}", encoding="utf-8")
+			store = ConfigStore(path, make_logger(root), dev_mode=False)
+			config = WgmmConfig(is_manual_run=False)
+
+			with contextlib.redirect_stdout(io.StringIO()):
+				store.ensure_manual_flag(config)
+
+			self.assertTrue(config.is_manual_run)
+			self.assertIn("is_manual_run", path.read_text(encoding="utf-8"))
+
+	def test_ensure_manual_flag_noop_when_key_present(self) -> None:
+		with tempfile.TemporaryDirectory() as tmp:
+			root = Path(tmp)
+			path = root / "wgmm_config.json"
+			path.write_text('{"is_manual_run": false}', encoding="utf-8")
+			store = ConfigStore(path, make_logger(root), dev_mode=False)
+			config = WgmmConfig(is_manual_run=False)
+
+			store.ensure_manual_flag(config)
+
+			self.assertFalse(config.is_manual_run)
+
+	def test_url_store_load_oserror_returns_empty(self) -> None:
+		with tempfile.TemporaryDirectory() as tmp:
+			root = Path(tmp)
+			path = root / "local_known.txt"
+			path.mkdir()
+			store = UrlStore(path, make_logger(root), dev_mode=False)
+
+			with contextlib.redirect_stdout(io.StringIO()):
+				self.assertEqual(store.load(), set())
+
+	def test_url_store_save_oserror_is_reported(self) -> None:
+		with tempfile.TemporaryDirectory() as tmp:
+			root = Path(tmp)
+			path = root / "local_known.txt"
+			path.mkdir()
+			store = UrlStore(path, make_logger(root), dev_mode=False)
+			out = io.StringIO()
+			with contextlib.redirect_stdout(out):
+				store.save({"a"})
+
+			self.assertIn("保存本地已知 URL 失败", out.getvalue())
+
+	def test_ensure_manual_flag_missing_file_logs_first_run(self) -> None:
+		with tempfile.TemporaryDirectory() as tmp:
+			root = Path(tmp)
+			store = ConfigStore(
+				root / "wgmm_config.json", make_logger(root), dev_mode=False
+			)
+			out = io.StringIO()
+			with contextlib.redirect_stdout(out):
+				store.ensure_manual_flag(WgmmConfig())
+
+			self.assertIn("首次运行", out.getvalue())
 
 
 if __name__ == "__main__":

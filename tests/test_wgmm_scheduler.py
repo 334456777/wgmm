@@ -44,6 +44,57 @@ class WgmmSchedulerTest(unittest.TestCase):
 		self.assertIn("custom_0", decision.config.dimension_weights)
 		self.assertIn("custom_0", decision.config.sigmas)
 
+	def test_peak_response_advances_check_before_peak(self) -> None:
+		"""低相位时刻 + 临近显著峰: 检查应提前到峰前(扣除 yt-dlp 提前量)."""
+		day = 86400
+		base = 1700000000 - (1700000000 % day) + 12 * 3600
+		events = [base + i * day for i in range(30)]
+		now = events[-1] + day - 8 * 3600
+		config = WgmmConfig(is_manual_run=False)
+
+		decision = decide_next_frequency(
+			config,
+			events,
+			[],
+			now,
+			last_ytdlp_duration=30.0,
+			normal_ytdlp_duration=60.0,
+		)
+
+		# 下一峰在 +8h, 提前量取 max(last, normal)=60s
+		self.assertAlmostEqual(
+			decision.final_frequency_sec,
+			8 * 3600 - 60,
+			delta=3600,
+		)
+
+	def test_slow_ytdlp_applies_impedance_factor(self) -> None:
+		"""yt-dlp 耗时超过正常值 2 倍时, 轮询间隔按阻抗系数拉长."""
+		day = 86400
+		base = 1700000000 - (1700000000 % day) + 12 * 3600
+		events = [base + i * day for i in range(30)]
+		now = events[-1] + day - 1800
+		config = WgmmConfig(is_manual_run=False)
+
+		baseline = decide_next_frequency(
+			WgmmConfig(is_manual_run=False),
+			list(events),
+			[],
+			now,
+			last_ytdlp_duration=30.0,
+			normal_ytdlp_duration=60.0,
+		)
+		slowed = decide_next_frequency(
+			config,
+			list(events),
+			[],
+			now,
+			last_ytdlp_duration=200.0,
+			normal_ytdlp_duration=60.0,
+		)
+
+		self.assertGreater(slowed.final_frequency_sec, baseline.final_frequency_sec)
+
 
 if __name__ == "__main__":
 	unittest.main()

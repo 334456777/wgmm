@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -14,9 +15,15 @@ from wgmm_monitor.services.monitor import MonitorService
 class FakeGistClient:
 	"""测试用 Gist 客户端."""
 
-	def __init__(self, success: bool = True, urls: list[str] | None = None) -> None:
+	def __init__(
+		self,
+		success: bool = True,
+		urls: list[str] | None = None,
+		write_success: bool = True,
+	) -> None:
 		self.success = success
 		self.urls = urls or []
+		self.write_success = write_success
 		self.written: list[set[str]] = []
 
 	def fetch_urls(self) -> tuple[bool, list[str], str]:
@@ -26,6 +33,22 @@ class FakeGistClient:
 
 	def write_new_urls(self, urls: set[str]) -> tuple[bool, str]:
 		self.written.append(set(urls))
+		if self.write_success:
+			return True, ""
+		return False, "写入失败"
+
+
+class RaisingGistClient:
+	"""测试用 Gist 客户端: fetch 时抛出指定异常."""
+
+	def __init__(self, exc: BaseException) -> None:
+		self.exc = exc
+
+	def fetch_urls(self) -> tuple[bool, list[str], str]:
+		raise self.exc
+
+	def write_new_urls(self, urls: set[str]) -> tuple[bool, str]:
+		_ = urls
 		return True, ""
 
 
@@ -105,11 +128,12 @@ class FakeHistoryService:
 class FakeFrequencyService:
 	"""测试用调频服务."""
 
-	def __init__(self) -> None:
+	def __init__(self, next_check_time: int = 0) -> None:
 		self.calls: list[bool] = []
+		self.next_check_time = next_check_time
 
 	def get_next_check_time(self) -> int:
-		return 0
+		return self.next_check_time
 
 	def adjust_check_frequency(
 		self,
@@ -143,6 +167,7 @@ def make_service(
 	frequency: FakeFrequencyService | None = None,
 	notification: FakeNotificationService | None = None,
 	dev_mode: bool = False,
+	sleep_log: list[float] | None = None,
 ) -> tuple[MonitorService, FakeHistoryService, FakeFrequencyService]:
 	"""组装测试监控服务."""
 	paths = RuntimePaths(
@@ -170,7 +195,7 @@ def make_service(
 		notification or FakeNotificationService(),
 		logger,
 		dev_mode=dev_mode,
-		sleep_func=lambda _seconds: None,
+		sleep_func=(sleep_log.append if sleep_log is not None else lambda _seconds: None),
 	)
 	return monitor, history, frequency
 
@@ -315,6 +340,212 @@ class MonitorServiceTest(unittest.TestCase):
 			_monitor.run_monitor()
 
 			self.assertEqual(frequency.calls, [True])
+
+
+class MonitorBranchesTest(unittest.TestCase):
+	"""验证主流程的失败与确认分支."""
+
+	def test_full_scan_failure_after_retry_logs_critical(self) -> None:
+		with tempfile.TemporaryDirectory() as tmp:
+			bilibili = FakeBilibiliService(
+				found_videos=True,
+				fetch_results=[YtDlpResult(False, stderr="一直失败")],
+			)
+			monitor, _history, frequency = make_service(
+				Path(tmp),
+				FakeGistClient(urls=["old"]),
+				bilibili,
+				dev_mode=True,
+			)
+
+			monitor.run_monitor()
+
+			self.assertEqual(bilibili.fetch_count, 2)
+			self.assertEqual(frequency.calls, [False])
+
+	def test_whitespace_video_list_treated_as_empty(self) -> None:
+		with tempfile.TemporaryDirectory() as tmp:
+			bilibili = FakeBilibiliService(
+				found_videos=True,
+				fetch_results=[YtDlpResult(True, stdout="   ")],
+			)
+			monitor, _history, frequency = make_service(
+				Path(tmp),
+				FakeGistClient(urls=["old"]),
+				bilibili,
+				dev_mode=True,
+			)
+
+			monitor.run_monitor()
+
+			self.assertEqual(frequency.calls, [False])
+
+	def test_empty_part_expansion_skips_detection(self) -> None:
+		with tempfile.TemporaryDirectory() as tmp:
+			bilibili = FakeBilibiliService(
+				found_videos=True,
+				fetch_results=[YtDlpResult(True, stdout="base")],
+				all_parts=[],
+			)
+			monitor, _history, frequency = make_service(
+				Path(tmp),
+				FakeGistClient(urls=["old"]),
+				bilibili,
+			)
+
+			monitor.run_monitor()
+
+			self.assertEqual(frequency.calls, [False])
+
+	def test_quick_check_false_alarm_confirms_no_update(self) -> None:
+		with tempfile.TemporaryDirectory() as tmp:
+			bilibili = FakeBilibiliService(
+				found_videos=True,
+				fetch_results=[YtDlpResult(True, stdout="base")],
+				all_parts=["old"],
+			)
+			monitor, _history, frequency = make_service(
+				Path(tmp),
+				FakeGistClient(urls=["old"]),
+				bilibili,
+			)
+
+			monitor.run_monitor()
+
+			self.assertEqual(frequency.calls, [False])
+
+	def test_gist_write_failure_does_not_block_flow(self) -> None:
+		with tempfile.TemporaryDirectory() as tmp:
+			gist = FakeGistClient(urls=["old"], write_success=False)
+			bilibili = FakeBilibiliService(
+				found_videos=True,
+				fetch_results=[YtDlpResult(True, stdout="base")],
+				all_parts=["old", "new"],
+			)
+			monitor, history, frequency = make_service(Path(tmp), gist, bilibili)
+
+			monitor.run_monitor()
+
+			self.assertEqual(history.saved_urls, [{"new"}])
+			self.assertEqual(frequency.calls, [True])
+
+	def test_keyboard_interrupt_exits_cleanly(self) -> None:
+		with tempfile.TemporaryDirectory() as tmp:
+			monitor, _history, _frequency = make_service(
+				Path(tmp),
+				RaisingGistClient(KeyboardInterrupt()),  # type: ignore[arg-type]
+				FakeBilibiliService(),
+				dev_mode=True,
+			)
+
+			with self.assertRaises(SystemExit) as ctx:
+				monitor.run_monitor()
+
+			self.assertEqual(ctx.exception.code, 0)
+
+	def test_oserror_is_caught_and_reported(self) -> None:
+		with tempfile.TemporaryDirectory() as tmp:
+			monitor, _history, frequency = make_service(
+				Path(tmp),
+				RaisingGistClient(OSError("磁盘错误")),  # type: ignore[arg-type]
+				FakeBilibiliService(),
+				dev_mode=True,
+			)
+
+			monitor.run_monitor()
+
+			self.assertEqual(frequency.calls, [])
+
+
+class WaitForNextCheckTest(unittest.TestCase):
+	"""验证等待逻辑分支."""
+
+	def make_waiting_service(
+		self,
+		root: Path,
+		next_check_time: int,
+		dev_mode: bool = False,
+	) -> tuple[MonitorService, list[float]]:
+		"""组装带睡眠记录的监控服务."""
+		sleep_log: list[float] = []
+		frequency = FakeFrequencyService(next_check_time=next_check_time)
+		monitor, _history, _frequency = make_service(
+			root,
+			FakeGistClient(),
+			FakeBilibiliService(),
+			frequency=frequency,
+			dev_mode=dev_mode,
+			sleep_log=sleep_log,
+		)
+		return monitor, sleep_log
+
+	def test_zero_next_check_starts_immediately(self) -> None:
+		with tempfile.TemporaryDirectory() as tmp:
+			monitor, sleep_log = self.make_waiting_service(Path(tmp), 0)
+
+			monitor.wait_for_next_check()
+
+			self.assertEqual(sleep_log, [])
+
+	def test_past_due_returns_without_sleep(self) -> None:
+		with tempfile.TemporaryDirectory() as tmp:
+			monitor, sleep_log = self.make_waiting_service(Path(tmp), 1)
+
+			monitor.wait_for_next_check()
+
+			self.assertEqual(sleep_log, [])
+
+	def test_dev_mode_does_not_sleep(self) -> None:
+		with tempfile.TemporaryDirectory() as tmp:
+			future = int(time.time()) + 3600
+			monitor, sleep_log = self.make_waiting_service(Path(tmp), future, dev_mode=True)
+
+			monitor.wait_for_next_check()
+
+			self.assertEqual(sleep_log, [])
+
+	def test_future_check_sleeps_for_wait_seconds(self) -> None:
+		with tempfile.TemporaryDirectory() as tmp:
+			future = int(time.time()) + 3600
+			monitor, sleep_log = self.make_waiting_service(Path(tmp), future)
+
+			monitor.wait_for_next_check()
+
+			self.assertEqual(len(sleep_log), 1)
+			self.assertGreater(sleep_log[0], 3590)
+
+
+class CleanupTest(unittest.TestCase):
+	"""验证开发模式临时目录清理."""
+
+	def test_dev_mode_removes_temp_dir(self) -> None:
+		with tempfile.TemporaryDirectory() as tmp:
+			root = Path(tmp)
+			(root / "temp_info_json").mkdir()
+			monitor, _history, _frequency = make_service(
+				root,
+				FakeGistClient(),
+				FakeBilibiliService(),
+				dev_mode=True,
+			)
+
+			monitor.cleanup()
+
+			self.assertFalse((root / "temp_info_json").exists())
+
+	def test_production_mode_keeps_temp_dir(self) -> None:
+		with tempfile.TemporaryDirectory() as tmp:
+			root = Path(tmp)
+			(root / "temp_info_json").mkdir()
+			monitor, _history, _frequency = make_service(
+				root,
+				FakeGistClient(),
+				FakeBilibiliService(),
+			)
+
+			monitor.cleanup()
+
+			self.assertTrue((root / "temp_info_json").exists())
 
 
 if __name__ == "__main__":
