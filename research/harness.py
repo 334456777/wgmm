@@ -69,7 +69,7 @@ DEFAULT_PARAMS = {
 	"max_interval_cap_sec": None,  # 间隔上限: 修复峰值距离驱动的尾部拉伸
 	"burst_window_sec": None,  # 事件后爆发窗口: tau < window 时加密检查
 	"burst_interval_sec": 1800.0,
-	"sqrt_cap_k": None,  # sqrt_hazard 动态上限: min(基础间隔, k·h^-0.5)
+	"sqrt_cap_k": 130.0,  # sqrt_hazard 动态上限: 与生产 HAZARD_CAP_K 对齐(ADR 008)
 }
 
 
