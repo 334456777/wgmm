@@ -247,6 +247,24 @@ best_peak_score > current_score * 1.2
 
 如果最近一次 `yt-dlp` 耗时超过正常耗时两倍，调度器会增加最多 50% 的阻抗因子，降低请求压力。
 
+## 风险率间隔上限（ADR 008）
+
+间隔映射在低分时段会把间隔拉到峰值距离（最远 15 天），但"距上次发布已等待 tau"
+本身携带最强的条件信息。`estimate_hazard_cap()` 在间隔下限之后施加一道上限：
+
+```text
+h(tau) = (m / n_survivors) / nn_span        # 幸存间隔的 m 近邻风险率估计
+interval_cap = HAZARD_CAP_K / sqrt(h(tau))  # 最优巡检: 间隔 ∝ h^-0.5
+final_frequency_sec = min(final_frequency_sec, interval_cap)
+```
+
+- tau 超出历史最大间隔后按 Pareto 尾 `h = alpha / tau` 退化（上限 ∝ sqrt(tau)）；
+- 结果裁剪到 `[HAZARD_CAP_FLOOR, HAZARD_CAP_MAX]`（0.5 小时 ~ 15 天）；
+- `HAZARD_CAP_K` 是延迟/请求量的单一权衡旋钮：越大上限越松、请求越省、延迟越大。
+
+702 天闭环回测：平均检测延迟 −57%、P90 −65%，请求量 +13%（详见 ADR 008）。
+阻抗保护施加在上限之后，慢网络退避不会被上限抵消。
+
 ## miss history
 
 当一次自动调频未发现新内容，且不是手动运行时：
@@ -274,6 +292,7 @@ data/miss_history.txt
         -> current score
         -> future peak scan
         -> interval mapping
+        -> hazard interval cap
     -> FrequencyDecision
     -> data/wgmm_config.json
     -> optional data/miss_history.txt append
@@ -296,6 +315,7 @@ wgmm_monitor/wgmm/constants.py
 - `MIN_HISTORY_COUNT`
 - `LOOKAHEAD_DAYS`
 - `FALLBACK_INTERVAL`
+- `HAZARD_CAP_K`（风险率上限松紧：延迟 vs 请求量权衡，ADR 008）
 
 调优后运行：
 
@@ -332,12 +352,16 @@ python monitor.py --wgmm-core-only
 
 ### 算法还有改进空间吗？
 
-两轮系统性研究（ADR 006、ADR 007）已经覆盖了主要结构假设：
+三轮系统性研究（ADR 006、ADR 007、ADR 008）已经覆盖了建模层与调度层：
 
-- ADR 006 修正了唯一的真实结构缺口（全局峰 → 首个显著峰，MAE −57%）。
+- ADR 006 修正了唯一的真实建模结构缺口（全局峰 → 首个显著峰，MAE −57%）。
 - ADR 007 在其后用随机化 walk-forward 验证了 12 个候选建模机制，全部无系统性
   MAE 增益——baseline 已贴近该数据"事后最优常数预测器"的无条件 L1 下界，
-  相邻间隔互信息仅约 2% 边缘熵。
+  相邻间隔互信息仅约 2% 边缘熵。**建模层已封闭。**
+- ADR 008 转向调度决策层（点预测之外系统真正的运行目标），用 702 天闭环回测
+  发现间隔映射的尾部拉伸病理，引入风险率间隔上限：平均检测延迟 −57%、
+  P90 −65%，代价为请求量 +13%。
 
-在提出新的算法改进前，请先阅读这两份 ADR 中的预检判据（互信息、CV、
-expanding vs sliding 对照、L1 下界距离）。
+在提出新的算法改进前，请先阅读这三份 ADR 中的预检判据（互信息、CV、
+expanding vs sliding 对照、L1 下界距离、闭环回测协议）。调度层如需再调，
+优先使用 `research/harness.py` 闭环模拟器做等预算对比。

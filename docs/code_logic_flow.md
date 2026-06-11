@@ -203,6 +203,7 @@ decide_next_frequency()
         -> fallback to best raw peak, then to global best
     -> map relative current score to interval
     -> optionally advance strong peak by observed yt-dlp duration
+    -> estimate_hazard_cap() bounds the interval (ADR 008 hazard cap)
     -> apply yt-dlp impedance when recent duration is abnormal
     -> update WgmmConfig
     -> return FrequencyDecision

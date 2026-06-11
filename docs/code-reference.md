@@ -271,6 +271,7 @@ python monitor.py --wgmm-core-only
 ### `wgmm_monitor/wgmm/scheduler.py`
 
 - `scan_future_peak()`：扫描未来 `LOOKAHEAD_DAYS` 天，取**首个得分高于扫描均值的局部峰**作为"下一次发布"预估（首峰解码，ADR 006）；无显著峰时退回最高 raw peak，再退回全局最高分。
+- `estimate_hazard_cap()`：风险率间隔上限（间隔 ∝ h(tau)^-0.5，幸存间隔 m 近邻估计 + Pareto 尾退化），防止低分时段把间隔拉到峰值距离（ADR 008）。
 - `decide_next_frequency()`：完整调频决策。
 
 决策步骤：
@@ -282,8 +283,9 @@ python monitor.py --wgmm-core-only
 5. 扫描未来峰值。
 6. 将相对得分映射为检查间隔。
 7. 如果峰值足够强，根据 `yt-dlp` 正常耗时提前检查。
-8. 当最近 `yt-dlp` 耗时异常增大时加入阻抗因子。
-9. 更新 `WgmmConfig` 并返回 `FrequencyDecision`。
+8. 用 `estimate_hazard_cap()` 给间隔套上风险率上限（ADR 008）。
+9. 当最近 `yt-dlp` 耗时异常增大时加入阻抗因子。
+10. 更新 `WgmmConfig` 并返回 `FrequencyDecision`。
 
 ## 工具函数
 

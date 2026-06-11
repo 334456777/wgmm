@@ -141,6 +141,7 @@ sudo journalctl -u video-monitor -f
 - **`docs/adr/005-adopt-modular-monolith.md`**: 采用模块化单体结构（反转 ADR 003 的禁止规则）
 - **`docs/adr/006-wgmm-first-peak-decode.md`**: WGMM 首峰解码改进（scan_future_peak 全局峰值 → 首个显著峰，MAE −57%）
 - **`docs/adr/007-keep-wgmm-structure-unchanged.md`**: 维持 WGMM 结构现状（第二轮改进研究：baseline 已贴住无条件 L1 下界，12 个候选机制全部无增益）
+- **`docs/adr/008-hazard-interval-cap.md`**: 引入风险率间隔上限（调度层优化：702 天回测平均检测延迟 −57%、P90 −65%，请求 +13%）
 
 ### 文档使用建议
 
@@ -378,6 +379,7 @@ python -m unittest discover -s tests           # 必须全绿
 **WGMM 纯算法层（`wgmm_monitor/wgmm/`）**
 - `scheduler.decide_next_frequency()`: WGMM 调频决策主函数
 - `scheduler.scan_future_peak()`: 未来 15 天峰值扫描
+- `scheduler.estimate_hazard_cap()`: 风险率间隔上限（间隔 ∝ h(tau)^-0.5，防止低分时段把间隔拉到峰值距离，ADR 008）
 - `scoring.calculate_point_score()` / `batch_calculate_scores()`: 单点 / 批量发布概率得分
 - `features.vectorized_time_features_numpy()`: 周期性时间特征提取
 - `features.get_raw_time_components()`: 离散时间维度（用于权重学习）
@@ -443,7 +445,9 @@ FrequencyService.adjust_check_frequency()
     ├── learning.learn_adaptive_sigmas()     # 学习时间容忍度（含 custom_N）
     ├── scoring.calculate_point_score()      # 当前时刻发布概率
     ├── scheduler.scan_future_peak()         # 扫描未来 15 天找峰值
-    └── 映射得分 → 检查间隔 → FrequencyDecision
+    ├── 映射得分 → 检查间隔
+    ├── scheduler.estimate_hazard_cap()      # 风险率间隔上限（ADR 008）
+    └── FrequencyDecision
 ```
 
 ## 快速参考
