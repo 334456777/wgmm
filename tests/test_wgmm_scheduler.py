@@ -5,8 +5,12 @@ from __future__ import annotations
 import unittest
 
 from wgmm_monitor.models import WgmmConfig
-from wgmm_monitor.wgmm.constants import FALLBACK_INTERVAL
-from wgmm_monitor.wgmm.scheduler import decide_next_frequency
+from wgmm_monitor.wgmm.constants import (
+	FALLBACK_INTERVAL,
+	HAZARD_CAP_FLOOR,
+	HAZARD_CAP_MAX,
+)
+from wgmm_monitor.wgmm.scheduler import decide_next_frequency, estimate_hazard_cap
 
 
 class WgmmSchedulerTest(unittest.TestCase):
@@ -66,6 +70,59 @@ class WgmmSchedulerTest(unittest.TestCase):
 			decision.final_frequency_sec,
 			8 * 3600 - 60,
 			delta=3600,
+		)
+
+	def test_hazard_cap_grows_with_waiting_time(self) -> None:
+		"""重尾间隔下: 等待越久风险率越低, 允许的检查间隔上限越大."""
+		now = 1700000000
+		day = 86400
+		intervals = [7200] * 20 + [5 * day] * 6
+		events = [now]
+		for interval in intervals:
+			events.append(events[-1] - interval)
+		events.sort()
+
+		cap_early = estimate_hazard_cap(events, now)
+		cap_late = estimate_hazard_cap(events, now + int(2.5 * day))
+
+		self.assertGreater(cap_late, cap_early)
+
+	def test_hazard_cap_respects_floor_and_max(self) -> None:
+		"""上限被裁剪到 [HAZARD_CAP_FLOOR, HAZARD_CAP_MAX]."""
+		now = 1700000000
+		burst_events = [now - i * 60 for i in range(6)]
+		cap_floor = estimate_hazard_cap(burst_events, now)
+		self.assertEqual(cap_floor, HAZARD_CAP_FLOOR)
+
+		sparse_events = [now - i * 90 * 86400 for i in range(1, 12)]
+		cap_max = estimate_hazard_cap(sparse_events, now + 1500 * 86400)
+		self.assertEqual(cap_max, HAZARD_CAP_MAX)
+
+	def test_hazard_cap_uses_tail_formula_beyond_history(self) -> None:
+		"""等待超出历史最大间隔后按 Pareto 尾退化, 上限随 sqrt(tau) 增长."""
+		now = 1700000000
+		day = 86400
+		events = [now - i * day for i in range(1, 20)]
+
+		cap_a = estimate_hazard_cap(events, now + 3 * day)
+		cap_b = estimate_hazard_cap(events, now + 12 * day)
+
+		self.assertGreater(cap_b, cap_a)
+		self.assertLessEqual(cap_b, HAZARD_CAP_MAX)
+		self.assertAlmostEqual(cap_b / cap_a, 2.0, delta=0.2)
+
+	def test_decide_bounds_interval_by_hazard_cap(self) -> None:
+		"""周期得分驱动的长间隔被风险率上限约束."""
+		now = 1700000000
+		week = 604800
+		events = [now - i * week for i in range(24)]
+		config = WgmmConfig(is_manual_run=False)
+
+		decision = decide_next_frequency(config, events, [], now, dev_mode=True)
+
+		self.assertLessEqual(
+			decision.final_frequency_sec,
+			estimate_hazard_cap(events, now) + 1.0,
 		)
 
 	def test_slow_ytdlp_applies_impedance_factor(self) -> None:

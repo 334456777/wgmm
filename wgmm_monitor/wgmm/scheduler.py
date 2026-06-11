@@ -8,6 +8,11 @@ from wgmm_monitor.models import FrequencyDecision, WgmmConfig
 from wgmm_monitor.utils.time import format_frequency_interval
 from wgmm_monitor.wgmm.constants import (
 	FALLBACK_INTERVAL,
+	HAZARD_CAP_FLOOR,
+	HAZARD_CAP_K,
+	HAZARD_CAP_MAX,
+	HAZARD_CAP_NN_M,
+	HAZARD_CAP_TAIL_ALPHA,
 	LAMBDA_BASE,
 	LOOKAHEAD_DAYS,
 	MAPPING_CURVE,
@@ -104,6 +109,44 @@ def scan_future_peak(
 				best_peak_time = float(scan_times[global_best_idx])
 
 	return best_peak_time, best_peak_score, scan_stats
+
+
+def estimate_hazard_cap(
+	positive_events: list[int],
+	current_timestamp: int,
+) -> float:
+	"""基于经验风险率给出检查间隔上限(秒).
+
+	周期得分在低分时段会把间隔拉到峰值距离(最远 15 天), 但"距上次发布
+	已等待 tau"本身携带最强的条件信息(重尾间隔分布). 最优巡检理论的
+	驻点条件是检查速率 r*(t) ∝ sqrt(h(t)), 即间隔 ∝ h(tau)^-0.5:
+
+	- h(tau) 用幸存间隔(历史间隔中 > tau 者)的 m 近邻跨度估计;
+	- tau 超出历史最大间隔后按 Pareto 尾 h=alpha/tau 退化, 间隔 ∝ sqrt(tau);
+	- 结果裁剪到 [HAZARD_CAP_FLOOR, HAZARD_CAP_MAX].
+
+	Args:
+		positive_events: 正向发布事件时间戳列表.
+		current_timestamp: 当前时间戳.
+
+	Returns:
+		允许的最大检查间隔(秒).
+	"""
+	events = sorted(positive_events)
+	intervals = np.diff(np.array(events, dtype=np.float64))
+	intervals = intervals[intervals > 0]
+	if len(intervals) == 0:
+		return float(FALLBACK_INTERVAL)
+	tau = max(float(current_timestamp) - float(events[-1]), 0.0)
+	survivors = np.sort(intervals[intervals > tau]) - tau
+	m = min(HAZARD_CAP_NN_M, len(survivors))
+	if m >= 1:
+		nn_span = max(float(survivors[m - 1]), 60.0)
+		hazard = (m / len(survivors)) / nn_span
+	else:
+		hazard = HAZARD_CAP_TAIL_ALPHA / max(tau, 3600.0)
+	interval_cap = HAZARD_CAP_K * hazard**-0.5
+	return float(np.clip(interval_cap, HAZARD_CAP_FLOOR, HAZARD_CAP_MAX))
 
 
 def decide_next_frequency(
@@ -263,14 +306,20 @@ def decide_next_frequency(
 			final_frequency_sec = float(max(advanced_interval, 0.0))
 			in_peak_response = True
 
+	if not in_peak_response:
+		final_frequency_sec = max(final_frequency_sec, min_check_interval)
+
+	# 风险率上限(ADR 008): 等待越久允许的间隔越大, 但绝不允许周期得分
+	# 把间隔直接拉到峰值距离; 702 天回测均值检测延迟 -57%, P90 -65%.
+	hazard_cap = estimate_hazard_cap(positive_events, current_timestamp)
+	final_frequency_sec = min(final_frequency_sec, hazard_cap)
+
+	# 阻抗保护(慢网络退避)施加在最后, 不被风险率上限抵消
 	impedance_factor = 1.0
 	if last_ytdlp_duration > normal_ytdlp_duration * 2.0:
 		impedance_ratio = last_ytdlp_duration / max(normal_ytdlp_duration, 1.0)
 		impedance_factor = 1.0 + min(0.5, (impedance_ratio - 2.0) * 0.1)
-
 	final_frequency_sec = float(final_frequency_sec * impedance_factor)
-	if not in_peak_response:
-		final_frequency_sec = max(final_frequency_sec, min_check_interval)
 
 	next_check_time = current_timestamp + int(final_frequency_sec)
 	config.last_update = current_timestamp
