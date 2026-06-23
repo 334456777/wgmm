@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import http.cookiejar
 import json
 import shutil
 import subprocess
@@ -10,6 +11,7 @@ import time
 from collections.abc import Callable
 from contextlib import suppress
 from datetime import datetime as dt
+from pathlib import Path
 
 from wgmm_monitor.clients.gist import GistClient
 from wgmm_monitor.models import RuntimePaths
@@ -20,6 +22,26 @@ from wgmm_monitor.services.history import HistoryService
 from wgmm_monitor.services.notification import NotificationService
 from wgmm_monitor.stores.url_store import UrlStore
 from wgmm_monitor.utils.time import JST
+
+# SESSDATA 剩余天数 <= 该阈值时触发 cookies 过期提醒
+COOKIE_EXPIRY_WARN_DAYS = 7
+
+
+def _read_sessdata_expiry(cookies_file: Path) -> int | None:
+	"""从 Netscape cookies 文件解析 SESSDATA 的过期 Unix 时间戳.
+
+	用 ``MozillaCookieJar`` 解析以兼容 ``#HttpOnly_`` 前缀等格式细节.
+	返回过期时间戳; 缺失/会话级 cookie/解析失败时返回 ``None``.
+	"""
+	try:
+		jar = http.cookiejar.MozillaCookieJar(str(cookies_file))
+		jar.load(ignore_discard=True, ignore_expires=True)
+	except (OSError, http.cookiejar.LoadError, ValueError):
+		return None
+	for cookie in jar:
+		if cookie.name == "SESSDATA":
+			return int(cookie.expires) if cookie.expires else None
+	return None
 
 
 class MonitorService:
@@ -130,10 +152,41 @@ class MonitorService:
 			normal_ytdlp_duration=self.bilibili.ytdlp_client.normal_duration,
 		)
 
+	def check_cookie_expiry(self) -> None:
+		"""SESSDATA 临近过期时通过 Bark 提醒 (每日至多一次).
+
+		剩余天数 <= ``COOKIE_EXPIRY_WARN_DAYS`` 时推送; 通过 ``cookie_alert_file``
+		记录当日已提醒, 避免同一天重复打扰. 开发模式不发送.
+		"""
+		if self.dev_mode:
+			return
+		expiry = _read_sessdata_expiry(self.paths.cookies_file)
+		if expiry is None:
+			return
+		now = int(time.time())
+		days_left = (expiry - now) // 86400
+		if days_left > COOKIE_EXPIRY_WARN_DAYS:
+			return
+
+		today = dt.fromtimestamp(now, tz=JST).strftime("%Y-%m-%d")
+		alert_file = self.paths.cookie_alert_file
+		with suppress(OSError):
+			if (
+				alert_file.exists()
+				and alert_file.read_text(encoding="utf-8").strip() == today
+			):
+				return
+
+		expiry_str = dt.fromtimestamp(expiry, tz=JST).strftime("%Y-%m-%d %H:%M")
+		if self.notification_service.notify_cookie_expiry(days_left, expiry_str):
+			with suppress(OSError):
+				alert_file.write_text(today, encoding="utf-8")
+
 	def run_monitor(self) -> None:
 		"""执行一次完整监控流程."""
 		try:
 			self.logger.log_message("检查开始                  <--")
+			self.check_cookie_expiry()
 			sync_success = self.sync_urls_from_gist()
 
 			if not sync_success and not self.memory_urls:

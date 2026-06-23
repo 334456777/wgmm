@@ -9,7 +9,11 @@ from pathlib import Path
 
 from wgmm_monitor.models import RuntimePaths, YtDlpResult
 from wgmm_monitor.runtime_logger import RuntimeLogger
-from wgmm_monitor.services.monitor import MonitorService
+from wgmm_monitor.services.monitor import (
+	COOKIE_EXPIRY_WARN_DAYS,
+	MonitorService,
+	_read_sessdata_expiry,
+)
 
 
 class FakeGistClient:
@@ -158,9 +162,14 @@ class FakeNotificationService:
 	def __init__(self, success: bool = True) -> None:
 		self.success = success
 		self.calls: list[tuple[int, bool]] = []
+		self.cookie_calls: list[tuple[int, str]] = []
 
 	def notify_new_videos(self, count: int, has_new_parts: bool = False) -> bool:
 		self.calls.append((count, has_new_parts))
+		return self.success
+
+	def notify_cookie_expiry(self, days_left: int, expiry_str: str) -> bool:
+		self.cookie_calls.append((days_left, expiry_str))
 		return self.success
 
 
@@ -185,6 +194,7 @@ def make_service(
 		mtime_file=root / "mtime.txt",
 		miss_history_file=root / "miss_history.txt",
 		cookies_file=root / "cookies.txt",
+		cookie_alert_file=root / "cookie_alert.txt",
 		temp_info_dir=root / "temp_info_json",
 		temp_timestamps_file=root / "temp_timestamps.txt",
 	)
@@ -552,6 +562,108 @@ class CleanupTest(unittest.TestCase):
 			monitor.cleanup()
 
 			self.assertTrue((root / "temp_info_json").exists())
+
+
+def _write_sessdata_cookies(path: Path, expiry: int) -> None:
+	"""写一个仅含 SESSDATA 的 Netscape cookies 文件."""
+	path.write_text(
+		"# Netscape HTTP Cookie File\n"
+		f".bilibili.com\tTRUE\t/\tTRUE\t{expiry}\tSESSDATA\tdummyvalue\n",
+		encoding="utf-8",
+	)
+
+
+class CookieExpiryTest(unittest.TestCase):
+	"""验证 SESSDATA 临近过期提醒."""
+
+	def test_near_expiry_notifies_then_throttles_same_day(self) -> None:
+		with tempfile.TemporaryDirectory() as tmp:
+			root = Path(tmp)
+			_write_sessdata_cookies(root / "cookies.txt", int(time.time()) + 3 * 86400 + 3600)
+			notification = FakeNotificationService()
+			monitor, _h, _f = make_service(
+				root, FakeGistClient(), FakeBilibiliService(), notification=notification
+			)
+
+			monitor.check_cookie_expiry()
+			monitor.check_cookie_expiry()  # 同日重复调用应被节流
+
+			self.assertEqual(len(notification.cookie_calls), 1)
+			self.assertEqual(notification.cookie_calls[0][0], 3)
+
+	def test_far_expiry_does_not_notify(self) -> None:
+		with tempfile.TemporaryDirectory() as tmp:
+			root = Path(tmp)
+			_write_sessdata_cookies(root / "cookies.txt", int(time.time()) + 90 * 86400)
+			notification = FakeNotificationService()
+			monitor, _h, _f = make_service(
+				root, FakeGistClient(), FakeBilibiliService(), notification=notification
+			)
+
+			monitor.check_cookie_expiry()
+
+			self.assertEqual(notification.cookie_calls, [])
+
+	def test_already_expired_notifies_negative_days(self) -> None:
+		with tempfile.TemporaryDirectory() as tmp:
+			root = Path(tmp)
+			_write_sessdata_cookies(root / "cookies.txt", int(time.time()) - 86400)
+			notification = FakeNotificationService()
+			monitor, _h, _f = make_service(
+				root, FakeGistClient(), FakeBilibiliService(), notification=notification
+			)
+
+			monitor.check_cookie_expiry()
+
+			self.assertEqual(len(notification.cookie_calls), 1)
+			self.assertLess(notification.cookie_calls[0][0], 0)
+
+	def test_dev_mode_does_not_notify(self) -> None:
+		with tempfile.TemporaryDirectory() as tmp:
+			root = Path(tmp)
+			_write_sessdata_cookies(root / "cookies.txt", int(time.time()) + 3 * 86400)
+			notification = FakeNotificationService()
+			monitor, _h, _f = make_service(
+				root,
+				FakeGistClient(),
+				FakeBilibiliService(),
+				notification=notification,
+				dev_mode=True,
+			)
+
+			monitor.check_cookie_expiry()
+
+			self.assertEqual(notification.cookie_calls, [])
+
+	def test_missing_cookies_file_is_silent(self) -> None:
+		with tempfile.TemporaryDirectory() as tmp:
+			notification = FakeNotificationService()
+			monitor, _h, _f = make_service(
+				Path(tmp), FakeGistClient(), FakeBilibiliService(), notification=notification
+			)
+
+			monitor.check_cookie_expiry()  # 无 cookies 文件不应报错或通知
+
+			self.assertEqual(notification.cookie_calls, [])
+
+	def test_read_sessdata_expiry_parses_value(self) -> None:
+		with tempfile.TemporaryDirectory() as tmp:
+			path = Path(tmp) / "cookies.txt"
+			_write_sessdata_cookies(path, 1900000000)
+			self.assertEqual(_read_sessdata_expiry(path), 1900000000)
+
+	def test_read_sessdata_expiry_missing_returns_none(self) -> None:
+		with tempfile.TemporaryDirectory() as tmp:
+			path = Path(tmp) / "cookies.txt"
+			path.write_text(
+				"# Netscape HTTP Cookie File\n"
+				".bilibili.com\tTRUE\t/\tTRUE\t1900000000\tbuvid3\tx\n",
+				encoding="utf-8",
+			)
+			self.assertIsNone(_read_sessdata_expiry(path))
+
+	def test_warn_threshold_is_a_week(self) -> None:
+		self.assertEqual(COOKIE_EXPIRY_WARN_DAYS, 7)
 
 
 if __name__ == "__main__":

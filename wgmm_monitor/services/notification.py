@@ -25,6 +25,23 @@ class NotificationService:
 			group="新视频",
 		)
 
+	def notify_cookie_expiry(self, days_left: int, expiry_str: str) -> bool:
+		"""发送 cookies(SESSDATA) 临近过期提醒."""
+		if days_left < 0:
+			body = f"SESSDATA 已于 {expiry_str} 过期, 请立即重新导出 cookies 替换"
+		else:
+			body = (
+				f"SESSDATA 将于 {expiry_str} 过期(剩 {days_left} 天), "
+				"请尽快重新导出 cookies 替换"
+			)
+		return self.bark_client.send_push(
+			title=f"⚠️ {self.config.bark_app_title} - Cookies 即将过期",
+			body=body,
+			level="timeSensitive",
+			sound="minuet",
+			group="Cookies",
+		)
+
 	def notify_error(self, message: str) -> bool:
 		"""发送普通错误通知."""
 		return self.bark_client.send_push(

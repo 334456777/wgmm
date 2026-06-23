@@ -21,6 +21,7 @@ class RuntimePaths:
 	mtime_file: Path = Path("data/mtime.txt")
 	miss_history_file: Path = Path("data/miss_history.txt")
 	cookies_file: Path = Path("data/cookies.txt")
+	cookie_alert_file: Path = Path("data/cookie_alert.txt")
 	temp_info_dir: Path = Path("temp_info_json")
 	temp_timestamps_file: Path = Path("temp_timestamps.txt")
 

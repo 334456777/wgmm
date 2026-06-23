@@ -82,6 +82,26 @@ class NotificationServiceTest(unittest.TestCase):
 
 		self.assertEqual(bark.pushes[0]["body"], "崩了")
 
+	def test_cookie_expiry_future_mentions_days_left(self) -> None:
+		service, bark = make_service()
+
+		service.notify_cookie_expiry(3, "2026-12-20 08:56")
+
+		push = bark.pushes[0]
+		self.assertIn("Cookies 即将过期", push["title"])
+		self.assertIn("剩 3 天", push["body"])
+		self.assertIn("2026-12-20 08:56", push["body"])
+		self.assertEqual(push["level"], "timeSensitive")
+		self.assertEqual(push["group"], "Cookies")
+
+	def test_cookie_expiry_negative_says_already_expired(self) -> None:
+		service, bark = make_service()
+
+		service.notify_cookie_expiry(-1, "2026-12-20 08:56")
+
+		self.assertIn("已于", bark.pushes[0]["body"])
+		self.assertIn("过期", bark.pushes[0]["body"])
+
 
 if __name__ == "__main__":
 	unittest.main()
