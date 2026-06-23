@@ -64,7 +64,18 @@ class BilibiliService:
 		latest_id = result.stdout.strip()
 		all_known = set(memory_urls) | known_urls
 		video_exists = any(latest_id in url for url in all_known)
-		return not video_exists
+		if not video_exists:
+			return True
+
+		# 投稿列表最新视频已知; 再核对动态流最新一页 (覆盖不在投稿列表里的充电专属视频)
+		dynamic_bvids = self.api_client.fetch_space_dynamic_bvids(
+			self.config.bilibili_uid,
+			self.cookies_file,
+			max_pages=1,
+		)
+		return any(
+			not any(bvid in url for url in all_known) for bvid in dynamic_bvids
+		)
 
 	def check_potential_new_parts(
 		self,
@@ -136,6 +147,20 @@ class BilibiliService:
 				f"https://space.bilibili.com/{self.config.bilibili_uid}/video",
 			],
 		)
+
+	def fetch_dynamic_video_urls(self, max_pages: int = 6) -> list[str]:
+		"""从 UP 动态流获取视频 URL 列表 (含充电专属视频).
+
+		充电专属视频不在 ``space/.../video`` 投稿列表中, 但会作为普通视频动态
+		出现在动态流; 用于补充 ``fetch_video_list`` 漏掉的充电视频. 返回主视频
+		URL, 分 P 交由 ``get_all_videos_parallel`` 统一展开.
+		"""
+		bvids = self.api_client.fetch_space_dynamic_bvids(
+			self.config.bilibili_uid,
+			self.cookies_file,
+			max_pages=max_pages,
+		)
+		return [f"https://www.bilibili.com/video/{bvid}" for bvid in bvids]
 
 	def get_video_parts(self, video_url: str) -> list[str]:
 		"""获取单个视频的所有分 P URL."""

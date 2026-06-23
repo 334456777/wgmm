@@ -83,11 +83,13 @@ class FakeBilibiliService:
 		found_videos: bool = False,
 		fetch_results: list[YtDlpResult] | None = None,
 		all_parts: list[str] | None = None,
+		dynamic_video_urls: list[str] | None = None,
 	) -> None:
 		self.found_parts = found_parts
 		self.found_videos = found_videos
 		self.fetch_results = fetch_results or []
 		self.all_parts = all_parts or []
+		self.dynamic_video_urls = dynamic_video_urls or []
 		self.ytdlp_client = FakeYtDlpClient()
 		self.fetch_count = 0
 
@@ -109,6 +111,10 @@ class FakeBilibiliService:
 		result = self.fetch_results[min(self.fetch_count, len(self.fetch_results) - 1)]
 		self.fetch_count += 1
 		return result
+
+	def fetch_dynamic_video_urls(self, max_pages: int = 6) -> list[str]:
+		_ = max_pages
+		return list(self.dynamic_video_urls)
 
 	def get_all_videos_parallel(self, video_urls: list[str]) -> list[str]:
 		_ = video_urls

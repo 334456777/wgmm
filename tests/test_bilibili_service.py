@@ -32,11 +32,16 @@ class FakeYtDlpClient:
 class FakeBilibiliApiClient:
 	"""测试用 view API 客户端, 按 bvid 返回预设 data 字典."""
 
-	def __init__(self, data_by_bvid: dict[str, dict | None]) -> None:
+	def __init__(
+		self,
+		data_by_bvid: dict[str, dict | None],
+		dynamic_bvids: list[str] | None = None,
+	) -> None:
 		"""保存 bvid -> data 映射并记录请求过的 bvid."""
 		self.data_by_bvid = data_by_bvid
 		self.fetched_bvids: list[str] = []
 		self._cache: dict[str, dict | None] = {}
+		self.dynamic_bvids = dynamic_bvids or []
 
 	def fetch_view(self, bvid: str) -> dict | None:
 		"""模拟带缓存的 view API 请求."""
@@ -72,6 +77,16 @@ class FakeBilibiliApiClient:
 				return ctimes
 		ctime = data.get("ctime")
 		return [int(ctime)] if ctime else []
+
+	def fetch_space_dynamic_bvids(
+		self,
+		mid: str,
+		cookies_file: object,
+		max_pages: int = 6,
+	) -> list[str]:
+		"""返回预设的动态流 bvid 列表."""
+		_ = (mid, cookies_file, max_pages)
+		return list(self.dynamic_bvids)
 
 
 def make_service(
@@ -257,6 +272,34 @@ class QuickPrecheckTest(unittest.TestCase):
 			service = make_service(client, Path(tmp))
 
 			self.assertTrue(service.quick_precheck(["https://x/BV1old"], set()))
+
+	def test_unknown_dynamic_video_triggers_update(self) -> None:
+		"""投稿列表最新视频已知, 但动态流出现未知(充电专属)视频时应触发完整检查."""
+		with tempfile.TemporaryDirectory() as tmp:
+			client = ScriptedYtDlpClient([YtDlpResult(True, stdout="BV1old")])
+			api = FakeBilibiliApiClient({}, dynamic_bvids=["BV1charge"])
+			service = make_service(client, Path(tmp), api)
+
+			found = service.quick_precheck(
+				["https://x/BV1old"],
+				{"https://x/BV1old"},
+			)
+
+			self.assertTrue(found)
+
+	def test_known_dynamic_video_means_no_update(self) -> None:
+		"""投稿列表与动态流最新视频均已知时不触发完整检查."""
+		with tempfile.TemporaryDirectory() as tmp:
+			client = ScriptedYtDlpClient([YtDlpResult(True, stdout="BV1old")])
+			api = FakeBilibiliApiClient({}, dynamic_bvids=["BV1old"])
+			service = make_service(client, Path(tmp), api)
+
+			found = service.quick_precheck(
+				["https://x/BV1old"],
+				{"https://x/BV1old"},
+			)
+
+			self.assertFalse(found)
 
 
 class PartPrecheckEdgeTest(unittest.TestCase):

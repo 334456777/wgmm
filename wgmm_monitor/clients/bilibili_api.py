@@ -13,8 +13,10 @@
 
 from __future__ import annotations
 
+import http.cookiejar
 import re
 import time
+from pathlib import Path
 
 import requests
 
@@ -43,6 +45,7 @@ class BilibiliApiClient:
 	"""封装 B站 view API 调用, 串行执行并按 bvid 缓存."""
 
 	VIEW_URL = "https://api.bilibili.com/x/web-interface/view"
+	DYNAMIC_URL = "https://api.bilibili.com/x/polymer/web-dynamic/v1/feed/space"
 	REQUEST_INTERVAL = 0.5
 
 	def __init__(self, logger: RuntimeLogger) -> None:
@@ -173,3 +176,100 @@ class BilibiliApiClient:
 
 		ctime = data.get("ctime")
 		return [int(ctime)] if ctime else []
+
+	@staticmethod
+	def _dynamic_archive_bvid(item: dict) -> str | None:
+		"""从单条动态提取**本人投稿**视频的 bvid.
+
+		仅取 ``module_dynamic.major`` 为 ``MAJOR_TYPE_ARCHIVE`` 的归档视频;
+		转发动态 (``DYNAMIC_TYPE_FORWARD``) 的 ``major`` 为空, 自动跳过,
+		避免把他人视频 bvid 误纳入.
+		"""
+		modules = item.get("modules") or {}
+		major = (modules.get("module_dynamic") or {}).get("major") or {}
+		if major.get("type") == "MAJOR_TYPE_ARCHIVE":
+			return (major.get("archive") or {}).get("bvid")
+		return None
+
+	def fetch_space_dynamic_bvids(
+		self,
+		mid: str,
+		cookies_file: Path,
+		max_pages: int = 6,
+	) -> list[str]:
+		"""分页拉取 UP 空间动态, 提取本人投稿视频 (含充电专属) 的 bvid.
+
+		充电专属视频不出现在 ``space/arc/search`` 投稿列表中, 但会作为普通
+		``DYNAMIC_TYPE_AV`` 动态出现在 UP 的动态流里. 该接口需登录态 cookies,
+		按 ``offset`` 游标翻页. 任意一页失败即停止并返回已收集结果.
+
+		Args:
+			mid: UP 主 mid.
+			cookies_file: Netscape 格式 cookies 文件 (登录态).
+			max_pages: 最多翻页数 (每页约 12 条动态).
+
+		Returns:
+			去重后的 bvid 列表, 按动态时间倒序 (最新在前); 失败返回已收集部分.
+		"""
+		try:
+			jar = http.cookiejar.MozillaCookieJar(str(cookies_file))
+			jar.load(ignore_discard=True, ignore_expires=True)
+		except OSError as exc:
+			self.logger.log_warning(f"动态枚举无法加载 cookies: {exc}")
+			return []
+
+		session = requests.Session()
+		session.cookies = jar
+		headers = {
+			**self._headers(),
+			"Referer": f"https://space.bilibili.com/{mid}/dynamic",
+		}
+		bvids: list[str] = []
+		seen: set[str] = set()
+		offset = ""
+		for _ in range(max_pages):
+			elapsed = time.time() - self._last_request_ts
+			if elapsed < self.REQUEST_INTERVAL:
+				time.sleep(self.REQUEST_INTERVAL - elapsed)
+			params = {
+				"offset": offset,
+				"host_mid": mid,
+				"timezone_offset": -480,
+				"features": "itemOpusStyle",
+			}
+			try:
+				response = session.get(
+					self.DYNAMIC_URL,
+					params=params,
+					headers=headers,
+					timeout=30,
+				)
+				self._last_request_ts = time.time()
+				response.raise_for_status()
+				payload = response.json()
+			except (requests.RequestException, ValueError) as exc:
+				self._last_request_ts = time.time()
+				self.logger.log_warning(f"动态feed请求异常 mid={mid}: {exc!s}")
+				break
+
+			if payload.get("code") != 0:
+				self.logger.log_warning(
+					f"动态feed返回非0 mid={mid}: code={payload.get('code')} "
+					f"msg={payload.get('message')}"
+				)
+				break
+
+			data = payload.get("data") or {}
+			for item in data.get("items") or []:
+				bvid = self._dynamic_archive_bvid(item)
+				if bvid and bvid not in seen:
+					seen.add(bvid)
+					bvids.append(bvid)
+
+			if not data.get("has_more"):
+				break
+			offset = data.get("offset") or ""
+			if not offset:
+				break
+
+		return bvids

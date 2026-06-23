@@ -195,7 +195,11 @@ class MonitorService:
 				self.cleanup()
 				return
 
-			all_parts = self.bilibili.get_all_videos_parallel(video_urls)
+			# 并入动态流视频 URL (覆盖不在投稿列表中的充电专属视频), 去重保序
+			dynamic_urls = self.bilibili.fetch_dynamic_video_urls()
+			merged_urls = list(dict.fromkeys(video_urls + dynamic_urls))
+
+			all_parts = self.bilibili.get_all_videos_parallel(merged_urls)
 			if not all_parts:
 				self.logger.log_warning("分片扩展失败(可能被限流), 跳过本次检测")
 				self.adjust_check_frequency(found_new_content=False)
