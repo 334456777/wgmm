@@ -40,7 +40,7 @@ class AppConfig:
 	bark_device_key: str
 	bark_app_title: str
 	gist_base_url: str = "https://api.github.com/gists"
-	bark_base_url: str = "https://api.day.app"
+	bark_base_url: str = "http://0.0.0.0:7777"
 
 	def missing_required_keys(self) -> list[str]:
 		"""返回缺失的必填配置名称."""
